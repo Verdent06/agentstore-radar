@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Copy snapshot files from the public repo's git history into a data-repo
-# checkout. Never overwrites files that already exist in the destination
-# (so a later public commit cannot clobber private history).
+# One-time copy of snapshot files from the public repo's git history into a
+# data-repo checkout. After the destination has any snapshot, this script
+# does not read public history again (so a later public-history rewrite is safe).
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
@@ -12,6 +12,17 @@ fi
 PUBLIC_DIR=$(cd "$1" && pwd)
 DATA_REPO=$(cd "$2" && pwd)
 DEST="$DATA_REPO/data"
+MARKER="$DEST/.migrated-from-public"
+
+already_seeded() {
+  [[ -f "$MARKER" ]] && return 0
+  find "$DEST/normalized" -mindepth 2 -maxdepth 2 -name manifest.json 2>/dev/null | grep -q .
+}
+
+if already_seeded; then
+  echo "seed: data repo already has snapshots; not reading public git history"
+  exit 0
+fi
 
 cd "$PUBLIC_DIR"
 SHA=$(git rev-list -n 1 --all -- data/normalized 2>/dev/null || true)
@@ -32,10 +43,9 @@ if [[ ! -d "$TMP/data" ]]; then
 fi
 
 mkdir -p "$DEST"
-# --ignore-existing keeps dates already in the private repo intact and
-# still picks up new files (e.g. a later public collect that added github/).
-cp -an "$TMP/data/." "$DEST/"
-echo "seed: copied missing files from public commit $SHA into $DEST"
+cp -a "$TMP/data/." "$DEST/"
+printf '%s\n' "$SHA" > "$MARKER"
+echo "seed: copied data/ from public commit $SHA into $DEST"
 if [[ -d "$DEST/normalized" ]]; then
   echo "seed: snapshot dates now: $(find "$DEST/normalized" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tr '\n' ' ')"
 fi

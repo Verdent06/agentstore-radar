@@ -20,7 +20,7 @@ function initRepo(dir: string): void {
 }
 
 describe("seed-data-repo.sh", () => {
-  it("copies missing snapshot files and does not overwrite existing ones", () => {
+  it("copies once from public history and ignores public history after that", () => {
     const root = mkdtempSync(join(tmpdir(), "radar-seed-"));
     const publicRepo = join(root, "public");
     const dataRepo = join(root, "data-repo");
@@ -33,6 +33,7 @@ describe("seed-data-repo.sh", () => {
     writeFileSync(join(publicRepo, "data/raw/mcp-registry/2026-10-15.json"), '{"n":1}\n');
     git(publicRepo, "add data");
     git(publicRepo, "commit -m seed");
+    const sourceSha = execSync("git rev-parse HEAD", { cwd: publicRepo, encoding: "utf8" }).trim();
 
     writeFileSync(join(dataRepo, "README.md"), "private data\n");
     git(dataRepo, "add README.md");
@@ -41,16 +42,15 @@ describe("seed-data-repo.sh", () => {
     execFileSync("bash", [script, publicRepo, dataRepo], { stdio: "pipe" });
     expect(existsSync(join(dataRepo, "data/normalized/2026-10-15/manifest.json"))).toBe(true);
     expect(existsSync(join(dataRepo, "data/raw/mcp-registry/2026-10-15.json"))).toBe(true);
+    expect(readFileSync(join(dataRepo, "data/.migrated-from-public"), "utf8").trim()).toBe(sourceSha);
 
-    writeFileSync(join(dataRepo, "data/normalized/2026-10-15/manifest.json"), '{"kept":true}\n');
     mkdirSync(join(publicRepo, "data/raw/github"), { recursive: true });
     writeFileSync(join(publicRepo, "data/raw/github/2026-10-15.json"), '{"stars":1}\n');
-    writeFileSync(join(publicRepo, "data/normalized/2026-10-15/manifest.json"), '{"replaced":true}\n');
     git(publicRepo, "add data");
     git(publicRepo, "commit -m more");
 
     execFileSync("bash", [script, publicRepo, dataRepo], { stdio: "pipe" });
-    expect(existsSync(join(dataRepo, "data/raw/github/2026-10-15.json"))).toBe(true);
-    expect(readFileSync(join(dataRepo, "data/normalized/2026-10-15/manifest.json"), "utf8")).toContain("kept");
+    expect(existsSync(join(dataRepo, "data/raw/github/2026-10-15.json"))).toBe(false);
+    expect(readFileSync(join(dataRepo, "data/.migrated-from-public"), "utf8").trim()).toBe(sourceSha);
   });
 });

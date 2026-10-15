@@ -91,7 +91,7 @@ Optional env:
 
 ## Automation
 
-- [`.github/workflows/collect.yml`](.github/workflows/collect.yml) — daily cron (`17 6 * * *`) plus `workflow_dispatch`. Checks out the private data repo over SSH (`DATA_REPO_DEPLOY_KEY`), seeds any dates still only in this repo's git history, collects into `DATA_DIR`, commits and pushes **only** to the data repo. `seed_only` skips collect and just copies history across.
+- [`.github/workflows/collect.yml`](.github/workflows/collect.yml) — daily cron (`17 6 * * *`) plus `workflow_dispatch`. Checks out the private data repo over SSH (`DATA_REPO_DEPLOY_KEY`), **once** copies `data/` from this repo’s git history if the data repo has no snapshots yet (writes `data/.migrated-from-public`), then collects into `DATA_DIR` and pushes **only** to the data repo. After that first success it never reads public history again. `seed_only` skips collect and just does that one-time copy.
 - [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — lint, typecheck, tests (recorded fixtures, no live network).
 
 ### Health check
