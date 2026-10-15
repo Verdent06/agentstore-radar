@@ -4,38 +4,68 @@ on:
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
+    inputs:
+      seed_only:
+        description: "Copy public-repo data/ history into the private data repo; do not collect"
+        type: boolean
+        default: false
 
 concurrency:
   group: collect-snapshots
   cancel-in-progress: false
 
+# Read-only on the public repo so this job cannot push snapshots here.
 permissions:
-  contents: write
-  issues: write
+  contents: read
+
+env:
+  DATA_REPO: Verdent06/agentstore-radar-data
+  DATA_DIR: ${{ github.workspace }}/.radar-data/data
 
 jobs:
   collect:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout public collector
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Checkout private data repo
+        uses: actions/checkout@v4
+        with:
+          repository: Verdent06/agentstore-radar-data
+          ssh-key: ${{ secrets.DATA_REPO_DEPLOY_KEY }}
+          path: .radar-data
+          fetch-depth: 0
+
+      - name: Seed private repo from public data/ history
+        run: bash scripts/seed-data-repo.sh "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/.radar-data"
+
       - uses: actions/setup-node@v4
+        if: ${{ inputs.seed_only != true }}
         with:
           node-version: "22"
           cache: npm
+
       - run: npm ci
+        if: ${{ inputs.seed_only != true }}
+
       - name: Collect sanctioned public snapshots
+        if: ${{ inputs.seed_only != true }}
         env:
+          DATA_DIR: ${{ env.DATA_DIR }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SMITHERY_API_KEY: ${{ secrets.SMITHERY_API_KEY }}
-        run: npm run collect
-      - name: Commit snapshot
+        run: npm run collect -- --data "$DATA_DIR"
+
+      - name: Commit snapshot to private data repo
+        working-directory: .radar-data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data
+          git add -A
           if git diff --cached --quiet; then
             echo "No snapshot changes"
           else
@@ -43,8 +73,12 @@ jobs:
             git commit -m "data: snapshot ${DATE}"
             git push
           fi
+
       - name: Health check
+        if: ${{ inputs.seed_only != true }}
         env:
+          DATA_DIR: ${{ env.DATA_DIR }}
+          HEALTH_ISSUE_REPO: Verdent06/agentstore-radar-data
+          HEALTH_ISSUE_TOKEN: ${{ secrets.HEALTH_ISSUE_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: npm run health
+        run: npm run health -- --data "$DATA_DIR"

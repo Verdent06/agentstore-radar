@@ -6,3 +6,7 @@ coverage/
 *.log
 .DS_Store
 .eslintcache
+
+# Snapshot history lives in Verdent06/agentstore-radar-data, not this repo.
+data/
+.radar-data/

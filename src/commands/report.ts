@@ -1,4 +1,4 @@
-import { listSnapshotDates, previousSnapshotDate, readApps } from "../lib/io.ts";
+import { listSnapshotDates, previousSnapshotDate, readApps, resolveDataDir } from "../lib/io.ts";
 import type { AppRow } from "../lib/schema.ts";
 
 export type Mover = {
@@ -77,7 +77,7 @@ export function computeLeaders(current: AppRow[], limit = 10): Array<{ metric: s
 }
 
 export function buildReport(options?: { date?: string; dataDir?: string; limit?: number }): ReportResult {
-  const dataDir = options?.dataDir ?? "data";
+  const dataDir = resolveDataDir(options?.dataDir);
   const dates = listSnapshotDates(dataDir);
   const currentDate = options?.date ?? dates.at(-1);
   if (!currentDate) {

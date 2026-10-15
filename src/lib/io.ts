@@ -15,6 +15,11 @@ export type DataPaths = {
   appsPath: (date: string) => string;
 };
 
+export function resolveDataDir(override?: string, env: NodeJS.ProcessEnv = process.env): string {
+  const value = override?.trim() || env.DATA_DIR?.trim();
+  return value && value.length > 0 ? value : "data";
+}
+
 export function dataPaths(root = "data"): DataPaths {
   return {
     root,

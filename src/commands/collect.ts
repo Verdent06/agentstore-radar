@@ -2,7 +2,7 @@ import { adaptersByKind } from "../adapters/index.ts";
 import { createDiscoveredRefs, type CollectContext, type SourceResult } from "../adapters/types.ts";
 import { utcDateString } from "../lib/dates.ts";
 import { createHttpClient, type HttpClient } from "../lib/http.ts";
-import { writeJsonSnapshot, writeNormalized } from "../lib/io.ts";
+import { resolveDataDir, writeJsonSnapshot, writeNormalized } from "../lib/io.ts";
 import { createLogger, type Logger } from "../lib/logger.ts";
 import { relinkPackageAppIds } from "../lib/matching.ts";
 import { mergeApps } from "../lib/merge.ts";
@@ -35,7 +35,7 @@ export async function collect(options: CollectOptions = {}): Promise<SnapshotMan
   const now = options.now ?? new Date();
   const snapshotDate = options.date ?? utcDateString(now);
   const today = utcDateString(now);
-  const dataDir = options.dataDir ?? "data";
+  const dataDir = resolveDataDir(options.dataDir, options.env);
   const log = options.log ?? createLogger();
   const http = options.http ?? createHttpClient();
   const names = new Set(selectedNames(options.sources));
