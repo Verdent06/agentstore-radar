@@ -20,6 +20,8 @@ export function createDiscoveredRefs(): DiscoveredRefs {
 export type CollectContext = {
   snapshotDate: string;
   collectedAt: string;
+  dataDir: string;
+  now: Date;
   env: NodeJS.ProcessEnv;
   http: HttpClient;
   log: Logger;
@@ -35,6 +37,11 @@ export type SourceResult = {
   skipReason?: string;
   raw: unknown;
   records: SourceRow[];
+  eligibleCount?: number;
+  fetchedCount?: number;
+  coverage?: number;
+  lastFetchedAt?: string;
+  truncated?: boolean;
 };
 
 export interface SourceAdapter {

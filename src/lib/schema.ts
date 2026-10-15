@@ -70,6 +70,10 @@ export const SourceManifestSchema = z.object({
   skipReason: z.string().optional(),
   rawFile: z.string().optional(),
   collectedAt: z.string(),
+  eligibleCount: z.number().int().nonnegative().optional(),
+  fetchedCount: z.number().int().nonnegative().optional(),
+  coverage: z.number().min(0).max(1).optional(),
+  lastFetchedAt: z.string().optional(),
 });
 
 export type SourceManifest = z.infer<typeof SourceManifestSchema>;

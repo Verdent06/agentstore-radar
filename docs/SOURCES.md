@@ -28,16 +28,21 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 
 - Docs: [GraphQL API](https://docs.github.com/en/graphql)
 - Endpoint: `POST https://api.github.com/graphql`
-- Auth: `GITHUB_TOKEN` (Actions provides one). Missing token → skip
-- Batches of 40 `repository(owner, name)` aliases
-- Fields: `stargazerCount`, `forkCount`, `issues(states: OPEN) { totalCount }`, `pushedAt`
+- Auth: `GH_STATS_TOKEN` (optional PAT) falling back to Actions `GITHUB_TOKEN` / `GH_TOKEN`. Missing token → skip
+- Batches of 50 aliased `repository(owner, name)` nodes plus `rateLimit { remaining resetAt cost }`
+- Fields: `stargazerCount`, `forkCount`, `issues(states: OPEN) { totalCount }`, `pushedAt`, `updatedAt`
+- Respect `X-RateLimit-Remaining` / `X-RateLimit-Reset`, secondary-limit `Retry-After`, and GraphQL remaining; wait through a reset when it is within ~70 minutes
+- Checkpoint + resume under `data/state/github/`; `last_fetched` skips repos fresher than 7 days so every repo refreshes at least weekly
+- Target: all discovered GitHub URLs in one 6h Actions run when budget allows; otherwise rolling coverage across days
 - Repos are discovered from MCP `repository.url` / `io.github.*` names, Smithery GitHub homepages, and the Gemini gallery
 
 ## npm weekly downloads
 
 - Docs: [npm download counts](https://github.com/npm/registry/blob/main/docs/download-counts.md)
 - `GET https://api.npmjs.org/downloads/point/last-week/{package}`
-- Bulk: comma-separated, max 128, **unscoped only**. Scoped packages (`@scope/name`) are fetched one-by-one with `%2F`
+- Bulk: comma-separated, max **128**, **unscoped only**. Scoped packages (`@scope/name`) are fetched one-by-one with `%2F`
+- Throttle `api.npmjs.org`; back off on HTTP 429 and Cloudflare error 1015 (`Retry-After` + exponential)
+- Checkpoint + weekly `last_fetched` under `data/state/npm/`
 
 ## PyPI / pypistats
 
@@ -45,6 +50,7 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - `GET https://pypistats.org/api/packages/{package}/recent`
 - Returns `last_day`, `last_week`, `last_month`
 - Do **not** use `pypi.org/pypi/{package}/json` `downloads` — it is always `-1`
+- Throttle `pypistats.org`; back off on 429; rolling weekly coverage + checkpoint under `data/state/pypi/`
 
 ## Gemini CLI extensions gallery
 

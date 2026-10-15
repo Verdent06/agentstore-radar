@@ -1,8 +1,21 @@
 import { z } from "zod";
 import { NPM_BULK_LIMIT, NPM_DOWNLOADS_BASE } from "../lib/config.ts";
+import { computeCoverage } from "../lib/coverage.ts";
 import { HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
+import {
+  clearCheckpoint,
+  countFresh,
+  loadCheckpoint,
+  loadEntityCache,
+  loadLastFetched,
+  persistCheckpoint,
+  persistEntityCache,
+  persistLastFetched,
+  resumeDueKeys,
+} from "../lib/rolling.ts";
 import { emptySourceRow, type SourceRow } from "../lib/schema.ts";
+import { chunk } from "../lib/util.ts";
 import type { CollectContext, SourceAdapter, SourceResult } from "./types.ts";
 
 const PointSchema = z.object({
@@ -15,15 +28,23 @@ const PointSchema = z.object({
 export type NpmRawSnapshot = {
   endpoint: string;
   fetchedAt: string;
+  requested: number;
+  fetchedThisRun: number;
+  truncated?: boolean;
+  resumed?: boolean;
   packages: Record<string, unknown>;
 };
 
-function chunk<T>(items: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) {
-    out.push(items.slice(i, i + size));
-  }
-  return out;
+export function isScopedNpmPackage(name: string): boolean {
+  return name.startsWith("@");
+}
+
+export function npmBulkUrl(names: string[]): string {
+  return `${NPM_DOWNLOADS_BASE}/${names.join(",")}`;
+}
+
+export function npmScopedUrl(name: string): string {
+  return `${NPM_DOWNLOADS_BASE}/${name.replace("/", "%2F")}`;
 }
 
 export function normalizeNpmPoint(snapshotDate: string, name: string, item: unknown): SourceRow | null {
@@ -47,92 +68,181 @@ export function normalizeNpmPoint(snapshotDate: string, name: string, item: unkn
   });
 }
 
+function rememberPoint(
+  cache: Record<string, unknown>,
+  lastFetched: Record<string, string>,
+  name: string,
+  item: unknown,
+  fetchedAt: string,
+): boolean {
+  if (item == null || !PointSchema.safeParse(item).success) {
+    return false;
+  }
+  cache[name] = item;
+  lastFetched[name] = fetchedAt;
+  return true;
+}
+
+function recordsFromCache(snapshotDate: string, keys: string[], cache: Record<string, unknown>): SourceRow[] {
+  const records: SourceRow[] = [];
+  for (const name of keys) {
+    const item = cache[name];
+    if (item == null) {
+      continue;
+    }
+    const row = normalizeNpmPoint(snapshotDate, name, item);
+    if (row) {
+      records.push(row);
+    }
+  }
+  return records;
+}
+
 export const npmAdapter: SourceAdapter = {
   name: "npm",
   kind: "enrichment",
   async collect(ctx: CollectContext): Promise<SourceResult> {
-    const names = [...ctx.discovered.npmPackages].sort();
-    const packages: Record<string, unknown> = {};
-    if (names.length === 0) {
+    const allKeys = [...ctx.discovered.npmPackages].sort();
+    const lastFetched = loadLastFetched(ctx.dataDir, "npm");
+    const cache = loadEntityCache(ctx.dataDir, "npm");
+    const checkpoint = loadCheckpoint(ctx.dataDir, "npm");
+    const { dueKeys, resumed } = resumeDueKeys(allKeys, lastFetched, ctx.now, ctx.snapshotDate, checkpoint);
+    const fetchedAt = ctx.collectedAt;
+
+    const finish = (input: { truncated: boolean; fetchedThisRun: number }): SourceResult => {
+      const records = recordsFromCache(ctx.snapshotDate, allKeys, cache);
+      const fetchedCount = countFresh(allKeys, lastFetched, ctx.now);
+      const { coverage } = computeCoverage(allKeys.length, fetchedCount);
+      persistLastFetched(ctx.dataDir, "npm", lastFetched);
+      persistEntityCache(ctx.dataDir, "npm", cache);
+      if (input.truncated) {
+        persistCheckpoint(ctx.dataDir, "npm", {
+          snapshotDate: ctx.snapshotDate,
+          dueKeys,
+          nextIndex: Math.min(dueKeys.length, input.fetchedThisRun),
+          startedAt: checkpoint?.startedAt ?? fetchedAt,
+        });
+      } else {
+        clearCheckpoint(ctx.dataDir, "npm");
+      }
       return {
         source: "npm",
         collectedAt: ctx.collectedAt,
-        rowCount: 0,
+        rowCount: records.length,
         skipped: false,
-        raw: { endpoint: NPM_DOWNLOADS_BASE, fetchedAt: ctx.collectedAt, packages },
-        records: [],
+        truncated: input.truncated,
+        eligibleCount: allKeys.length,
+        fetchedCount,
+        coverage,
+        lastFetchedAt: Object.values(lastFetched).sort().at(-1),
+        raw: {
+          endpoint: NPM_DOWNLOADS_BASE,
+          fetchedAt,
+          requested: allKeys.length,
+          fetchedThisRun: input.fetchedThisRun,
+          truncated: input.truncated,
+          resumed,
+          packages: Object.fromEntries(allKeys.map((key) => [key, cache[key]]).filter(([, value]) => value != null)),
+        } satisfies NpmRawSnapshot,
+        records,
       };
+    };
+
+    if (allKeys.length === 0) {
+      return finish({ truncated: false, fetchedThisRun: 0 });
     }
 
-    const scoped: string[] = [];
-    const unscoped: string[] = [];
-    for (const name of names) {
-      if (name.startsWith("@")) {
-        scoped.push(name);
-      } else {
-        unscoped.push(name);
-      }
-    }
+    const dueSet = new Set(dueKeys);
+    const scoped = dueKeys.filter(isScopedNpmPackage);
+    const unscoped = dueKeys.filter((name) => !isScopedNpmPackage(name));
+    ctx.log.info("npm fetching downloads", {
+      requested: allKeys.length,
+      due: dueKeys.length,
+      unscoped: unscoped.length,
+      scoped: scoped.length,
+      resumed,
+    });
+
+    let fetchedThisRun = 0;
+    let truncated = false;
+    let processed = 0;
 
     try {
       const batches = chunk(unscoped, NPM_BULK_LIMIT);
       for (const [index, batch] of batches.entries()) {
-        const url = `${NPM_DOWNLOADS_BASE}/${batch.join(",")}`;
-        const payload = await ctx.http.fetchJson<unknown>(url);
+        persistCheckpoint(ctx.dataDir, "npm", {
+          snapshotDate: ctx.snapshotDate,
+          dueKeys,
+          nextIndex: processed,
+          startedAt: checkpoint?.startedAt ?? fetchedAt,
+        });
+        const payload = await ctx.http.fetchJson<unknown>(npmBulkUrl(batch));
         if (batch.length === 1) {
-          packages[batch[0]!] = payload;
+          if (rememberPoint(cache, lastFetched, batch[0]!, payload, fetchedAt)) {
+            fetchedThisRun += 1;
+          }
         } else if (payload && typeof payload === "object") {
-          Object.assign(packages, payload as Record<string, unknown>);
+          for (const [name, item] of Object.entries(payload as Record<string, unknown>)) {
+            if (!dueSet.has(name)) {
+              continue;
+            }
+            if (rememberPoint(cache, lastFetched, name, item, fetchedAt)) {
+              fetchedThisRun += 1;
+            }
+          }
         }
-        if ((index + 1) % 20 === 0 || index + 1 === batches.length) {
-          ctx.log.info("npm bulk progress", { batch: index + 1, batches: batches.length, resolved: Object.keys(packages).length });
+        processed += batch.length;
+        persistLastFetched(ctx.dataDir, "npm", lastFetched);
+        persistEntityCache(ctx.dataDir, "npm", cache);
+        if ((index + 1) % 10 === 0 || index + 1 === batches.length) {
+          ctx.log.info("npm bulk progress", {
+            batch: index + 1,
+            batches: batches.length,
+            fetchedThisRun,
+          });
         }
       }
 
       for (const name of scoped) {
-        const encoded = name.replace("/", "%2F");
-        const url = `${NPM_DOWNLOADS_BASE}/${encoded}`;
+        persistCheckpoint(ctx.dataDir, "npm", {
+          snapshotDate: ctx.snapshotDate,
+          dueKeys,
+          nextIndex: processed,
+          startedAt: checkpoint?.startedAt ?? fetchedAt,
+        });
         try {
-          packages[name] = await ctx.http.fetchJson<unknown>(url);
+          const payload = await ctx.http.fetchJson<unknown>(npmScopedUrl(name));
+          if (rememberPoint(cache, lastFetched, name, payload, fetchedAt)) {
+            fetchedThisRun += 1;
+          }
         } catch (error) {
+          if (error instanceof HttpError && (error.status === 429 || error.cloudflare)) {
+            throw error;
+          }
           ctx.log.warn("npm scoped package fetch failed", { name, error: String(error) });
         }
+        processed += 1;
+        persistLastFetched(ctx.dataDir, "npm", lastFetched);
+        persistEntityCache(ctx.dataDir, "npm", cache);
       }
     } catch (error) {
-      if (error instanceof HttpError && (error.status === 429 || error.status === 403) && Object.keys(packages).length > 0) {
+      if (
+        error instanceof HttpError &&
+        (error.status === 429 || error.status === 403 || error.cloudflare) &&
+        (fetchedThisRun > 0 || Object.keys(cache).length > 0)
+      ) {
+        truncated = true;
         ctx.log.warn("npm stopped early after rate limit; keeping partial snapshot", {
-          resolved: Object.keys(packages).length,
-          requested: names.length,
+          fetchedThisRun,
+          requested: allKeys.length,
+          due: dueKeys.length,
         });
       } else {
         throw error;
       }
     }
 
-    const records: SourceRow[] = [];
-    for (const [name, item] of Object.entries(packages)) {
-      if (item == null) {
-        continue;
-      }
-      const row = normalizeNpmPoint(ctx.snapshotDate, name, item);
-      if (row) {
-        records.push(row);
-      }
-    }
-
-    ctx.log.info("npm collected", { requested: names.length, rows: records.length });
-    const raw: NpmRawSnapshot = {
-      endpoint: NPM_DOWNLOADS_BASE,
-      fetchedAt: ctx.collectedAt,
-      packages,
-    };
-    return {
-      source: "npm",
-      collectedAt: ctx.collectedAt,
-      rowCount: records.length,
-      skipped: false,
-      raw,
-      records,
-    };
+    ctx.log.info("npm collected", { requested: allKeys.length, due: dueKeys.length, fetchedThisRun, truncated });
+    return finish({ truncated, fetchedThisRun });
   },
 };

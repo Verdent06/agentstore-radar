@@ -1,5 +1,6 @@
 import { adaptersByKind } from "../adapters/index.ts";
 import { createDiscoveredRefs, type CollectContext, type SourceResult } from "../adapters/types.ts";
+import { computeCoverage } from "../lib/coverage.ts";
 import { utcDateString } from "../lib/dates.ts";
 import { createHttpClient, type HttpClient } from "../lib/http.ts";
 import { resolveDataDir, writeJsonSnapshot, writeNormalized } from "../lib/io.ts";
@@ -43,6 +44,8 @@ export async function collect(options: CollectOptions = {}): Promise<SnapshotMan
   const ctx: CollectContext = {
     snapshotDate,
     collectedAt,
+    dataDir,
+    now,
     env: options.env ?? process.env,
     http,
     log,
@@ -71,14 +74,7 @@ export async function collect(options: CollectOptions = {}): Promise<SnapshotMan
       rawFile = await writeJsonSnapshot(result.source, snapshotDate, today, result.raw, dataDir);
       log.info(`wrote ${rawFile}`, { source: result.source, rows: result.rowCount });
     }
-    sourceManifests.push({
-      source: result.source,
-      rowCount: result.rowCount,
-      skipped: result.skipped,
-      skipReason: result.skipReason,
-      rawFile,
-      collectedAt: result.collectedAt,
-    });
+    sourceManifests.push(toSourceManifest(result, rawFile));
   }
 
   const manifest: SnapshotManifest = {
@@ -96,4 +92,22 @@ export async function collect(options: CollectOptions = {}): Promise<SnapshotMan
     sourceRows: sourceRows.length,
   });
   return manifest;
+}
+
+function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifest {
+  const eligible = result.eligibleCount ?? (result.skipped ? 0 : result.rowCount);
+  const fetched = result.fetchedCount ?? (result.skipped ? 0 : result.rowCount);
+  const { coverage } = computeCoverage(eligible, fetched);
+  return {
+    source: result.source,
+    rowCount: result.rowCount,
+    skipped: result.skipped,
+    skipReason: result.skipReason,
+    rawFile,
+    collectedAt: result.collectedAt,
+    eligibleCount: eligible,
+    fetchedCount: fetched,
+    coverage: result.skipped && eligible === 0 ? undefined : result.coverage ?? coverage,
+    lastFetchedAt: result.lastFetchedAt,
+  };
 }

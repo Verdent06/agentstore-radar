@@ -63,4 +63,38 @@ describe("health", () => {
     expect(openIssue).toHaveBeenCalledOnce();
     expect(openIssue.mock.calls[0]?.[0].title).toContain("mcp-registry");
   });
+
+  it("flags low enrichment coverage even without a row-count drop", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-health-cov-"));
+    const previous = source("github", 100);
+    const current = {
+      ...source("github", 100),
+      eligibleCount: 100,
+      fetchedCount: 20,
+      coverage: 0.2,
+    };
+    writeNormalized("2026-10-15", [], [], manifest("2026-10-15", [previous]), dataDir);
+    writeNormalized("2026-10-16", [], [], manifest("2026-10-16", [current]), dataDir);
+    const report = evaluateHealth({ date: "2026-10-16", dataDir });
+    expect(report.ok).toBe(false);
+    expect(report.findings).toEqual([]);
+    expect(report.coverageFindings[0]).toMatchObject({ source: "github", coverage: 0.2, eligibleCount: 100 });
+  });
+
+  it("does not flag skipped sources or coverage at/above 70%", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-health-ok-"));
+    writeNormalized(
+      "2026-10-16",
+      [],
+      [],
+      manifest("2026-10-16", [
+        { ...source("github", 80), eligibleCount: 100, fetchedCount: 80, coverage: 0.8 },
+        { ...source("npm", 0, true), eligibleCount: 10, fetchedCount: 0, coverage: 0 },
+      ]),
+      dataDir,
+    );
+    const report = evaluateHealth({ date: "2026-10-16", dataDir });
+    expect(report.ok).toBe(true);
+    expect(report.coverageFindings).toEqual([]);
+  });
 });

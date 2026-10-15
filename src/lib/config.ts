@@ -3,6 +3,8 @@ export const USER_AGENT = `agentstore-radar/0.1 (+${REPO_URL})`;
 
 export const RAW_GZIP_THRESHOLD_BYTES = 256 * 1024;
 export const HEALTH_DROP_THRESHOLD = 0.3;
+export const LOW_COVERAGE_THRESHOLD = 0.7;
+export const MAX_RATE_LIMIT_WAIT_MS = 70 * 60 * 1000;
 
 export const HOST_MIN_INTERVAL_MS: Record<string, number> = {
   "registry.modelcontextprotocol.io": 150,
@@ -22,5 +24,5 @@ export const NPM_DOWNLOADS_BASE = "https://api.npmjs.org/downloads/point/last-we
 export const PYPISTATS_BASE = "https://pypistats.org/api/packages";
 export const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 
-export const NPM_BULK_LIMIT = 32;
-export const GITHUB_GRAPHQL_BATCH = 40;
+export const NPM_BULK_LIMIT = 128;
+export const GITHUB_GRAPHQL_BATCH = 50;
