@@ -8,8 +8,8 @@ export const HOST_MIN_INTERVAL_MS: Record<string, number> = {
   "registry.modelcontextprotocol.io": 150,
   "api.smithery.ai": 150,
   "api.github.com": 250,
-  "api.npmjs.org": 150,
-  "pypistats.org": 400,
+  "api.npmjs.org": 400,
+  "pypistats.org": 500,
   "geminicli.com": 200,
 };
 
@@ -22,5 +22,5 @@ export const NPM_DOWNLOADS_BASE = "https://api.npmjs.org/downloads/point/last-we
 export const PYPISTATS_BASE = "https://pypistats.org/api/packages";
 export const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 
-export const NPM_BULK_LIMIT = 128;
+export const NPM_BULK_LIMIT = 32;
 export const GITHUB_GRAPHQL_BATCH = 40;

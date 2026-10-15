@@ -90,7 +90,17 @@ export function createHttpClient(options?: {
           return body;
         }
         if ((RETRYABLE.has(response.status) || isRateLimited(response.status, body)) && attempt < maxRetries) {
-          const retryAfter = Number(response.headers.get("retry-after"));
+          const retryAfterHeader = Number(response.headers.get("retry-after"));
+          let retryAfterBody = Number.NaN;
+          try {
+            const parsed = JSON.parse(body) as { retry_after?: number };
+            if (typeof parsed.retry_after === "number") {
+              retryAfterBody = parsed.retry_after;
+            }
+          } catch {
+            // not JSON
+          }
+          const retryAfter = Number.isFinite(retryAfterHeader) ? retryAfterHeader : retryAfterBody;
           const waitMs = Number.isFinite(retryAfter)
             ? retryAfter * 1000
             : isRateLimited(response.status, body)

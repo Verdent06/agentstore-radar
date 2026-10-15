@@ -60,15 +60,32 @@ export const pypiAdapter: SourceAdapter = {
       };
     }
 
-    for (const name of names) {
-      const url = `${PYPISTATS_BASE}/${encodeURIComponent(name)}/recent`;
-      try {
-        packages[name] = await ctx.http.fetchJson<unknown>(url);
-      } catch (error) {
-        if (error instanceof HttpError && error.status === 404) {
-          continue;
+    try {
+      for (const [index, name] of names.entries()) {
+        const url = `${PYPISTATS_BASE}/${encodeURIComponent(name)}/recent`;
+        try {
+          packages[name] = await ctx.http.fetchJson<unknown>(url);
+        } catch (error) {
+          if (error instanceof HttpError && error.status === 404) {
+            continue;
+          }
+          if (error instanceof HttpError && (error.status === 429 || error.status === 403)) {
+            throw error;
+          }
+          ctx.log.warn("pypi package fetch failed", { name, error: String(error) });
         }
-        ctx.log.warn("pypi package fetch failed", { name, error: String(error) });
+        if ((index + 1) % 50 === 0) {
+          ctx.log.info("pypi progress", { done: index + 1, total: names.length });
+        }
+      }
+    } catch (error) {
+      if (error instanceof HttpError && (error.status === 429 || error.status === 403) && Object.keys(packages).length > 0) {
+        ctx.log.warn("pypi stopped early after rate limit; keeping partial snapshot", {
+          resolved: Object.keys(packages).length,
+          requested: names.length,
+        });
+      } else {
+        throw error;
       }
     }
 

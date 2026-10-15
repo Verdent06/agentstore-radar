@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { NPM_BULK_LIMIT, NPM_DOWNLOADS_BASE } from "../lib/config.ts";
+import { HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import { emptySourceRow, type SourceRow } from "../lib/schema.ts";
 import type { CollectContext, SourceAdapter, SourceResult } from "./types.ts";
@@ -73,23 +74,38 @@ export const npmAdapter: SourceAdapter = {
       }
     }
 
-    for (const batch of chunk(unscoped, NPM_BULK_LIMIT)) {
-      const url = `${NPM_DOWNLOADS_BASE}/${batch.join(",")}`;
-      const payload = await ctx.http.fetchJson<unknown>(url);
-      if (batch.length === 1) {
-        packages[batch[0]!] = payload;
-      } else if (payload && typeof payload === "object") {
-        Object.assign(packages, payload as Record<string, unknown>);
+    try {
+      const batches = chunk(unscoped, NPM_BULK_LIMIT);
+      for (const [index, batch] of batches.entries()) {
+        const url = `${NPM_DOWNLOADS_BASE}/${batch.join(",")}`;
+        const payload = await ctx.http.fetchJson<unknown>(url);
+        if (batch.length === 1) {
+          packages[batch[0]!] = payload;
+        } else if (payload && typeof payload === "object") {
+          Object.assign(packages, payload as Record<string, unknown>);
+        }
+        if ((index + 1) % 20 === 0 || index + 1 === batches.length) {
+          ctx.log.info("npm bulk progress", { batch: index + 1, batches: batches.length, resolved: Object.keys(packages).length });
+        }
       }
-    }
 
-    for (const name of scoped) {
-      const encoded = name.replace("/", "%2F");
-      const url = `${NPM_DOWNLOADS_BASE}/${encoded}`;
-      try {
-        packages[name] = await ctx.http.fetchJson<unknown>(url);
-      } catch (error) {
-        ctx.log.warn("npm scoped package fetch failed", { name, error: String(error) });
+      for (const name of scoped) {
+        const encoded = name.replace("/", "%2F");
+        const url = `${NPM_DOWNLOADS_BASE}/${encoded}`;
+        try {
+          packages[name] = await ctx.http.fetchJson<unknown>(url);
+        } catch (error) {
+          ctx.log.warn("npm scoped package fetch failed", { name, error: String(error) });
+        }
+      }
+    } catch (error) {
+      if (error instanceof HttpError && (error.status === 429 || error.status === 403) && Object.keys(packages).length > 0) {
+        ctx.log.warn("npm stopped early after rate limit; keeping partial snapshot", {
+          resolved: Object.keys(packages).length,
+          requested: names.length,
+        });
+      } else {
+        throw error;
       }
     }
 
