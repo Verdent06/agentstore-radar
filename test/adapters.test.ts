@@ -11,13 +11,14 @@ describe("source normalizers", () => {
   it("maps official MCP registry rows onto a github app_id and packages", () => {
     const page = loadFixture<{ servers: unknown[] }>("mcp-page.json");
     const weather = normalizeMcpServer("2026-10-15", page.servers[0]);
-    expect(weather?.app_id).toBe("github:example/weather");
-    expect(weather?.npm_package).toBe("@example/weather-mcp");
-    expect(weather?.repo_url).toBe("https://github.com/example/weather");
+    expect(weather?.row.app_id).toBe("github:example/weather");
+    expect(weather?.row.npm_package).toBe("@example/weather-mcp");
+    expect(weather?.row.repo_url).toBe("https://github.com/example/weather");
+    expect(weather?.explicitGithub).toBe(true);
 
     const files = normalizeMcpServer("2026-10-15", page.servers[1]);
-    expect(files?.app_id).toBe("pypi:example-files-mcp");
-    expect(files?.pypi_package).toBe("example-files-mcp");
+    expect(files?.row.app_id).toBe("pypi:example-files-mcp");
+    expect(files?.row.pypi_package).toBe("example-files-mcp");
   });
 
   it("keeps smithery useCount and matches github homepages", () => {

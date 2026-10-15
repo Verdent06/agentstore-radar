@@ -7,19 +7,19 @@ import type { CollectContext, SourceAdapter, SourceResult } from "./types.ts";
 
 const ServerSchema = z
   .object({
-    id: z.string(),
+    id: z.string().nullish(),
     qualifiedName: z.string(),
-    namespace: z.string().optional(),
-    slug: z.string().optional(),
-    displayName: z.string().optional(),
-    description: z.string().optional(),
-    homepage: z.string().optional().nullable(),
-    useCount: z.number().optional(),
-    verified: z.boolean().optional(),
-    remote: z.boolean().optional(),
-    isDeployed: z.boolean().optional(),
-    createdAt: z.string().optional(),
-    repositoryUrl: z.string().optional().nullable(),
+    namespace: z.string().nullish(),
+    slug: z.string().nullish(),
+    displayName: z.string().nullish(),
+    description: z.string().nullish(),
+    homepage: z.string().nullish(),
+    useCount: z.number().nullish(),
+    verified: z.boolean().nullish(),
+    remote: z.boolean().nullish(),
+    isDeployed: z.boolean().nullish(),
+    createdAt: z.string().nullish(),
+    repositoryUrl: z.string().nullish(),
   })
   .passthrough();
 

@@ -87,23 +87,26 @@ function pickPypi(packages: z.infer<typeof PackageSchema>[] | undefined): string
   return hit ? normalizePackageName(hit.identifier, "pypi") : null;
 }
 
-function resolveRepoUrl(server: z.infer<typeof ServerInnerSchema>): string | null {
+function resolveRepo(server: z.infer<typeof ServerInnerSchema>): { url: string | null; explicitGithub: boolean } {
   const fromRepo = parseGithubRepo(server.repository?.url);
   if (fromRepo) {
-    return githubRepoUrl(fromRepo);
+    return { url: githubRepoUrl(fromRepo), explicitGithub: true };
   }
   const fromWebsite = parseGithubRepo(server.websiteUrl);
   if (fromWebsite) {
-    return githubRepoUrl(fromWebsite);
+    return { url: githubRepoUrl(fromWebsite), explicitGithub: true };
   }
   const fromName = githubRepoFromMcpName(server.name);
   if (fromName) {
-    return githubRepoUrl(fromName);
+    return { url: githubRepoUrl(fromName), explicitGithub: false };
   }
-  return server.repository?.url ?? null;
+  return { url: server.repository?.url ?? null, explicitGithub: false };
 }
 
-export function normalizeMcpServer(snapshotDate: string, item: unknown): SourceRow | null {
+export function normalizeMcpServer(
+  snapshotDate: string,
+  item: unknown,
+): { row: SourceRow; explicitGithub: boolean } | null {
   const parsed = ServerResponseSchema.safeParse(item);
   if (!parsed.success) {
     return null;
@@ -112,28 +115,32 @@ export function normalizeMcpServer(snapshotDate: string, item: unknown): SourceR
   const meta = parsed.data._meta?.["io.modelcontextprotocol.registry/official"];
   const npmPackage = pickNpm(server.packages);
   const pypiPackage = pickPypi(server.packages);
-  const repoUrl = resolveRepoUrl(server);
-  return emptySourceRow({
-    snapshot_date: snapshotDate,
-    source: "mcp-registry",
-    source_id: server.name,
-    name: server.name,
-    display_name: server.title ?? null,
-    description: server.description ?? null,
-    homepage: server.websiteUrl ?? null,
-    repo_url: repoUrl,
-    npm_package: npmPackage,
-    pypi_package: pypiPackage,
-    version: server.version ?? null,
-    status: meta?.status ?? null,
-    app_id: appIdFromIdentity({
-      repoUrl,
-      npmPackage,
-      pypiPackage,
+  const repo = resolveRepo(server);
+  const repoUrl = repo.url;
+  return {
+    explicitGithub: repo.explicitGithub,
+    row: emptySourceRow({
+      snapshot_date: snapshotDate,
       source: "mcp-registry",
-      sourceId: server.name,
+      source_id: server.name,
+      name: server.name,
+      display_name: server.title ?? null,
+      description: server.description ?? null,
+      homepage: server.websiteUrl ?? null,
+      repo_url: repoUrl,
+      npm_package: npmPackage,
+      pypi_package: pypiPackage,
+      version: server.version ?? null,
+      status: meta?.status ?? null,
+      app_id: appIdFromIdentity({
+        repoUrl,
+        npmPackage,
+        pypiPackage,
+        source: "mcp-registry",
+        sourceId: server.name,
+      }),
     }),
-  });
+  };
 }
 
 export const mcpRegistryAdapter: SourceAdapter = {
@@ -166,23 +173,23 @@ export const mcpRegistryAdapter: SourceAdapter = {
     const records: SourceRow[] = [];
     let invalid = 0;
     for (const item of servers) {
-      const row = normalizeMcpServer(ctx.snapshotDate, item);
-      if (!row) {
+      const normalized = normalizeMcpServer(ctx.snapshotDate, item);
+      if (!normalized) {
         invalid += 1;
         continue;
       }
-      records.push(row);
-      if (row.repo_url) {
-        const ref = parseGithubRepo(row.repo_url);
+      records.push(normalized.row);
+      if (normalized.explicitGithub && normalized.row.repo_url) {
+        const ref = parseGithubRepo(normalized.row.repo_url);
         if (ref) {
           ctx.discovered.githubRepos.set(`${ref.owner}/${ref.repo}`, ref);
         }
       }
-      if (row.npm_package) {
-        ctx.discovered.npmPackages.add(row.npm_package);
+      if (normalized.row.npm_package) {
+        ctx.discovered.npmPackages.add(normalized.row.npm_package);
       }
-      if (row.pypi_package) {
-        ctx.discovered.pypiPackages.add(row.pypi_package);
+      if (normalized.row.pypi_package) {
+        ctx.discovered.pypiPackages.add(normalized.row.pypi_package);
       }
     }
 

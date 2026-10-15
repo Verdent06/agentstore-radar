@@ -114,7 +114,8 @@ export const githubAdapter: SourceAdapter = {
 
     const repositories: unknown[] = [];
     const batches = chunk(repos, GITHUB_GRAPHQL_BATCH);
-    for (const batch of batches) {
+    ctx.log.info("github fetching repositories", { requested: repos.length, batches: batches.length });
+    for (const [index, batch] of batches.entries()) {
       const body = JSON.stringify({ query: buildQuery(batch) });
       const payload = GraphqlResponseSchema.parse(
         await ctx.http.fetchJson<unknown>(GITHUB_GRAPHQL_URL, {
@@ -129,8 +130,9 @@ export const githubAdapter: SourceAdapter = {
       if (payload.errors?.length && !payload.data) {
         throw new Error(`GitHub GraphQL errors: ${payload.errors.map((err) => err.message).join("; ")}`);
       }
-      if (payload.errors?.length) {
+      if (payload.errors?.length && (index + 1) % 20 === 0) {
         ctx.log.warn("github GraphQL partial errors", {
+          batch: index + 1,
           count: payload.errors.length,
           sample: payload.errors[0]?.message,
         });
@@ -141,6 +143,9 @@ export const githubAdapter: SourceAdapter = {
             repositories.push(node);
           }
         }
+      }
+      if ((index + 1) % 20 === 0 || index + 1 === batches.length) {
+        ctx.log.info("github GraphQL progress", { batch: index + 1, batches: batches.length, resolved: repositories.length });
       }
     }
 
