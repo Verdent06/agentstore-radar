@@ -1,0 +1,40 @@
+{
+  "name": "agentstore-radar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open, cross-store analytics and permanent history for AI app/agent stores.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "agentstore-radar": "./dist/cli.js"
+  },
+  "scripts": {
+    "collect": "tsx src/cli.ts collect",
+    "report": "tsx src/cli.ts report",
+    "health": "tsx src/cli.ts health",
+    "lint": "eslint src test",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Verdent06/agentstore-radar.git"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.36.0",
+    "@types/node": "^22.18.6",
+    "eslint": "^9.36.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.44.0",
+    "vitest": "^3.2.4"
+  }
+}

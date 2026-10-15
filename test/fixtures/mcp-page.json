@@ -1,0 +1,53 @@
+{
+  "servers": [
+    {
+      "server": {
+        "name": "io.github.example/weather",
+        "description": "Weather forecasts",
+        "title": "Weather",
+        "version": "1.2.3",
+        "websiteUrl": "https://example.com/weather",
+        "repository": {
+          "url": "https://github.com/example/weather.git",
+          "source": "github"
+        },
+        "packages": [
+          {
+            "registryType": "npm",
+            "identifier": "@example/weather-mcp",
+            "transport": { "type": "stdio" }
+          }
+        ]
+      },
+      "_meta": {
+        "io.modelcontextprotocol.registry/official": {
+          "status": "active",
+          "isLatest": true
+        }
+      }
+    },
+    {
+      "server": {
+        "name": "com.example/files",
+        "description": "Files",
+        "version": "0.1.0",
+        "packages": [
+          {
+            "registryType": "pypi",
+            "identifier": "example-files-mcp",
+            "transport": { "type": "stdio" }
+          }
+        ]
+      },
+      "_meta": {
+        "io.modelcontextprotocol.registry/official": {
+          "status": "active"
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "nextCursor": "page-2",
+    "count": 2
+  }
+}
