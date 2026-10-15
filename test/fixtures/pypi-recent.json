@@ -1,0 +1,9 @@
+{
+  "data": {
+    "last_day": 10,
+    "last_week": 80,
+    "last_month": 300
+  },
+  "package": "example-files-mcp",
+  "type": "recent_downloads"
+}
