@@ -1,0 +1,8 @@
+{
+  "@example/weather-mcp": {
+    "downloads": 1234,
+    "start": "2026-10-08",
+    "end": "2026-10-14",
+    "package": "@example/weather-mcp"
+  }
+}

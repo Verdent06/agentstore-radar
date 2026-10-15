@@ -1,0 +1,13 @@
+{
+  "data": {
+    "r0": {
+      "nameWithOwner": "example/weather",
+      "url": "https://github.com/example/weather",
+      "stargazerCount": 42,
+      "forkCount": 7,
+      "pushedAt": "2026-10-14T12:00:00Z",
+      "isArchived": false,
+      "issues": { "totalCount": 3 }
+    }
+  }
+}

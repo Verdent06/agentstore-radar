@@ -1,0 +1,21 @@
+{
+  "servers": [
+    {
+      "id": "50f26566-7dfe-4842-a5b8-1a9407fb91f4",
+      "qualifiedName": "brave",
+      "namespace": "brave",
+      "slug": "",
+      "displayName": "Brave Search",
+      "description": "Search the web with Brave.",
+      "verified": true,
+      "useCount": 87579,
+      "homepage": "https://github.com/brave/brave-search-mcp"
+    }
+  ],
+  "pagination": {
+    "currentPage": 1,
+    "pageSize": 100,
+    "totalPages": 1,
+    "totalCount": 1
+  }
+}
