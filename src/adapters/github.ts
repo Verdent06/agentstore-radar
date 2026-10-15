@@ -156,6 +156,18 @@ export const githubAdapter: SourceAdapter = {
         }
       }
     } catch (error) {
+      if (error instanceof HttpError && error.status === 401 && repositories.length === 0) {
+        ctx.log.warn("github skipped: GITHUB_TOKEN was rejected");
+        return {
+          source: "github",
+          collectedAt: ctx.collectedAt,
+          rowCount: 0,
+          skipped: true,
+          skipReason: "GITHUB_TOKEN rejected (HTTP 401)",
+          raw: { skipped: true, requested: repos.length },
+          records: [],
+        };
+      }
       if (error instanceof HttpError && (error.status === 403 || error.status === 429) && repositories.length > 0) {
         truncated = true;
         ctx.log.warn("github stopped early after rate limit; keeping partial snapshot", {

@@ -57,6 +57,25 @@ describe("collect", () => {
     expect(readManifest("2026-10-15", dataDir).appCount).toBe(apps.length);
   });
 
+  it("skips GitHub when the token is rejected", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-"));
+    const fetchImpl = fixtureFetch([
+      { match: /registry.modelcontextprotocol.io/, body: loadFixture("mcp-page-2.json") },
+      { match: "api.smithery.ai/servers", body: loadFixture("smithery-page.json") },
+      { match: "geminicli.com/extensions.json", body: [] },
+      { match: "api.github.com/graphql", body: { message: "Bad credentials" }, status: 401 },
+    ]);
+    const manifest = await collect({
+      date: "2026-10-15",
+      dataDir,
+      now: new Date("2026-10-15T12:00:00Z"),
+      env: { GITHUB_TOKEN: "bad-token" },
+      http: createHttpClient({ fetchImpl, maxRetries: 0 }),
+      log: silent,
+    });
+    expect(manifest.sources.find((source) => source.source === "github")?.skipped).toBe(true);
+  });
+
   it("skips GitHub when no token is present", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-"));
     const fetchImpl = fixtureFetch([
