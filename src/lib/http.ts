@@ -1,16 +1,30 @@
-import { HOST_MIN_INTERVAL_MS, USER_AGENT } from "./config.ts";
+import { HOST_MIN_INTERVAL_MS, MAX_RATE_LIMIT_WAIT_MS, USER_AGENT } from "./config.ts";
+import { sleep } from "./util.ts";
 
 export class HttpError extends Error {
   readonly status: number;
   readonly url: string;
   readonly body: string;
+  readonly retryAfterMs?: number;
+  readonly remaining?: number;
+  readonly resetAt?: number;
+  readonly cloudflare?: boolean;
 
-  constructor(url: string, status: number, body: string) {
+  constructor(
+    url: string,
+    status: number,
+    body: string,
+    extra?: { retryAfterMs?: number; remaining?: number; resetAt?: number; cloudflare?: boolean },
+  ) {
     super(`HTTP ${status} for ${url}`);
     this.name = "HttpError";
     this.url = url;
     this.status = status;
     this.body = body;
+    this.retryAfterMs = extra?.retryAfterMs;
+    this.remaining = extra?.remaining;
+    this.resetAt = extra?.resetAt;
+    this.cloudflare = extra?.cloudflare;
   }
 }
 
@@ -28,15 +42,89 @@ export interface HttpClient {
 
 const RETRYABLE = new Set([429, 502, 503, 504]);
 
-function isRateLimited(status: number, body: string): boolean {
+export function parseRetryAfterMs(value: string | null | undefined, nowMs = Date.now()): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return undefined;
+  }
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    return Math.max(0, Number(trimmed) * 1000);
+  }
+  const parsed = Date.parse(trimmed);
+  if (Number.isNaN(parsed)) {
+    return undefined;
+  }
+  return Math.max(0, parsed - nowMs);
+}
+
+export function parseRateLimitHeaders(headers: Headers): { remaining?: number; resetAt?: number } {
+  const remainingRaw = headers.get("x-ratelimit-remaining");
+  const resetRaw = headers.get("x-ratelimit-reset");
+  const remaining = remainingRaw == null || remainingRaw === "" ? undefined : Number(remainingRaw);
+  const resetSeconds = resetRaw == null || resetRaw === "" ? undefined : Number(resetRaw);
+  return {
+    remaining: remaining != null && Number.isFinite(remaining) ? remaining : undefined,
+    resetAt: resetSeconds != null && Number.isFinite(resetSeconds) ? resetSeconds * 1000 : undefined,
+  };
+}
+
+export function isCloudflareBlock(status: number, body: string, headers?: Headers): boolean {
+  if (status === 1015) {
+    return true;
+  }
+  if (headers?.get("cf-mitigated") === "challenge") {
+    return true;
+  }
+  if (/error code:\s*1015/i.test(body)) {
+    return true;
+  }
+  if (/rate limited by cloudflare/i.test(body)) {
+    return true;
+  }
+  return (status === 403 || status === 429) && /cloudflare/i.test(body) && /1015|rate.?limit/i.test(body);
+}
+
+export function isRateLimited(status: number, body: string, headers?: Headers): boolean {
   if (status === 429) {
+    return true;
+  }
+  if (isCloudflareBlock(status, body, headers)) {
     return true;
   }
   return status === 403 && /rate limit/i.test(body);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+export function retryWaitMs(input: {
+  attempt: number;
+  retryAfterMs?: number;
+  rateLimited: boolean;
+  cloudflare: boolean;
+}): number {
+  if (input.retryAfterMs != null) {
+    return Math.min(input.retryAfterMs, MAX_RATE_LIMIT_WAIT_MS);
+  }
+  if (input.cloudflare) {
+    return Math.min(180_000, 15_000 * 2 ** input.attempt);
+  }
+  if (input.rateLimited) {
+    return Math.min(180_000, 30_000 * 2 ** input.attempt);
+  }
+  return Math.min(16_000, 500 * 2 ** input.attempt);
+}
+
+function retryAfterFromBody(body: string): number | undefined {
+  try {
+    const parsed = JSON.parse(body) as { retry_after?: number };
+    if (typeof parsed.retry_after === "number") {
+      return Math.max(0, parsed.retry_after * 1000);
+    }
+  } catch {
+    // not JSON
+  }
+  return undefined;
 }
 
 export function createHttpClient(options?: {
@@ -60,6 +148,20 @@ export function createHttpClient(options?: {
       await sleep(allowed - now);
     }
     nextAllowed.set(host, Date.now() + interval);
+  }
+
+  function noteRateLimit(url: string, headers: Headers, retryAfterMs?: number): void {
+    const host = new URL(url).host;
+    const { remaining, resetAt } = parseRateLimitHeaders(headers);
+    const current = nextAllowed.get(host) ?? 0;
+    let next = current;
+    if (remaining === 0 && resetAt != null) {
+      next = Math.max(next, resetAt);
+    }
+    if (retryAfterMs != null && retryAfterMs > 0) {
+      next = Math.max(next, Date.now() + retryAfterMs);
+    }
+    nextAllowed.set(host, next);
   }
 
   async function request(url: string, init?: HttpRequestInit): Promise<string> {
@@ -86,30 +188,31 @@ export function createHttpClient(options?: {
           signal: controller.signal,
         });
         const body = await response.text();
+        const rate = parseRateLimitHeaders(response.headers);
+        const retryAfterMs =
+          parseRetryAfterMs(response.headers.get("retry-after")) ?? retryAfterFromBody(body);
+        const cloudflare = isCloudflareBlock(response.status, body, response.headers);
+        noteRateLimit(url, response.headers, retryAfterMs);
         if (response.ok) {
           return body;
         }
-        if ((RETRYABLE.has(response.status) || isRateLimited(response.status, body)) && attempt < maxRetries) {
-          const retryAfterHeader = Number(response.headers.get("retry-after"));
-          let retryAfterBody = Number.NaN;
-          try {
-            const parsed = JSON.parse(body) as { retry_after?: number };
-            if (typeof parsed.retry_after === "number") {
-              retryAfterBody = parsed.retry_after;
-            }
-          } catch {
-            // not JSON
-          }
-          const retryAfter = Number.isFinite(retryAfterHeader) ? retryAfterHeader : retryAfterBody;
-          const waitMs = Number.isFinite(retryAfter)
-            ? retryAfter * 1000
-            : isRateLimited(response.status, body)
-              ? Math.min(180_000, 30_000 * 2 ** attempt)
-              : Math.min(16_000, 500 * 2 ** attempt);
+        const rateLimited = isRateLimited(response.status, body, response.headers);
+        if ((RETRYABLE.has(response.status) || rateLimited || cloudflare) && attempt < maxRetries) {
+          const waitMs = retryWaitMs({
+            attempt,
+            retryAfterMs,
+            rateLimited,
+            cloudflare,
+          });
           await sleep(waitMs);
           continue;
         }
-        throw new HttpError(url, response.status, body.slice(0, 2000));
+        throw new HttpError(url, response.status, body.slice(0, 2000), {
+          retryAfterMs,
+          remaining: rate.remaining,
+          resetAt: rate.resetAt,
+          cloudflare,
+        });
       } catch (error) {
         lastError = error;
         if (error instanceof HttpError) {

@@ -1,4 +1,5 @@
-import { HEALTH_DROP_THRESHOLD, REPO_URL } from "../lib/config.ts";
+import { HEALTH_DROP_THRESHOLD, LOW_COVERAGE_THRESHOLD, REPO_URL } from "../lib/config.ts";
+import { formatCoveragePct, isLowCoverage } from "../lib/coverage.ts";
 import { utcDateString } from "../lib/dates.ts";
 import { listSnapshotDates, previousSnapshotDate, readManifest, resolveDataDir } from "../lib/io.ts";
 import { createLogger, type Logger } from "../lib/logger.ts";
@@ -13,11 +14,21 @@ export type HealthFinding = {
   dropRatio: number;
 };
 
+export type CoverageFinding = {
+  source: SourceName;
+  currentDate: string;
+  coverage: number;
+  eligibleCount: number;
+  fetchedCount: number;
+  threshold: number;
+};
+
 export type HealthReport = {
   ok: boolean;
   currentDate: string;
   previousDate?: string;
   findings: HealthFinding[];
+  coverageFindings: CoverageFinding[];
 };
 
 export type IssueOpener = (input: {
@@ -69,12 +80,23 @@ export function compareSourceHealth(
 export function evaluateHealth(options: HealthOptions = {}): HealthReport {
   const now = options.now ?? new Date();
   const dataDir = resolveDataDir(options.dataDir);
-  const currentDate = options.date ?? listSnapshotDates(dataDir).at(-1) ?? utcDateString(now);
-  const previousDate = previousSnapshotDate(currentDate, dataDir);
-  if (!previousDate) {
-    return { ok: true, currentDate, findings: [] };
+  const dates = listSnapshotDates(dataDir);
+  const currentDate = options.date ?? dates.at(-1);
+  if (!currentDate) {
+    return { ok: true, currentDate: utcDateString(now), findings: [], coverageFindings: [] };
   }
+  const previousDate = previousSnapshotDate(currentDate, dataDir);
   const current = readManifest(currentDate, dataDir);
+  const coverageThreshold = LOW_COVERAGE_THRESHOLD;
+  const coverageFindings = collectCoverageFindings(current.sources, currentDate, coverageThreshold);
+  if (!previousDate) {
+    return {
+      ok: coverageFindings.length === 0,
+      currentDate,
+      findings: [],
+      coverageFindings,
+    };
+  }
   const previous = readManifest(previousDate, dataDir);
   const previousSources = sourceMap(previous.sources);
   const threshold = options.threshold ?? HEALTH_DROP_THRESHOLD;
@@ -90,11 +112,38 @@ export function evaluateHealth(options: HealthOptions = {}): HealthReport {
     }
   }
   return {
-    ok: findings.length === 0,
+    ok: findings.length === 0 && coverageFindings.length === 0,
     currentDate,
     previousDate,
     findings,
+    coverageFindings,
   };
+}
+
+export function collectCoverageFindings(
+  sources: SourceManifest[],
+  currentDate: string,
+  threshold = LOW_COVERAGE_THRESHOLD,
+): CoverageFinding[] {
+  const findings: CoverageFinding[] = [];
+  for (const source of sources) {
+    if (source.skipped) {
+      continue;
+    }
+    const eligible = source.eligibleCount ?? 0;
+    if (!isLowCoverage(source.coverage, eligible, threshold)) {
+      continue;
+    }
+    findings.push({
+      source: source.source,
+      currentDate,
+      coverage: source.coverage ?? 0,
+      eligibleCount: eligible,
+      fetchedCount: source.fetchedCount ?? 0,
+      threshold,
+    });
+  }
+  return findings;
 }
 
 export function resolveHealthIssueRepo(env: NodeJS.ProcessEnv = process.env): string | undefined {
@@ -161,6 +210,7 @@ export async function runHealth(options: HealthOptions = {}): Promise<HealthRepo
     log.info("health check passed", { date: report.currentDate, previousDate: report.previousDate });
     return report;
   }
+  const opener = options.openIssue ?? (await githubIssueOpener());
   for (const finding of report.findings) {
     const pct = Math.round(finding.dropRatio * 100);
     const title = `[health] ${finding.source} row count dropped >30%`;
@@ -172,7 +222,29 @@ export async function runHealth(options: HealthOptions = {}): Promise<HealthRepo
       `Collector: ${REPO_URL}`,
     ].join("\n");
     log.error(title, { source: finding.source, percent: pct });
-    const opener = options.openIssue ?? (await githubIssueOpener());
+    const issue = await opener({ title, body, labels: ["source-health"] });
+    if (issue.created) {
+      log.info("opened health issue", { url: issue.url });
+    } else {
+      log.warn("did not open health issue", { reason: issue.reason, url: issue.url });
+    }
+  }
+  for (const finding of report.coverageFindings) {
+    const title = `[health] ${finding.source} coverage below ${Math.round(finding.threshold * 100)}%`;
+    const body = [
+      `Source \`${finding.source}\` coverage is ${formatCoveragePct(finding.coverage)}`,
+      `(${finding.fetchedCount}/${finding.eligibleCount} eligible) on ${finding.currentDate}.`,
+      `Target is at least ${Math.round(finding.threshold * 100)}% fresh within the weekly refresh window.`,
+      "",
+      "Details stay in the private data repo. This alert is operational only.",
+      `Collector: ${REPO_URL}`,
+    ].join("\n");
+    log.error(title, {
+      source: finding.source,
+      coverage: formatCoveragePct(finding.coverage),
+      eligible: finding.eligibleCount,
+      fetched: finding.fetchedCount,
+    });
     const issue = await opener({ title, body, labels: ["source-health"] });
     if (issue.created) {
       log.info("opened health issue", { url: issue.url });

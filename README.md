@@ -16,9 +16,9 @@ v1 uses **only sanctioned public APIs**. We do **not** scrape ChatGPT or claude.
 | Official MCP Registry | `GET /v0.1/servers` (cursor + `version=latest`) | catalog, packages, repo |
 | Smithery | `GET /servers` (`useCount`, stable `seed` pagination) | connections |
 | Gemini CLI gallery | `https://geminicli.com/extensions.json` | stars, lastUpdated |
-| GitHub GraphQL | batched `repository` nodes via `GITHUB_TOKEN` | stars, forks, open issues, `pushed_at` |
-| npm | `api.npmjs.org/downloads/point/last-week` | weekly downloads |
-| PyPI | `pypistats.org/api/packages/{pkg}/recent` | weekly / monthly downloads |
+| GitHub GraphQL | batches of 50 `repository` nodes via `GH_STATS_TOKEN` or Actions `GITHUB_TOKEN` | stars, forks, open issues, `pushed_at` |
+| npm | bulk `downloads/point/last-week` (128 unscoped; scoped one-by-one) | weekly downloads |
+| PyPI | `pypistats.org/api/packages/{pkg}/recent` (throttled, rolling) | weekly / monthly downloads |
 
 Research notes, rate-limit behavior, and skipped ideas: [docs/SOURCES.md](docs/SOURCES.md).
 
@@ -39,6 +39,9 @@ data/raw/<source>/<YYYY-MM-DD>.json      # or .json.gz when payload ≥ 256 KiB
 data/normalized/<YYYY-MM-DD>/source_rows.ndjson(.gz)
 data/normalized/<YYYY-MM-DD>/apps.ndjson(.gz)
 data/normalized/<YYYY-MM-DD>/manifest.json
+data/state/<source>/last_fetched.json    # rolling weekly refresh
+data/state/<source>/cache.json           # last-known enrichment payload
+data/state/<source>/checkpoint.json      # resume mid-run after rate limits
 ```
 
 Point `report`, `health`, and a future site at that tree with `DATA_DIR` or `--data`:
@@ -84,19 +87,34 @@ npx tsx src/cli.ts report --data "$DATA_DIR" --limit 15
 Optional env:
 
 - `DATA_DIR` — snapshot root (see above)
-- `GITHUB_TOKEN` / `GH_TOKEN` — GitHub GraphQL (Actions provides this automatically)
+- `GH_STATS_TOKEN` — optional PAT used first for GraphQL repo stats (higher budget than the default Actions token)
+- `GITHUB_TOKEN` / `GH_TOKEN` — GitHub GraphQL fallback (Actions provides `GITHUB_TOKEN` automatically)
 - `SMITHERY_API_KEY` — only if Smithery starts requiring auth for public list
 - `HEALTH_ISSUE_REPO` — `owner/name` for health issues (defaults to unset; we do not open issues on the public repo)
 - `HEALTH_ISSUE_TOKEN` — optional token that can write issues on the data repo
 
 ## Automation
 
-- [`.github/workflows/collect.yml`](.github/workflows/collect.yml) — daily cron (`17 6 * * *`) plus `workflow_dispatch`. Checks out the private data repo over SSH (`DATA_REPO_DEPLOY_KEY`), **once** copies `data/` from this repo’s git history if the data repo has no snapshots yet (writes `data/.migrated-from-public`), then collects into `DATA_DIR` and pushes **only** to the data repo. After that first success it never reads public history again. `seed_only` skips collect and just does that one-time copy.
+- [`.github/workflows/collect.yml`](.github/workflows/collect.yml) — daily cron (`17 6 * * *`) plus `workflow_dispatch`. `timeout-minutes: 360` so GitHub/npm/PyPI can wait through rate-limit resets. Checks out the private data repo over SSH (`DATA_REPO_DEPLOY_KEY`), **once** copies `data/` from this repo’s git history if the data repo has no snapshots yet (writes `data/.migrated-from-public`), then collects into `DATA_DIR` and pushes **only** to the data repo. After that first success it never reads public history again. `seed_only` skips collect and just does that one-time copy.
 - [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — lint, typecheck, tests (recorded fixtures, no live network).
 
 ### Health check
 
-If a source's row count drops **more than 30%** versus the previous snapshot, `npm run health` exits non-zero. Issues are opened on `HEALTH_ISSUE_REPO` (the private data repo) when a token can write there. The public repo is never used as a fallback, and alerts do not attach snapshot files.
+`npm run health` exits non-zero when:
+
+- a source's row count drops **more than 30%** versus the previous snapshot, or
+- a non-skipped source's **coverage** is below **70%** (`fetched / eligible`, where fetched means refreshed within 7 days)
+
+Each source's `eligibleCount`, `fetchedCount`, and `coverage` are stored on that day's `manifest.json`. Catalog sources are typically 100%. GitHub / npm / PyPI use rolling weekly refresh: yesterday's last-known stats are carried forward, and only stale or new keys are fetched. Issues are opened on `HEALTH_ISSUE_REPO` (the private data repo) when a token can write there. The public repo is never used as a fallback, and alerts do not attach snapshot files.
+
+**Coverage expectations**
+
+| Source | Eligible set | One-run target | Fallback |
+| --- | --- | --- | --- |
+| GitHub | every discovered repo with a GitHub URL | all due repos via 50-wide GraphQL (Actions token ~5k points/hour; a 6h run can cover tens of thousands if it waits for resets) | rolling: skip keys fresher than 7 days so every repo refreshes at least weekly |
+| npm | every discovered npm package | unscoped in batches of 128; scoped one-by-one | same weekly rolling + resume after Cloudflare 1015 / 429 |
+| PyPI | every discovered PyPI package | throttled `pypistats` recent | weekly rolling + resume after 429 |
+| MCP / Smithery / Gemini | catalog page rows | full catalog in the run | n/a (no rolling) |
 
 ## Development
 

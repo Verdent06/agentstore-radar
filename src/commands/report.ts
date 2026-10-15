@@ -1,5 +1,6 @@
-import { listSnapshotDates, previousSnapshotDate, readApps, resolveDataDir } from "../lib/io.ts";
-import type { AppRow } from "../lib/schema.ts";
+import { formatCoveragePct } from "../lib/coverage.ts";
+import { listSnapshotDates, previousSnapshotDate, readApps, readManifest, resolveDataDir } from "../lib/io.ts";
+import type { AppRow, SnapshotManifest } from "../lib/schema.ts";
 
 export type Mover = {
   app_id: string;
@@ -15,6 +16,7 @@ export type ReportResult = {
   to?: string;
   movers: Mover[];
   leaders: Array<{ metric: string; rows: AppRow[] }>;
+  coverage?: Array<{ source: string; coverage?: number; eligibleCount?: number; fetchedCount?: number; skipped: boolean }>;
 };
 
 const METRICS = [
@@ -86,8 +88,9 @@ export function buildReport(options?: { date?: string; dataDir?: string; limit?:
   const previousDate = previousSnapshotDate(currentDate, dataDir);
   const current = readApps(currentDate, dataDir);
   const leaders = computeLeaders(current, options?.limit ?? 10);
+  const coverage = coverageFromManifest(readManifest(currentDate, dataDir));
   if (!previousDate) {
-    return { to: currentDate, movers: [], leaders };
+    return { to: currentDate, movers: [], leaders, coverage };
   }
   const previous = readApps(previousDate, dataDir);
   return {
@@ -95,7 +98,18 @@ export function buildReport(options?: { date?: string; dataDir?: string; limit?:
     to: currentDate,
     movers: computeMovers(previous, current, options?.limit ?? 10),
     leaders,
+    coverage,
   };
+}
+
+export function coverageFromManifest(manifest: SnapshotManifest): ReportResult["coverage"] {
+  return manifest.sources.map((source) => ({
+    source: source.source,
+    coverage: source.coverage,
+    eligibleCount: source.eligibleCount,
+    fetchedCount: source.fetchedCount,
+    skipped: source.skipped,
+  }));
 }
 
 function formatNumber(value: number): string {
@@ -134,6 +148,16 @@ export function formatReport(report: ReportResult): string {
         lines.push("");
       }
     }
+  }
+  if (report.coverage && report.coverage.length > 0) {
+    lines.push("Source coverage");
+    for (const source of report.coverage) {
+      const ratio =
+        source.eligibleCount != null ? `  ${source.fetchedCount ?? 0}/${source.eligibleCount} eligible` : "";
+      const skipped = source.skipped ? "  (skipped)" : "";
+      lines.push(`  ${source.source.padEnd(16)} ${formatCoveragePct(source.coverage)}${ratio}${skipped}`);
+    }
+    lines.push("");
   }
   lines.push(`Current leaders (${report.to})`);
   for (const group of report.leaders) {

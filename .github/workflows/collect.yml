@@ -25,7 +25,7 @@ env:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 360
     steps:
       - name: Checkout public collector
         uses: actions/checkout@v4
@@ -57,6 +57,7 @@ jobs:
         env:
           DATA_DIR: ${{ env.DATA_DIR }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_STATS_TOKEN: ${{ secrets.GH_STATS_TOKEN }}
           SMITHERY_API_KEY: ${{ secrets.SMITHERY_API_KEY }}
         run: npm run collect -- --data "$DATA_DIR"
 
