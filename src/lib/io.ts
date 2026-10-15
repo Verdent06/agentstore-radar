@@ -100,17 +100,43 @@ export async function readJsonSnapshot<T>(source: SourceName, date: string, root
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
 
-export function writeNdjson(path: string, rows: unknown[]): void {
+function ndjsonPath(path: string): string | undefined {
+  if (existsSync(path)) {
+    return path;
+  }
+  if (existsSync(`${path}.gz`)) {
+    return `${path}.gz`;
+  }
+  return undefined;
+}
+
+export function writeNdjson(path: string, rows: unknown[]): string {
   ensureDir(dirname(path));
   const body = rows.map((row) => JSON.stringify(row)).join("\n");
-  writeFileSync(path, body === "" ? "" : `${body}\n`);
+  const text = body === "" ? "" : `${body}\n`;
+  const gzip = Buffer.byteLength(text) >= RAW_GZIP_THRESHOLD_BYTES;
+  const dest = gzip ? `${path}.gz` : path;
+  const other = gzip ? path : `${path}.gz`;
+  if (existsSync(other)) {
+    unlinkSync(other);
+  }
+  if (gzip) {
+    writeFileSync(dest, gzipSync(text, { level: 9 }));
+  } else {
+    writeFileSync(dest, text);
+  }
+  return dest;
 }
 
 export function readNdjson<T>(path: string, parse: (value: unknown) => T): T[] {
-  if (!existsSync(path) || statSync(path).size === 0) {
+  const actual = ndjsonPath(path);
+  if (!actual || statSync(actual).size === 0) {
     return [];
   }
-  return readFileSync(path, "utf8")
+  const text = actual.endsWith(".gz")
+    ? gunzipSync(readFileSync(actual)).toString("utf8")
+    : readFileSync(actual, "utf8");
+  return text
     .split("\n")
     .filter((line) => line.trim().length > 0)
     .map((line) => parse(JSON.parse(line)));

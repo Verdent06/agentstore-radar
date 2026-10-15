@@ -36,8 +36,8 @@ Never overwrite a past day's snapshot. Same-day re-runs may refresh today's file
 
 ```
 data/raw/<source>/<YYYY-MM-DD>.json      # or .json.gz when payload ≥ 256 KiB
-data/normalized/<YYYY-MM-DD>/source_rows.ndjson
-data/normalized/<YYYY-MM-DD>/apps.ndjson
+data/normalized/<YYYY-MM-DD>/source_rows.ndjson(.gz)
+data/normalized/<YYYY-MM-DD>/apps.ndjson(.gz)
 data/normalized/<YYYY-MM-DD>/manifest.json
 ```
 
