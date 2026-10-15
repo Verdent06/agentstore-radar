@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { GITHUB_GRAPHQL_BATCH, GITHUB_GRAPHQL_URL } from "../lib/config.ts";
+import { HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, type GithubRepoRef } from "../lib/matching.ts";
 import { emptySourceRow, type SourceRow } from "../lib/schema.ts";
 import type { CollectContext, SourceAdapter, SourceResult } from "./types.ts";
@@ -27,6 +28,7 @@ export type GithubRawSnapshot = {
   endpoint: string;
   fetchedAt: string;
   requested: number;
+  truncated?: boolean;
   repositories: unknown[];
 };
 
@@ -115,37 +117,53 @@ export const githubAdapter: SourceAdapter = {
     const repositories: unknown[] = [];
     const batches = chunk(repos, GITHUB_GRAPHQL_BATCH);
     ctx.log.info("github fetching repositories", { requested: repos.length, batches: batches.length });
-    for (const [index, batch] of batches.entries()) {
-      const body = JSON.stringify({ query: buildQuery(batch) });
-      const payload = GraphqlResponseSchema.parse(
-        await ctx.http.fetchJson<unknown>(GITHUB_GRAPHQL_URL, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${token}`,
-            "content-type": "application/json",
-          },
-          body,
-        }),
-      );
-      if (payload.errors?.length && !payload.data) {
-        throw new Error(`GitHub GraphQL errors: ${payload.errors.map((err) => err.message).join("; ")}`);
-      }
-      if (payload.errors?.length && (index + 1) % 20 === 0) {
-        ctx.log.warn("github GraphQL partial errors", {
-          batch: index + 1,
-          count: payload.errors.length,
-          sample: payload.errors[0]?.message,
-        });
-      }
-      if (payload.data) {
-        for (const node of Object.values(payload.data)) {
-          if (node) {
-            repositories.push(node);
+    let truncated = false;
+    try {
+      for (const [index, batch] of batches.entries()) {
+        const body = JSON.stringify({ query: buildQuery(batch) });
+        const payload = GraphqlResponseSchema.parse(
+          await ctx.http.fetchJson<unknown>(GITHUB_GRAPHQL_URL, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${token}`,
+              "content-type": "application/json",
+            },
+            body,
+          }),
+        );
+        if (payload.errors?.length && !payload.data) {
+          throw new Error(`GitHub GraphQL errors: ${payload.errors.map((err) => err.message).join("; ")}`);
+        }
+        if (payload.errors?.length && (index + 1) % 20 === 0) {
+          ctx.log.warn("github GraphQL partial errors", {
+            batch: index + 1,
+            count: payload.errors.length,
+            sample: payload.errors[0]?.message,
+          });
+        }
+        if (payload.data) {
+          for (const node of Object.values(payload.data)) {
+            if (node) {
+              repositories.push(node);
+            }
           }
         }
+        if ((index + 1) % 20 === 0 || index + 1 === batches.length) {
+          ctx.log.info("github GraphQL progress", { batch: index + 1, batches: batches.length, resolved: repositories.length });
+        }
+        if ((index + 1) % 50 === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+        }
       }
-      if ((index + 1) % 20 === 0 || index + 1 === batches.length) {
-        ctx.log.info("github GraphQL progress", { batch: index + 1, batches: batches.length, resolved: repositories.length });
+    } catch (error) {
+      if (error instanceof HttpError && (error.status === 403 || error.status === 429) && repositories.length > 0) {
+        truncated = true;
+        ctx.log.warn("github stopped early after rate limit; keeping partial snapshot", {
+          resolved: repositories.length,
+          requested: repos.length,
+        });
+      } else {
+        throw error;
       }
     }
 
@@ -157,11 +175,12 @@ export const githubAdapter: SourceAdapter = {
       }
     }
 
-    ctx.log.info("github collected", { requested: repos.length, rows: records.length });
+    ctx.log.info("github collected", { requested: repos.length, rows: records.length, truncated });
     const raw: GithubRawSnapshot = {
       endpoint: GITHUB_GRAPHQL_URL,
       fetchedAt: ctx.collectedAt,
       requested: repos.length,
+      truncated,
       repositories,
     };
     return {

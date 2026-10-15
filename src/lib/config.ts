@@ -7,7 +7,7 @@ export const HEALTH_DROP_THRESHOLD = 0.3;
 export const HOST_MIN_INTERVAL_MS: Record<string, number> = {
   "registry.modelcontextprotocol.io": 150,
   "api.smithery.ai": 150,
-  "api.github.com": 80,
+  "api.github.com": 250,
   "api.npmjs.org": 150,
   "pypistats.org": 400,
   "geminicli.com": 200,

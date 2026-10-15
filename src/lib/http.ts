@@ -28,6 +28,13 @@ export interface HttpClient {
 
 const RETRYABLE = new Set([429, 502, 503, 504]);
 
+function isRateLimited(status: number, body: string): boolean {
+  if (status === 429) {
+    return true;
+  }
+  return status === 403 && /rate limit/i.test(body);
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -82,11 +89,13 @@ export function createHttpClient(options?: {
         if (response.ok) {
           return body;
         }
-        if (RETRYABLE.has(response.status) && attempt < maxRetries) {
+        if ((RETRYABLE.has(response.status) || isRateLimited(response.status, body)) && attempt < maxRetries) {
           const retryAfter = Number(response.headers.get("retry-after"));
           const waitMs = Number.isFinite(retryAfter)
             ? retryAfter * 1000
-            : Math.min(16_000, 500 * 2 ** attempt);
+            : isRateLimited(response.status, body)
+              ? Math.min(180_000, 30_000 * 2 ** attempt)
+              : Math.min(16_000, 500 * 2 ** attempt);
           await sleep(waitMs);
           continue;
         }
