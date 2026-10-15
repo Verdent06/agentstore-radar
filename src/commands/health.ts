@@ -1,6 +1,6 @@
 import { HEALTH_DROP_THRESHOLD, REPO_URL } from "../lib/config.ts";
 import { utcDateString } from "../lib/dates.ts";
-import { listSnapshotDates, previousSnapshotDate, readManifest } from "../lib/io.ts";
+import { listSnapshotDates, previousSnapshotDate, readManifest, resolveDataDir } from "../lib/io.ts";
 import { createLogger, type Logger } from "../lib/logger.ts";
 import type { SourceManifest, SourceName } from "../lib/schema.ts";
 
@@ -68,7 +68,7 @@ export function compareSourceHealth(
 
 export function evaluateHealth(options: HealthOptions = {}): HealthReport {
   const now = options.now ?? new Date();
-  const dataDir = options.dataDir ?? "data";
+  const dataDir = resolveDataDir(options.dataDir);
   const currentDate = options.date ?? listSnapshotDates(dataDir).at(-1) ?? utcDateString(now);
   const previousDate = previousSnapshotDate(currentDate, dataDir);
   if (!previousDate) {
@@ -97,12 +97,20 @@ export function evaluateHealth(options: HealthOptions = {}): HealthReport {
   };
 }
 
+export function resolveHealthIssueRepo(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const repo = env.HEALTH_ISSUE_REPO?.trim();
+  return repo && repo.length > 0 ? repo : undefined;
+}
+
 export async function githubIssueOpener(env: NodeJS.ProcessEnv = process.env): Promise<IssueOpener> {
-  const token = env.GITHUB_TOKEN ?? env.GH_TOKEN;
-  const repo = env.GITHUB_REPOSITORY;
+  const token = env.HEALTH_ISSUE_TOKEN ?? env.GITHUB_TOKEN ?? env.GH_TOKEN;
+  const repo = resolveHealthIssueRepo(env);
   return async ({ title, body, labels }) => {
-    if (!token || !repo) {
-      return { created: false, reason: "GITHUB_TOKEN or GITHUB_REPOSITORY missing" };
+    if (!repo) {
+      return { created: false, reason: "HEALTH_ISSUE_REPO unset; not opening issues on the public repo" };
+    }
+    if (!token) {
+      return { created: false, reason: "no token available to open a health issue" };
     }
     const query = new URL("https://api.github.com/search/issues");
     query.searchParams.set("q", `repo:${repo} is:issue is:open label:${labels[0] ?? "source-health"} in:title ${title}`);
@@ -157,16 +165,13 @@ export async function runHealth(options: HealthOptions = {}): Promise<HealthRepo
     const pct = Math.round(finding.dropRatio * 100);
     const title = `[health] ${finding.source} row count dropped >30%`;
     const body = [
-      `Source \`${finding.source}\` row count dropped ${pct}% (${finding.previousCount} → ${finding.currentCount})`,
-      `for ${finding.currentDate} vs ${finding.previousDate}.`,
+      `Source \`${finding.source}\` row count dropped more than 30%`,
+      `for ${finding.currentDate} vs ${finding.previousDate} (${pct}% drop).`,
       "",
-      `Threshold: ${Math.round((options.threshold ?? HEALTH_DROP_THRESHOLD) * 100)}%.`,
+      "Details stay in the private data repo. This alert is operational only.",
       `Collector: ${REPO_URL}`,
     ].join("\n");
-    log.error(title, {
-      previous: finding.previousCount,
-      current: finding.currentCount,
-    });
+    log.error(title, { source: finding.source, percent: pct });
     const opener = options.openIssue ?? (await githubIssueOpener());
     const issue = await opener({ title, body, labels: ["source-health"] });
     if (issue.created) {

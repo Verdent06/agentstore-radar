@@ -2,6 +2,7 @@ import { collect } from "./commands/collect.ts";
 import { runHealth } from "./commands/health.ts";
 import { printReport } from "./commands/report.ts";
 import { isValidDateString } from "./lib/dates.ts";
+import { resolveDataDir } from "./lib/io.ts";
 
 function argValue(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -19,9 +20,11 @@ function usage(): string {
   return `agentstore-radar
 
 Usage:
-  npm run collect -- [--date YYYY-MM-DD] [--data data] [--sources a,b] [--max-pages N]
-  npm run report -- [--date YYYY-MM-DD] [--data data] [--limit N]
-  npm run health -- [--date YYYY-MM-DD] [--data data]
+  npm run collect -- [--date YYYY-MM-DD] [--data DIR] [--sources a,b] [--max-pages N]
+  npm run report -- [--date YYYY-MM-DD] [--data DIR] [--limit N]
+  npm run health -- [--date YYYY-MM-DD] [--data DIR]
+
+Data directory: --data, else $DATA_DIR, else ./data (gitignored; history lives in the private data repo).
 
 Commands can also be invoked as: npx tsx src/cli.ts <command>
 `;
@@ -38,7 +41,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     console.error(`Invalid --date ${date}`);
     return 1;
   }
-  const dataDir = argValue(args, "--data") ?? "data";
+  const dataDir = resolveDataDir(argValue(args, "--data"));
   if (command === "collect") {
     const sources = argValue(args, "--sources")?.split(",").filter(Boolean);
     const maxPagesRaw = argValue(args, "--max-pages");
