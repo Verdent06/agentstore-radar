@@ -25,7 +25,11 @@ if already_seeded; then
 fi
 
 cd "$PUBLIC_DIR"
-SHA=$(git rev-list -n 1 --all -- data/normalized 2>/dev/null || true)
+git fetch origin main --no-tags --quiet 2>/dev/null || true
+SHA=$(git rev-list -n 1 origin/main -- data/normalized 2>/dev/null || true)
+if [[ -z "${SHA}" ]]; then
+  SHA=$(git rev-list -n 1 --all -- data/normalized 2>/dev/null || true)
+fi
 if [[ -z "${SHA}" ]]; then
   echo "seed: no public data/normalized history found"
   exit 0
@@ -46,6 +50,7 @@ mkdir -p "$DEST"
 cp -a "$TMP/data/." "$DEST/"
 printf '%s\n' "$SHA" > "$MARKER"
 echo "seed: copied data/ from public commit $SHA into $DEST"
+echo "MIGRATED_SHA=$SHA"
 if [[ -d "$DEST/normalized" ]]; then
   echo "seed: snapshot dates now: $(find "$DEST/normalized" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tr '\n' ' ')"
 fi

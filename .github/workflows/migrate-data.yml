@@ -1,0 +1,70 @@
+name: Seed private data repo
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: seed-private-data
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout public collector (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout private data repo
+        uses: actions/checkout@v4
+        with:
+          repository: Verdent06/agentstore-radar-data
+          ssh-key: ${{ secrets.DATA_REPO_DEPLOY_KEY }}
+          path: .radar-data
+          fetch-depth: 0
+
+      - name: Fetch main so an in-flight public collect is included
+        run: git fetch origin main --no-tags
+
+      - name: One-time seed from public history
+        run: bash scripts/seed-data-repo.sh "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/.radar-data"
+
+      - name: Commit seed to private data repo
+        working-directory: .radar-data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No data-repo changes"
+          else
+            git commit -m "data: seed from public history"
+            git push
+          fi
+
+      - name: Confirm migrated snapshot
+        working-directory: .radar-data
+        run: |
+          echo "MIGRATED_FROM=$(tr -d '\n' < data/.migrated-from-public)"
+          echo "DATES=$(find data/normalized -mindepth 1 -maxdepth 1 -type d -printf '%f ')"
+          echo "RAW_SOURCES=$(find data/raw -mindepth 1 -maxdepth 1 -type d -printf '%f ')"
+          echo "FILES=$(find data -type f | wc -l)"
+          test -f data/normalized/2026-10-15/manifest.json
+          test -f data/.migrated-from-public
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          m = json.loads(Path("data/normalized/2026-10-15/manifest.json").read_text())
+          print("MANIFEST_DATE", m.get("snapshotDate"))
+          print("MANIFEST_APPS", m.get("appCount"))
+          print("MANIFEST_ROWS", m.get("sourceRowCount"))
+          for s in m.get("sources", []):
+              print(f"SOURCE {s['source']} rows={s['rowCount']} skipped={s['skipped']}")
+          PY
