@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #07090c;
+  --bg-elev: #10151c;
+  --bg-row: #0c1016;
+  --line: #1c2530;
+  --text: #e8eef6;
+  --muted: #8b98a8;
+  --accent: #4da3ff;
+  --up: #3ee08f;
+  --down: #ff6b7a;
+  --warn: #f5c14a;
+}
+
+:root.light {
+  --bg: #f3f5f8;
+  --bg-elev: #ffffff;
+  --bg-row: #f7f9fb;
+  --line: #d5dde6;
+  --text: #12171e;
+  --muted: #5c6b7a;
+  --accent: #1769c6;
+  --up: #0d8f52;
+  --down: #c43346;
+  --warn: #9a6b00;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  font-feature-settings: "ss01", "tnum";
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.surface {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+}
+
+.rank-up {
+  color: var(--up);
+}
+
+.rank-down {
+  color: var(--down);
+}
+
+.movers-shot header,
+.movers-shot footer,
+.movers-shot .site-search {
+  display: none;
+}
+
+.movers-shot main {
+  max-width: 1100px;
+  padding-top: 24px;
+}
