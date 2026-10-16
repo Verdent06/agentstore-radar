@@ -16,6 +16,9 @@ export function writeAggregateSqlite(agg: Aggregate, path: string): string | nul
     return null;
   }
   mkdirSync(dirname(path), { recursive: true });
+  if (existsSync(path)) {
+    unlinkSync(path);
+  }
   const db = new DatabaseSync(path);
   try {
     db.exec(`
