@@ -1,3 +1,4 @@
+import { answerShareForApp } from "./answer-share.ts";
 import { jaccardTokens, tokenize } from "./classify.ts";
 import {
   CATEGORY_LABELS,
@@ -13,6 +14,8 @@ import {
   type HistoryPoint,
   type MetricKey,
   type MoverRow,
+  type AnswerSharePublic,
+  type AnswerShareRowPublic,
   type RankedApp,
 } from "./types.ts";
 
@@ -350,6 +353,23 @@ export function appDetail(agg: Aggregate, id: string) {
       stars: rankHistory(agg, app.id, "stars"),
     },
     competitors: competitors(agg, app.id, 6),
+    answerShare: answerShareForApp(agg.answerShare, app.id),
+  };
+}
+
+export function publicAnswerShare(
+  agg: Aggregate,
+  options?: { provider?: string; limit?: number },
+): { available: false } | { available: true; probe: Omit<AnswerSharePublic, "overall" | "byProvider">; rows: AnswerShareRowPublic[] } {
+  const share = agg.answerShare;
+  if (!share) {
+    return { available: false };
+  }
+  const rows = options?.provider ? (share.byProvider[options.provider] ?? []) : share.overall;
+  return {
+    available: true,
+    probe: { probeDate: share.probeDate, promptVersion: share.promptVersion, meanJaccard: share.meanJaccard },
+    rows: rows.slice(0, clampLimit(options?.limit, 25)),
   };
 }
 

@@ -116,5 +116,18 @@ export function createRadarServer(): McpServer {
     async ({ new_arrivals, limit }) => textTool("multi_store", { new_arrivals, limit }),
   );
 
+  server.registerTool(
+    "answer_share",
+    {
+      description:
+        "Latest weekly assistant-recommendation shares (overall or one provider). Empty when no probe snapshot is in the aggregate.",
+      inputSchema: z.object({
+        provider: z.enum(["openai", "anthropic", "gemini", "xai"]).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      }),
+    },
+    async ({ provider, limit }) => textTool("answer_share", { provider, limit }),
+  );
+
   return server;
 }

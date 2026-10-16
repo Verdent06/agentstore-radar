@@ -64,6 +64,41 @@ export default function HomePage() {
         <LeaderTable rows={rows} valueLabel={hasMovers ? "Current" : "Use count"} sparks={sparks} />
       </section>
 
+      {agg.answerShare ? (
+        <section className="mt-10">
+          <div className="mb-3 flex items-end justify-between">
+            <div>
+              <h2 className="text-lg font-semibold">Answer share</h2>
+              <p className="text-sm text-muted">Latest assistant-recommendation probe · {agg.answerShare.probeDate}</p>
+            </div>
+            <Link href="/answer-share" className="text-sm text-accent hover:underline">
+              Full table
+            </Link>
+          </div>
+          <div className="surface overflow-hidden rounded-lg">
+            <table className="w-full text-sm">
+              <tbody>
+                {agg.answerShare.overall.slice(0, 5).map((row, index) => (
+                  <tr key={`${row.appId ?? row.name}-${index}`} className="border-t border-line first:border-0">
+                    <td className="px-3 py-2 font-mono text-xs text-muted">{index + 1}</td>
+                    <td className="px-3 py-2 font-medium">{row.name}</td>
+                    <td className="px-3 py-2 text-right font-mono tabular">{(row.answerShare * 100).toFixed(1)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : (
+        <section className="mt-10">
+          <h2 className="text-lg font-semibold">Answer share</h2>
+          <p className="mt-2 text-sm text-muted">
+            No weekly assistant probe in this aggregate yet. The page stays empty until{" "}
+            <code className="font-mono">normalized/answer-share/&lt;date&gt;/shares.json</code> exists.
+          </p>
+        </section>
+      )}
+
       {arrivals.length > 0 ? (
         <section className="mt-10">
           <div className="mb-3 flex items-end justify-between">

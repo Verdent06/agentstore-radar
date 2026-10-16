@@ -1,3 +1,6 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { AnswerShareSnapshot } from "../answer-share/schema.ts";
 import { writeNormalized } from "../lib/io.ts";
 import { mergeApps } from "../lib/merge.ts";
 import { emptySourceRow, type SnapshotManifest, type SourceName, type SourceRow } from "../lib/schema.ts";
@@ -680,11 +683,67 @@ function manifestFor(date: string, sourceRows: SourceRow[], appCount: number): S
   };
 }
 
+function share(
+  name: string,
+  appId: string | null,
+  provider: "openai" | "anthropic" | "gemini" | "xai" | null,
+  mentionCount: number,
+  eligible: number,
+  totalMentions: number,
+): AnswerShareSnapshot["shares"][number] {
+  return {
+    name,
+    matched_app_id: appId,
+    provider,
+    category: null,
+    mention_count: mentionCount,
+    run_count: mentionCount,
+    eligible_runs: eligible,
+    answer_share: totalMentions === 0 ? 0 : mentionCount / totalMentions,
+    run_share: eligible === 0 ? 0 : mentionCount / eligible,
+  };
+}
+
+export function writeDemoAnswerShare(dataDir: string, probeDate = "2026-10-13"): void {
+  const snapshot: AnswerShareSnapshot = {
+    probeDate,
+    promptVersion: "demo-1",
+    meanJaccard: 0.62,
+    variance: [],
+    shares: [
+      share("Brave Search", "github:brave/brave-search-mcp", null, 18, 48, 60),
+      share("GitHub", "github:example/github-mcp", null, 14, 48, 60),
+      share("Playwright", "github:example/playwright-mcp", null, 9, 48, 60),
+      share("Postgres", "github:example/postgres-mcp", null, 7, 48, 60),
+      share("Notion", "github:example/notion-mcp", null, 5, 48, 60),
+      share("Unknown CLI", null, null, 7, 48, 60),
+      share("Brave Search", "github:brave/brave-search-mcp", "openai", 8, 12, 18),
+      share("GitHub", "github:example/github-mcp", "openai", 5, 12, 18),
+      share("Playwright", "github:example/playwright-mcp", "openai", 3, 12, 18),
+      share("GitHub", "github:example/github-mcp", "anthropic", 6, 12, 16),
+      share("Brave Search", "github:brave/brave-search-mcp", "anthropic", 5, 12, 16),
+      share("Postgres", "github:example/postgres-mcp", "anthropic", 3, 12, 16),
+      share("Brave Search", "github:brave/brave-search-mcp", "gemini", 5, 12, 14),
+      share("Playwright", "github:example/playwright-mcp", "gemini", 4, 12, 14),
+      share("Notion", "github:example/notion-mcp", "gemini", 3, 12, 14),
+      share("Unknown CLI", null, "xai", 4, 12, 12),
+      share("GitHub", "github:example/github-mcp", "xai", 3, 12, 12),
+      share("Postgres", "github:example/postgres-mcp", "xai", 2, 12, 12),
+    ],
+  };
+  const dir = join(dataDir, "normalized", "answer-share", probeDate);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "shares.json"), `${JSON.stringify(snapshot, null, 2)}\n`);
+}
+
 export function writeDemoSnapshots(dataDir: string, dates: readonly string[] = DEMO_DATES): string[] {
   for (const date of dates) {
     const sourceRows = rowsForDate(date);
     const apps = mergeApps(date, sourceRows);
     writeNormalized(date, sourceRows, apps, manifestFor(date, sourceRows, apps.length), dataDir);
+  }
+  if (dates.length >= 2) {
+    writeDemoAnswerShare(dataDir);
   }
   return [...dates];
 }

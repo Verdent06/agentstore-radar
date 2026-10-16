@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { LineChart } from "@/components/sparkline";
 import { Shell } from "@/components/shell";
 import { Delta, StorePills } from "@/components/table";
-import { formatDate, formatNumber } from "@/lib/format";
+import { formatDate, formatNumber, formatPct } from "@/lib/format";
 import { findApp, seriesToPoints } from "@/lib/query";
 import { loadAggregate } from "@/lib/store";
 import { CATEGORY_LABELS } from "@/lib/types";
@@ -130,6 +130,25 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
           </div>
         ) : null}
       </dl>
+
+      {agg.answerShare ? (
+        <section className="mt-8">
+          <h2 className="mb-2 text-lg font-semibold">Answer share</h2>
+          {(() => {
+            const row = agg.answerShare.overall.find((item) => item.appId === app.id);
+            return row ? (
+              <p className="text-sm text-muted">
+                {formatPct(row.answerShare)} of mentions in the {formatDate(agg.answerShare.probeDate)} probe ({row.mentionCount} mentions).{" "}
+                <Link href="/answer-share" className="text-accent hover:underline">
+                  All shares
+                </Link>
+              </p>
+            ) : (
+              <p className="text-sm text-muted">Not mentioned in the latest assistant probe.</p>
+            );
+          })()}
+        </section>
+      ) : null}
 
       {similar.length > 0 ? (
         <section className="mt-8">

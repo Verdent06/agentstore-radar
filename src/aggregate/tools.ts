@@ -9,6 +9,7 @@ import {
   movers,
   multiStoreApps,
   newArrivals,
+  publicAnswerShare,
   rankHistory,
   searchApps,
   topChart,
@@ -24,6 +25,7 @@ export const TOOL_NAMES = [
   "competitors",
   "category_trends",
   "multi_store",
+  "answer_share",
 ] as const;
 
 export type ToolName = (typeof TOOL_NAMES)[number];
@@ -146,6 +148,14 @@ export function runTool(
         apps: slug ? appsInCategory(agg, slug, 15).map((app) => ({ id: app.id, name: app.displayName, useCount: app.useCount, stars: app.stars })) : undefined,
         points: categoryTrends(agg, slug),
       });
+    }
+    case "answer_share": {
+      return jsonResult(
+        publicAnswerShare(agg, {
+          provider: typeof args.provider === "string" ? args.provider : undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        }),
+      );
     }
     case "multi_store": {
       const newest = Boolean(args.new_arrivals);

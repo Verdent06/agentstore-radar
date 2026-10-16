@@ -41,6 +41,8 @@ describe("buildAggregate", () => {
     const parsed = JSON.parse(readFileSync(written.json, "utf8"));
     expect(parsed.apps).toHaveLength(agg.apps.length);
     expect(JSON.stringify(parsed)).not.toMatch(/source_rows/);
+    expect(agg.answerShare?.probeDate).toBe("2026-10-13");
+    expect(agg.answerShare?.overall[0]?.appId).toBe("github:brave/brave-search-mcp");
   });
 
   it("does not treat a single snapshot as having movers windows", () => {
@@ -49,5 +51,6 @@ describe("buildAggregate", () => {
     const agg = buildAggregate(dataDir, "fixture");
     expect(agg.meta.previousDate).toBeNull();
     expect(agg.stats.snapshotCount).toBe(1);
+    expect(agg.answerShare).toBeNull();
   });
 });

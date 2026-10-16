@@ -152,11 +152,28 @@ export type AggregateMeta = {
   coverage: CoverageRow[];
 };
 
+export type AnswerShareRowPublic = {
+  name: string;
+  appId: string | null;
+  mentionCount: number;
+  answerShare: number;
+  runShare: number;
+};
+
+export type AnswerSharePublic = {
+  probeDate: string;
+  promptVersion: string;
+  meanJaccard: number | null;
+  overall: AnswerShareRowPublic[];
+  byProvider: Record<string, AnswerShareRowPublic[]>;
+};
+
 export type Aggregate = {
   meta: AggregateMeta;
   stats: HeadlineStats;
   apps: AppSummary[];
   series: Record<string, CompactSeries>;
+  answerShare: AnswerSharePublic | null;
 };
 
 export const CHART_META: Record<

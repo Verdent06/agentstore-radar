@@ -62,6 +62,30 @@ async function downloadViaApi(repo: string, token: string, destNormalized: strin
   }
   const entries = (await listRes.json()) as Array<{ name: string; type: string; url: string }>;
   const { mkdirSync, writeFileSync } = await import("node:fs");
+  const answerShare = entries.find((item) => item.type === "dir" && item.name === "answer-share");
+  if (answerShare) {
+    const shareList = await fetch(answerShare.url, { headers });
+    if (shareList.ok) {
+      const dates = (await shareList.json()) as Array<{ name: string; type: string; url: string }>;
+      for (const dateDir of dates.filter((item) => item.type === "dir" && /^\d{4}-\d{2}-\d{2}$/.test(item.name))) {
+        const filesRes = await fetch(dateDir.url, { headers });
+        if (!filesRes.ok) {
+          continue;
+        }
+        const files = (await filesRes.json()) as Array<{ name: string; download_url: string | null }>;
+        const destDir = join(destNormalized, "answer-share", dateDir.name);
+        mkdirSync(destDir, { recursive: true });
+        for (const file of files.filter((item) => item.name === "shares.json" && item.download_url)) {
+          const fileRes = await fetch(file.download_url!, {
+            headers: { "User-Agent": USER_AGENT, Authorization: `Bearer ${token}` },
+          });
+          if (fileRes.ok) {
+            writeFileSync(join(destDir, file.name), Buffer.from(await fileRes.arrayBuffer()));
+          }
+        }
+      }
+    }
+  }
   for (const entry of entries.filter((item) => item.type === "dir" && /^\d{4}-\d{2}-\d{2}$/.test(item.name))) {
     const dirRes = await fetch(entry.url, { headers });
     if (!dirRes.ok) {

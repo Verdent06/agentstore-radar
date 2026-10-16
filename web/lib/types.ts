@@ -95,6 +95,22 @@ export type CoverageRow = {
   skipped: boolean;
 };
 
+export type AnswerShareRowPublic = {
+  name: string;
+  appId: string | null;
+  mentionCount: number;
+  answerShare: number;
+  runShare: number;
+};
+
+export type AnswerSharePublic = {
+  probeDate: string;
+  promptVersion: string;
+  meanJaccard: number | null;
+  overall: AnswerShareRowPublic[];
+  byProvider: Record<string, AnswerShareRowPublic[]>;
+};
+
 export type Aggregate = {
   meta: {
     builtAt: string;
@@ -108,6 +124,7 @@ export type Aggregate = {
   stats: HeadlineStats;
   apps: AppSummary[];
   series: Record<string, CompactSeries>;
+  answerShare: AnswerSharePublic | null;
 };
 
 export type RankedApp = {

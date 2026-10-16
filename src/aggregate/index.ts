@@ -1,3 +1,4 @@
+export { answerShareForApp, loadPublicAnswerShare } from "./answer-share.ts";
 export { buildAggregate, computeHeadlineStats } from "./build.ts";
 export { classifyCategory, jaccardTokens, tokenize } from "./classify.ts";
 export { writeDemoSnapshots, DEMO_DATES } from "./demo.ts";
@@ -14,6 +15,7 @@ export {
   movers,
   multiStoreApps,
   newArrivals,
+  publicAnswerShare,
   rankHistory,
   searchApps,
   seriesToPoints,

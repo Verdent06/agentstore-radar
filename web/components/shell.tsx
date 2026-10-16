@@ -8,6 +8,7 @@ const NAV = [
   { href: "/multi-store", label: "Multi-store" },
   { href: "/new", label: "New" },
   { href: "/categories", label: "Categories" },
+  { href: "/answer-share", label: "Answer share" },
 ];
 
 export function Shell({

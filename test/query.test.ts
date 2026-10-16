@@ -58,6 +58,18 @@ describe("public aggregate queries", () => {
     expect(similar.some((app) => app.id === "github:example/universal-search")).toBe(true);
   });
 
+  it("exposes answer-share aggregates and a graceful empty payload", () => {
+    const present = JSON.parse(runTool(agg, "answer_share", { limit: 3 }).content[0]!.text);
+    expect(present.available).toBe(true);
+    expect(present.rows[0].appId).toBe("github:brave/brave-search-mcp");
+    const openai = JSON.parse(runTool(agg, "answer_share", { provider: "openai" }).content[0]!.text);
+    expect(openai.rows.length).toBeGreaterThan(0);
+    const emptyDir = mkdtempSync(join(tmpdir(), "radar-empty-share-"));
+    writeDemoSnapshots(emptyDir, ["2026-10-15"]);
+    const empty = JSON.parse(runTool(buildAggregate(emptyDir, "fixture"), "answer_share", {}).content[0]!.text);
+    expect(empty).toEqual({ available: false });
+  });
+
   it("caps tool payloads and never dumps raw history files", () => {
     const result = runTool(agg, "search_apps", { query: "mcp", limit: 500 });
     const payload = JSON.parse(result.content[0]!.text) as { apps: unknown[] };

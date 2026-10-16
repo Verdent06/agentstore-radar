@@ -34,5 +34,8 @@ describe("MCP tool payloads", () => {
     assert.equal(multi.kind, "multi_store");
     const fresh = JSON.parse(runTool(agg, "multi_store", { new_arrivals: true }).content[0]!.text);
     assert.equal(fresh.kind, "new_arrivals");
+    const share = JSON.parse(runTool(agg, "answer_share", { limit: 3 }).content[0]!.text);
+    assert.equal(share.available, true);
+    assert.ok(share.rows.length > 0);
   });
 });

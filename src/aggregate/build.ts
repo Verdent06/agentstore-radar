@@ -1,6 +1,7 @@
 import { coverageFromManifest } from "../commands/report.ts";
 import { listSnapshotDates, readApps, readManifest, readSourceRows } from "../lib/io.ts";
 import type { AppRow, SourceName, SourceRow } from "../lib/schema.ts";
+import { loadPublicAnswerShare } from "./answer-share.ts";
 import { classifyCategory } from "./classify.ts";
 import {
   STORE_SOURCES,
@@ -179,6 +180,7 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
     stats,
     apps,
     series,
+    answerShare: loadPublicAnswerShare(dataDir),
   };
 }
 
