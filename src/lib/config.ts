@@ -13,6 +13,10 @@ export const HOST_MIN_INTERVAL_MS: Record<string, number> = {
   "api.npmjs.org": 400,
   "pypistats.org": 500,
   "geminicli.com": 200,
+  "api.openai.com": 250,
+  "api.anthropic.com": 250,
+  "generativelanguage.googleapis.com": 250,
+  "api.x.ai": 250,
 };
 
 export const MCP_REGISTRY_BASE = "https://registry.modelcontextprotocol.io";
@@ -26,3 +30,14 @@ export const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 
 export const NPM_BULK_LIMIT = 128;
 export const GITHUB_GRAPHQL_BATCH = 50;
+
+export const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+export const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
+export const ANTHROPIC_VERSION = "2023-06-01";
+export const GEMINI_GENERATE_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+export const XAI_RESPONSES_URL = "https://api.x.ai/v1/responses";
+
+export const ANSWER_SHARE_DEFAULT_N = 3;
+export const ANSWER_SHARE_PROMPT_VERSION = "v1";
+export const ANSWER_SHARE_TEMPERATURE = 0.8;
+export const ANSWER_SHARE_REQUEST_TIMEOUT_MS = 90_000;

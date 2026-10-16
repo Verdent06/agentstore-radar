@@ -14,6 +14,8 @@
     "collect": "tsx src/cli.ts collect",
     "report": "tsx src/cli.ts report",
     "health": "tsx src/cli.ts health",
+    "answer-share": "tsx src/cli.ts answer-share",
+    "answer-share:report": "tsx src/cli.ts answer-share-report",
     "lint": "eslint src test",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",

@@ -1,3 +1,4 @@
+import { collectAnswerShare, printAnswerShareReport } from "./commands/answer-share.ts";
 import { collect } from "./commands/collect.ts";
 import { runHealth } from "./commands/health.ts";
 import { printReport } from "./commands/report.ts";
@@ -23,6 +24,8 @@ Usage:
   npm run collect -- [--date YYYY-MM-DD] [--data DIR] [--sources a,b] [--max-pages N]
   npm run report -- [--date YYYY-MM-DD] [--data DIR] [--limit N]
   npm run health -- [--date YYYY-MM-DD] [--data DIR]
+  npm run answer-share -- [--date YYYY-MM-DD] [--data DIR] [--providers a,b] [--n 3] [--max-calls N] [--prompt-version v1]
+  npm run answer-share:report -- [--date YYYY-MM-DD] [--data DIR] [--limit N]
 
 Data directory: --data, else $DATA_DIR, else ./data (gitignored; history lives in the private data repo).
 
@@ -63,6 +66,26 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const report = await runHealth({ date, dataDir });
     console.log(JSON.stringify(report, null, 2));
     return report.ok ? 0 : 1;
+  }
+  if (command === "answer-share") {
+    const providers = argValue(args, "--providers")?.split(",").filter(Boolean);
+    const nRaw = argValue(args, "--n");
+    const maxCallsRaw = argValue(args, "--max-calls");
+    const manifest = await collectAnswerShare({
+      date,
+      dataDir,
+      providers,
+      n: nRaw ? Number(nRaw) : undefined,
+      maxCalls: maxCallsRaw ? Number(maxCallsRaw) : undefined,
+      promptVersion: argValue(args, "--prompt-version"),
+    });
+    console.log(JSON.stringify(manifest, null, 2));
+    return 0;
+  }
+  if (command === "answer-share-report") {
+    const limit = Number(argValue(args, "--limit") ?? "10");
+    printAnswerShareReport({ date, dataDir, limit });
+    return 0;
   }
   if (flag(args, "--help")) {
     console.log(usage());
