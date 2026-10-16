@@ -16,18 +16,25 @@
     "health": "tsx src/cli.ts health",
     "answer-share": "tsx src/cli.ts answer-share",
     "answer-share:report": "tsx src/cli.ts answer-share-report",
-    "lint": "eslint src test",
+    "lint": "eslint src test scripts mcp/src",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke:growth": "tsx scripts/smoke-growth.ts",
-    "build": "tsc --noEmit"
+    "aggregate": "tsx scripts/build-aggregate.ts",
+    "build": "tsc --noEmit",
+    "site:build": "tsx scripts/build-aggregate.ts && npm run build --workspace=web",
+    "mcp:start": "npm run start --workspace=mcp"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/Verdent06/agentstore-radar.git"
   },
   "license": "MIT",
+  "workspaces": [
+    "web",
+    "mcp"
+  ],
   "dependencies": {
     "zod": "^3.25.76"
   },

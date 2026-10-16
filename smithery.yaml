@@ -1,0 +1,15 @@
+# Smithery listing for the read-only AgentStore Radar MCP server.
+# https://smithery.ai/docs
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties: {}
+    additionalProperties: false
+  commandFunction: |-
+    (config) => ({
+      command: 'npx',
+      args: ['tsx', 'mcp/src/stdio.ts'],
+      env: { AGGREGATE_PATH: process.env.AGGREGATE_PATH ?? 'mcp/data/radar.json' }
+    })
+  exampleConfig: {}

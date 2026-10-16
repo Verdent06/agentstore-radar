@@ -1,0 +1,31 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+  "name": "io.github.verdent06/agentstore-radar",
+  "title": "AgentStore Radar",
+  "description": "Read-only leaderboards and trends for MCP and agent stores.",
+  "version": "0.1.0",
+  "websiteUrl": "https://github.com/Verdent06/agentstore-radar",
+  "repository": {
+    "url": "https://github.com/Verdent06/agentstore-radar",
+    "source": "github",
+    "subfolder": "mcp"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@agentstore-radar/mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "runtimeHint": "npx",
+      "environmentVariables": [
+        {
+          "name": "AGGREGATE_PATH",
+          "description": "Optional path to the built radar.json aggregate.",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}

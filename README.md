@@ -3,7 +3,7 @@
 Free, open-source collector for cross-store analytics of AI app / agent stores — App Annie / Sensor Tower, but for MCP servers, ChatGPT apps, Claude connectors, and CLI extension galleries.
 
 **Code:** MIT (this repository)  
-**Data:** private for now (`Verdent06/agentstore-radar-data`). Public charts and leaderboards come later.
+**Data:** private (`Verdent06/agentstore-radar-data`). The public site and MCP connector expose **chosen aggregates only** — never bulk `apps.ndjson` / `source_rows.ndjson` history.
 
 Snapshot history does **not** live in this repo. The daily collect job writes into the private data repo via a deploy key (`DATA_REPO_DEPLOY_KEY`). `data/` is gitignored here.
 
@@ -44,7 +44,7 @@ data/state/<source>/cache.json           # last-known enrichment payload
 data/state/<source>/checkpoint.json      # resume mid-run after rate limits
 ```
 
-Point `report`, `health`, and a future site at that tree with `DATA_DIR` or `--data`:
+Point `report`, `health`, and the public aggregate builder at that tree with `DATA_DIR` or `--data`:
 
 ```bash
 export DATA_DIR=/path/to/agentstore-radar-data/data
@@ -101,7 +101,7 @@ Optional env:
 
 - [`.github/workflows/collect.yml`](.github/workflows/collect.yml) — daily cron (`17 6 * * *`) plus `workflow_dispatch`. `timeout-minutes: 360` so GitHub/npm/PyPI can wait through rate-limit resets. Checks out the private data repo over SSH (`DATA_REPO_DEPLOY_KEY`), **once** copies `data/` from this repo’s git history if the data repo has no snapshots yet (writes `data/.migrated-from-public`), then collects into `DATA_DIR` and pushes **only** to the data repo. After that first success it never reads public history again. `seed_only` skips collect and just does that one-time copy.
 - [`.github/workflows/answer-share.yml`](.github/workflows/answer-share.yml) — weekly cron (Mondays `17 7 * * 1`) plus `workflow_dispatch`. Same private-repo deploy key. Asks each configured assistant which apps/tools/MCP servers it would recommend (`N=3` for variance). Missing provider keys are skipped. `MAX_CALLS` is a hard cost cap (workflow default `1200`).
-- [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — lint, typecheck, tests (recorded fixtures, no live network).
+- [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — lint, typecheck, collector tests, aggregate build (fixtures unless a data token is set), Next.js build, MCP tests.
 
 ### Answer share
 
@@ -154,8 +154,75 @@ npm run typecheck
 
 Adapters live under `src/adapters/` and share a `SourceAdapter` interface (`catalog` then `enrichment`). Zod validates wire payloads; a bad row is dropped, a >50% invalid page fails the source.
 
+## Public site (`/web`)
+
+Next.js App Router + Tailwind. Pages: home (headline stats + movers once two snapshot days exist, otherwise top by Smithery use count), per-source charts (Smithery / npm / GitHub / Gemini CLI), multi-store, new arrivals, keyword categories, per-app history, search, and a screenshot-oriented [`/movers?shot=1`](web/app/movers/page.tsx) weekly card. Each leaderboard has an OG image for sharing.
+
+```bash
+npm run aggregate          # DATA_DIR, else GitHub token, else bundled demo snapshots
+npm run dev --workspace=web
+```
+
+The builder writes compact `web/data/radar.json` (and `radar.sqlite` when `node:sqlite` is available). That file is a summary: latest app cards, short metric series, coverage. It is **not** a dump of private NDJSON.
+
+### Vercel
+
+Create a project from this repo. Two layouts work:
+
+**A. Root Directory = repository root** (matches [vercel.json](vercel.json))
+
+| Setting | Value |
+| --- | --- |
+| Framework | Next.js |
+| Install | `npm ci` |
+| Build | `npm run site:build` |
+
+**B. Root Directory = `web`** (matches [web/vercel.json](web/vercel.json))
+
+| Setting | Value |
+| --- | --- |
+| Framework | Next.js |
+| Install | `cd .. && npm ci` |
+| Build | `npx tsx ../scripts/build-aggregate.ts --out data && next build` |
+
+Prefer **A**. If Vercel does not detect Next.js from the repo root, use **B**.
+
+**Required / recommended env vars**
+
+| Name | Required | Purpose |
+| --- | --- | --- |
+| `DATA_DIR` | one of these | Absolute path to the private `data/` tree (local or CI cache). |
+| `DATA_GITHUB_TOKEN` | one of these | Fine-grained or classic PAT that can **read** `Verdent06/agentstore-radar-data`. Used at **build time** to sparse-clone `data/normalized`. |
+| `GITHUB_TOKEN` | fallback | Same as above if it can read the private data repo. The default Vercel GitHub token usually **cannot**. |
+| `DATA_REPO` | no | Defaults to `Verdent06/agentstore-radar-data`. |
+| `NEXT_PUBLIC_SITE_URL` | recommended | Canonical site URL for Open Graph (`https://your-project.vercel.app`). |
+| `AGGREGATE_PATH` | no | Override path to `radar.json` (site + MCP). |
+
+Without `DATA_DIR` or a token that can read the data repo, the build falls back to **demo fixtures** and the site banners that. Do not treat those numbers as live.
+
+The Vercel build never downloads raw history to the public internet. Only the compact aggregate is bundled with the serverless/node build.
+
+## MCP connector (`/mcp`)
+
+Read-only official MCP TypeScript SDK v2 server (`@modelcontextprotocol/server`) with **Streamable HTTP** and **stdio**.
+
+```bash
+npm run aggregate
+npx tsx mcp/src/stdio.ts          # stdio
+npx tsx mcp/src/http.ts           # http://0.0.0.0:8787/mcp  (PORT / HOST)
+```
+
+Tools: `search_apps`, `app_details`, `rank_history`, `top_charts`, `movers`, `competitors`, `category_trends`, `multi_store`. All read the same aggregate; payloads are capped and never include snapshot files.
+
+Listing files:
+
+- [`server.json`](server.json) — official MCP Registry (`io.github.verdent06/agentstore-radar`)
+- [`smithery.yaml`](smithery.yaml) — Smithery stdio start command
+
+Publish to the official registry after namespace verification; publish the HTTP URL or stdio command on Smithery once a host is live.
+
 ## Roadmap
 
 - **M2:** Glama / PulseMCP / other public MCP catalogs if they offer APIs
 - **M3:** ChatGPT apps / Claude connectors *only* via official public data
-- **M4:** public charts / leaderboards on top of the private history
+- **M4:** public charts / leaderboards on top of the private history — **this repo now ships `/web` + `/mcp`**

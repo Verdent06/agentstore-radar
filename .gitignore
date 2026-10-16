@@ -6,7 +6,20 @@ coverage/
 *.log
 .DS_Store
 .eslintcache
+*.tsbuildinfo
 
 # Snapshot history lives in Verdent06/agentstore-radar-data, not this repo.
-data/
-.radar-data/
+/data/
+/.radar-data/
+
+# Next.js / MCP build output. Generated radar.json is produced by `npm run aggregate`.
+web/.next/
+web/out/
+web/data/radar.json
+web/data/radar.sqlite
+web/data/meta.json
+mcp/dist/
+mcp/data/radar.json
+mcp/data/radar.sqlite
+mcp/data/meta.json
+/aggregate/
