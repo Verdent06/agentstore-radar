@@ -1,0 +1,21 @@
+{
+  "id": "resp_test_xai",
+  "model": "grok-4-fast-non-reasoning",
+  "output": [
+    { "type": "web_search_call", "status": "completed" },
+    {
+      "type": "message",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "1. GitHub — open the pull request\n2. Slack — post the deploy note"
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 440,
+    "output_tokens": 64,
+    "web_search_calls": 1
+  }
+}

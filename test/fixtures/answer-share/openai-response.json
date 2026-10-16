@@ -1,0 +1,19 @@
+{
+  "id": "resp_test_openai",
+  "model": "gpt-4.1-mini",
+  "output_text": "{\"mentions\":[{\"name\":\"GitHub\",\"reason\":\"review pull requests\"},{\"name\":\"filesystem MCP\",\"reason\":\"local repo access\"}]}",
+  "output": [
+    { "type": "web_search_call", "status": "completed" },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"mentions\":[{\"name\":\"GitHub\",\"reason\":\"review pull requests\"},{\"name\":\"filesystem MCP\",\"reason\":\"local repo access\"}]}"
+        }
+      ]
+    }
+  ],
+  "usage": { "input_tokens": 520, "output_tokens": 110 }
+}

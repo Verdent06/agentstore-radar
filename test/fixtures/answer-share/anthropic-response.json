@@ -1,0 +1,20 @@
+{
+  "id": "msg_test_anthropic",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5",
+  "content": [
+    { "type": "server_tool_use", "name": "web_search", "input": { "query": "github mcp server" } },
+    { "type": "web_search_tool_result", "content": [] },
+    {
+      "type": "text",
+      "text": "{\"mentions\":[{\"name\":\"GitHub MCP\",\"reason\":\"issues and PRs\"},{\"name\":\"Slack\",\"reason\":\"notify the team\"}]}"
+    }
+  ],
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 810,
+    "output_tokens": 95,
+    "server_tool_use": { "web_search_requests": 1 }
+  }
+}

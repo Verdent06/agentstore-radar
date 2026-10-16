@@ -1,0 +1,21 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "text": "{\"mentions\":[{\"name\":\"GitHub\",\"reason\":\"code review\"},{\"name\":\"Playwright\",\"reason\":\"browser checks\"}]}"
+          }
+        ]
+      },
+      "groundingMetadata": {
+        "webSearchQueries": ["github mcp playwright"]
+      }
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 410,
+    "candidatesTokenCount": 88
+  }
+}

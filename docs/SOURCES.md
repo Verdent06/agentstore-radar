@@ -59,6 +59,19 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - Array of `{ id, url, fullName, stars, lastUpdated, extensionName, ... }`
 - Included in M1 (not skipped)
 
+## Answer-share probe (weekly)
+
+Not a catalog scrape. Official chat APIs only, with each vendor's web-search tool enabled:
+
+| Provider | Endpoint | Web search | Default model |
+| --- | --- | --- | --- |
+| OpenAI | `POST https://api.openai.com/v1/responses` | `tools: [{ type: "web_search" }]` | `gpt-4.1-mini` |
+| Anthropic | `POST https://api.anthropic.com/v1/messages` | `web_search_20250305` | `claude-haiku-4-5` |
+| Google Gemini | `POST .../v1beta/models/{model}:generateContent` | `tools: [{ google_search: {} }]` | `gemini-2.5-flash` |
+| xAI Grok | `POST https://api.x.ai/v1/responses` | `tools: [{ type: "web_search" }]` | `grok-4-fast-non-reasoning` |
+
+Each key is optional. History lands in the private data repo under `data/raw/answer-share/` and `data/normalized/answer-share/`. CI never calls these APIs (fixture tests only). `MAX_CALLS` is the hard spend cap.
+
 ## Out of scope (do not collect)
 
 - ChatGPT GPT/app store pages

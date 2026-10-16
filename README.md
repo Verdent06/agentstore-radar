@@ -92,11 +92,39 @@ Optional env:
 - `SMITHERY_API_KEY` — only if Smithery starts requiring auth for public list
 - `HEALTH_ISSUE_REPO` — `owner/name` for health issues (defaults to unset; we do not open issues on the public repo)
 - `HEALTH_ISSUE_TOKEN` — optional token that can write issues on the data repo
+- `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `XAI_API_KEY` — optional; each missing key skips that answer-share provider
+- `MAX_CALLS` — hard cap on answer-share API calls (unset = uncapped)
+- `ANSWER_SHARE_N` — repeats per prompt per provider (default `3`)
+- `OPENAI_MODEL` / `ANTHROPIC_MODEL` / `GEMINI_MODEL` / `XAI_MODEL` — optional model overrides
 
 ## Automation
 
 - [`.github/workflows/collect.yml`](.github/workflows/collect.yml) — daily cron (`17 6 * * *`) plus `workflow_dispatch`. `timeout-minutes: 360` so GitHub/npm/PyPI can wait through rate-limit resets. Checks out the private data repo over SSH (`DATA_REPO_DEPLOY_KEY`), **once** copies `data/` from this repo’s git history if the data repo has no snapshots yet (writes `data/.migrated-from-public`), then collects into `DATA_DIR` and pushes **only** to the data repo. After that first success it never reads public history again. `seed_only` skips collect and just does that one-time copy.
+- [`.github/workflows/answer-share.yml`](.github/workflows/answer-share.yml) — weekly cron (Mondays `17 7 * * 1`) plus `workflow_dispatch`. Same private-repo deploy key. Asks each configured assistant which apps/tools/MCP servers it would recommend (`N=3` for variance). Missing provider keys are skipped. `MAX_CALLS` is a hard cost cap (workflow default `1200`).
 - [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — lint, typecheck, tests (recorded fixtures, no live network).
+
+### Answer share
+
+Weekly probe of which apps / tools / connectors / MCP servers frontier assistants recommend. Official APIs only, with web-search tools enabled: OpenAI Responses `web_search`, Anthropic Messages `web_search_20250305`, Gemini `google_search` grounding, xAI Responses `web_search`.
+
+```bash
+npm run answer-share -- --data "$DATA_DIR"
+npm run answer-share:report -- --data "$DATA_DIR"
+```
+
+Writes into the private data repo:
+
+```
+data/raw/answer-share/<YYYY-MM-DD>/responses.ndjson
+data/raw/answer-share/<YYYY-MM-DD>/extracted.ndjson
+data/raw/answer-share/<YYYY-MM-DD>/manifest.json
+data/normalized/answer-share/<YYYY-MM-DD>/mentions.ndjson
+data/normalized/answer-share/<YYYY-MM-DD>/shares.json
+```
+
+Mentions are matched to the latest `apps.ndjson` via aliases and fuzzy names. Answer share is that app's fraction of mentions, per provider and per category.
+
+Rough full-run cost (100 prompts × 3 repeats = 300 calls / provider, web search on): OpenAI `gpt-4.1-mini` ~$4.20; Anthropic `claude-haiku-4-5` ~$4.40; Gemini `gemini-2.5-flash` ~$0.35 inside the 1,500 free grounded prompts/day else ~$10.85; xAI `grok-4-fast-non-reasoning` ~$1.60. The job prints the estimate before calling and actuals after. Lower `MAX_CALLS` to cap spend.
 
 ### Health check
 
