@@ -9,6 +9,7 @@ export {
   categories,
   categoryTrends,
   competitors,
+  growthWindow,
   homeLeaders,
   metricFromApp,
   metricLabel,

@@ -9,14 +9,105 @@ function firstString(...values: Array<string | null | undefined>): string | null
   return null;
 }
 
-function preferNumber(current: number | null, incoming: number | null, preferIncoming: boolean): number | null {
+type MetricKey =
+  | "stars"
+  | "forks"
+  | "open_issues"
+  | "use_count"
+  | "npm_weekly_downloads"
+  | "pypi_last_week_downloads"
+  | "pypi_last_month_downloads";
+
+type FreshnessKey =
+  | "stars"
+  | "use_count"
+  | "npm_weekly_downloads"
+  | "pypi_last_week_downloads"
+  | "pypi_last_month_downloads";
+
+const FRESHNESS_FIELDS: Record<FreshnessKey, { at: keyof AppRow; carried: keyof AppRow }> = {
+  stars: { at: "stars_fetched_at", carried: "stars_carried_forward" },
+  use_count: { at: "use_count_fetched_at", carried: "use_count_carried_forward" },
+  npm_weekly_downloads: { at: "npm_weekly_downloads_fetched_at", carried: "npm_weekly_downloads_carried_forward" },
+  pypi_last_week_downloads: { at: "pypi_last_week_downloads_fetched_at", carried: "pypi_last_week_downloads_carried_forward" },
+  pypi_last_month_downloads: { at: "pypi_last_month_downloads_fetched_at", carried: "pypi_last_month_downloads_carried_forward" },
+};
+
+function applyFreshness(app: AppRow, key: FreshnessKey, row: SourceRow): void {
+  const fields = FRESHNESS_FIELDS[key];
+  (app[fields.at] as string | null) = row.fetched_at ?? null;
+  (app[fields.carried] as boolean) = row.carried_forward === true;
+}
+
+function preferNumber(
+  app: AppRow,
+  field: MetricKey,
+  incoming: number | null,
+  row: SourceRow,
+  preferIncoming: boolean,
+  freshness: FreshnessKey,
+): void {
   if (incoming == null) {
-    return current;
+    return;
   }
+  const current = app[field] as number | null;
   if (current == null || preferIncoming) {
-    return incoming;
+    (app[field] as number | null) = incoming;
+    applyFreshness(app, freshness, row);
+    if (field === "stars") {
+      app.stars_source = row.source;
+    }
   }
-  return current;
+}
+
+function emptyApp(snapshotDate: string, row: SourceRow): AppRow {
+  const app: AppRow = {
+    snapshot_date: snapshotDate,
+    app_id: row.app_id,
+    sources: "",
+    name: row.name,
+    display_name: row.display_name,
+    description: row.description,
+    homepage: row.homepage,
+    repo_url: row.repo_url,
+    npm_package: row.npm_package,
+    pypi_package: row.pypi_package,
+    stars: row.stars,
+    forks: row.forks,
+    open_issues: row.open_issues,
+    pushed_at: row.pushed_at,
+    use_count: row.use_count,
+    npm_weekly_downloads: row.npm_weekly_downloads,
+    pypi_last_week_downloads: row.pypi_last_week_downloads,
+    pypi_last_month_downloads: row.pypi_last_month_downloads,
+    stars_fetched_at: null,
+    stars_carried_forward: false,
+    use_count_fetched_at: null,
+    use_count_carried_forward: false,
+    npm_weekly_downloads_fetched_at: null,
+    npm_weekly_downloads_carried_forward: false,
+    pypi_last_week_downloads_fetched_at: null,
+    pypi_last_week_downloads_carried_forward: false,
+    pypi_last_month_downloads_fetched_at: null,
+    pypi_last_month_downloads_carried_forward: false,
+    stars_source: row.stars != null ? row.source : null,
+  };
+  if (row.stars != null) {
+    applyFreshness(app, "stars", row);
+  }
+  if (row.use_count != null) {
+    applyFreshness(app, "use_count", row);
+  }
+  if (row.npm_weekly_downloads != null) {
+    applyFreshness(app, "npm_weekly_downloads", row);
+  }
+  if (row.pypi_last_week_downloads != null) {
+    applyFreshness(app, "pypi_last_week_downloads", row);
+  }
+  if (row.pypi_last_month_downloads != null) {
+    applyFreshness(app, "pypi_last_month_downloads", row);
+  }
+  return app;
 }
 
 export function mergeApps(snapshotDate: string, rows: SourceRow[]): AppRow[] {
@@ -30,26 +121,7 @@ export function mergeApps(snapshotDate: string, rows: SourceRow[]): AppRow[] {
     sourceSets.set(row.app_id, sources);
 
     if (!existing) {
-      byId.set(row.app_id, {
-        snapshot_date: snapshotDate,
-        app_id: row.app_id,
-        sources: "",
-        name: row.name,
-        display_name: row.display_name,
-        description: row.description,
-        homepage: row.homepage,
-        repo_url: row.repo_url,
-        npm_package: row.npm_package,
-        pypi_package: row.pypi_package,
-        stars: row.stars,
-        forks: row.forks,
-        open_issues: row.open_issues,
-        pushed_at: row.pushed_at,
-        use_count: row.use_count,
-        npm_weekly_downloads: row.npm_weekly_downloads,
-        pypi_last_week_downloads: row.pypi_last_week_downloads,
-        pypi_last_month_downloads: row.pypi_last_month_downloads,
-      });
+      byId.set(row.app_id, emptyApp(snapshotDate, row));
       continue;
     }
 
@@ -61,25 +133,38 @@ export function mergeApps(snapshotDate: string, rows: SourceRow[]): AppRow[] {
     existing.repo_url = firstString(existing.repo_url, row.repo_url);
     existing.npm_package = firstString(existing.npm_package, row.npm_package);
     existing.pypi_package = firstString(existing.pypi_package, row.pypi_package);
-    existing.stars = preferNumber(existing.stars, row.stars, preferGithub);
-    existing.forks = preferNumber(existing.forks, row.forks, preferGithub);
-    existing.open_issues = preferNumber(existing.open_issues, row.open_issues, preferGithub);
-    existing.pushed_at = preferGithub && row.pushed_at ? row.pushed_at : firstString(existing.pushed_at, row.pushed_at);
-    existing.use_count = preferNumber(existing.use_count, row.use_count, row.source === "smithery");
-    existing.npm_weekly_downloads = preferNumber(
-      existing.npm_weekly_downloads,
+    preferNumber(existing, "stars", row.stars, row, preferGithub, "stars");
+    preferNumber(existing, "forks", row.forks, row, preferGithub, "stars");
+    preferNumber(existing, "open_issues", row.open_issues, row, preferGithub, "stars");
+    if (preferGithub && row.pushed_at) {
+      existing.pushed_at = row.pushed_at;
+    } else {
+      existing.pushed_at = firstString(existing.pushed_at, row.pushed_at);
+    }
+    preferNumber(existing, "use_count", row.use_count, row, row.source === "smithery", "use_count");
+    preferNumber(
+      existing,
+      "npm_weekly_downloads",
       row.npm_weekly_downloads,
+      row,
       row.source === "npm",
+      "npm_weekly_downloads",
     );
-    existing.pypi_last_week_downloads = preferNumber(
-      existing.pypi_last_week_downloads,
+    preferNumber(
+      existing,
+      "pypi_last_week_downloads",
       row.pypi_last_week_downloads,
+      row,
       row.source === "pypi",
+      "pypi_last_week_downloads",
     );
-    existing.pypi_last_month_downloads = preferNumber(
-      existing.pypi_last_month_downloads,
+    preferNumber(
+      existing,
+      "pypi_last_month_downloads",
       row.pypi_last_month_downloads,
+      row,
       row.source === "pypi",
+      "pypi_last_month_downloads",
     );
   }
 
