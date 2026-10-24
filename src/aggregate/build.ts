@@ -217,7 +217,8 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
       source: row.source,
       coverage: row.coverage,
       eligibleCount: row.eligibleCount,
-      fetchedCount: row.fetchedCount,
+      freshWithin7dCount: row.freshWithin7dCount,
+      fetchedThisRunCount: row.fetchedThisRunCount,
       skipped: row.skipped,
     }));
   }

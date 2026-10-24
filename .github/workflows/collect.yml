@@ -16,6 +16,10 @@ on:
         description: "Only collect if today's snapshot is missing or incomplete"
         type: boolean
         default: false
+      force:
+        description: "Re-collect even if today's snapshot is already complete (overwrites that day)"
+        type: boolean
+        default: false
 
 concurrency:
   group: collect-snapshots
@@ -75,7 +79,9 @@ jobs:
           SMITHERY_API_KEY: ${{ secrets.SMITHERY_API_KEY }}
         run: |
           ARGS=(--data "$DATA_DIR")
-          if [[ "${IS_BACKSTOP}" == "true" || "${{ inputs.if_incomplete }}" == "true" ]]; then
+          if [[ "${{ inputs.force }}" == "true" ]]; then
+            ARGS+=(--force)
+          elif [[ "${IS_BACKSTOP}" == "true" || "${{ inputs.if_incomplete }}" == "true" ]]; then
             ARGS+=(--if-incomplete)
           fi
           npm run collect -- "${ARGS[@]}"

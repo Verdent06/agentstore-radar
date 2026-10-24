@@ -25,6 +25,21 @@ export function isStale(fetchedAt: string | undefined, now: Date, maxAgeMs = DEF
   return ts < now.getTime() - maxAgeMs;
 }
 
+/** True when the stored value was not fetched for this snapshot day (and is not this run's live fetch). */
+export function isCarriedForward(
+  lastFetchedAt: string | null | undefined,
+  snapshotDate: string,
+  collectedAt?: string,
+): boolean {
+  if (!lastFetchedAt) {
+    return true;
+  }
+  if (collectedAt && lastFetchedAt === collectedAt) {
+    return false;
+  }
+  return lastFetchedAt.slice(0, 10) !== snapshotDate;
+}
+
 export function selectDueKeys(
   allKeys: string[],
   lastFetched: LastFetchedMap,

@@ -39,7 +39,8 @@ export type SourceResult = {
   raw: unknown;
   records: SourceRow[];
   eligibleCount?: number;
-  fetchedCount?: number;
+  freshWithin7dCount?: number;
+  fetchedThisRunCount?: number;
   coverage?: number;
   lastFetchedAt?: string;
   truncated?: boolean;

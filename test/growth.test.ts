@@ -54,7 +54,8 @@ describe("github growth adapter", () => {
     expect(result.skipped).toBe(false);
     expect(result.rowCount).toBe(1);
     expect(result.eligibleCount).toBe(1);
-    expect(result.fetchedCount).toBe(1);
+    expect(result.freshWithin7dCount).toBe(1);
+    expect(result.fetchedThisRunCount).toBe(1);
     expect(result.coverage).toBe(1);
     expect(result.truncated).toBe(false);
   });
@@ -83,7 +84,8 @@ describe("github growth adapter", () => {
     expect(calls).toBe(0);
     expect(result.rowCount).toBe(1);
     expect(result.coverage).toBe(1);
-    expect(result.fetchedCount).toBe(1);
+    expect(result.freshWithin7dCount).toBe(1);
+    expect(result.fetchedThisRunCount).toBe(0);
     expect(result.records[0]?.carried_forward).toBe(true);
     expect(result.records[0]?.fetched_at).toBe("2026-10-14T00:00:00Z");
   });

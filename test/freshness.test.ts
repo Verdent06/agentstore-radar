@@ -41,6 +41,80 @@ function manifestFor(date: string, rows: SourceRow[], extra?: Partial<SnapshotMa
 }
 
 describe("metric freshness", () => {
+  it("writes the live GraphQL payload, not a stale cache.json value, when the key is due", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-fresh-live-"));
+    persistLastFetched(dataDir, "github", { "example/weather": "2026-10-08T12:00:00Z" });
+    persistEntityCache(dataDir, "github", {
+      "example/weather": {
+        nameWithOwner: "example/weather",
+        url: "https://github.com/example/weather",
+        stargazerCount: 1,
+        forkCount: 0,
+        pushedAt: "2026-10-01T00:00:00Z",
+        isArchived: false,
+        issues: { totalCount: 0 },
+      },
+    });
+    const discovered = createDiscoveredRefs();
+    discovered.githubRepos.set("example/weather", { owner: "example", repo: "weather" });
+    let calls = 0;
+    const result = await githubAdapter.collect(
+      ctx({
+        dataDir,
+        discovered,
+        http: createHttpClient({
+          fetchImpl: async () => {
+            calls += 1;
+            return new Response(JSON.stringify(loadFixture("github-graphql.json")), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          },
+          maxRetries: 0,
+        }),
+      }),
+    );
+    expect(calls).toBe(1);
+    expect(result.records[0]).toMatchObject({
+      stars: 42,
+      carried_forward: false,
+      fetched_at: "2026-10-16T12:00:00Z",
+    });
+  });
+
+  it("does not mark a same-day last_fetched cache hit as carried_forward", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-fresh-sameday-"));
+    persistLastFetched(dataDir, "github", { "example/weather": "2026-10-16T06:00:00Z" });
+    persistEntityCache(dataDir, "github", {
+      "example/weather": loadFixture<{ data: { r0: unknown } }>("github-graphql.json").data.r0,
+    });
+    const discovered = createDiscoveredRefs();
+    discovered.githubRepos.set("example/weather", { owner: "example", repo: "weather" });
+    let calls = 0;
+    const result = await githubAdapter.collect(
+      ctx({
+        snapshotDate: "2026-10-16",
+        collectedAt: "2026-10-16T18:00:00Z",
+        now: new Date("2026-10-16T18:00:00Z"),
+        dataDir,
+        discovered,
+        http: createHttpClient({
+          fetchImpl: async () => {
+            calls += 1;
+            throw new Error("should not fetch same-day live values");
+          },
+          maxRetries: 0,
+        }),
+      }),
+    );
+    expect(calls).toBe(0);
+    expect(result.records[0]).toMatchObject({
+      stars: 42,
+      carried_forward: false,
+      fetched_at: "2026-10-16T06:00:00Z",
+    });
+  });
+
   it("marks cached GitHub rows as carried_forward with the original fetched_at", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-fresh-"));
     persistLastFetched(dataDir, "github", { "example/weather": "2026-10-15T12:00:00Z" });

@@ -4,7 +4,7 @@ import { utcDateString } from "../lib/dates.ts";
 import { createGitHubIssueClient } from "../lib/github-issue.ts";
 import { listSnapshotDates, previousSnapshotDate, readManifest, resolveDataDir } from "../lib/io.ts";
 import { createLogger, type Logger } from "../lib/logger.ts";
-import type { SourceManifest, SourceName } from "../lib/schema.ts";
+import { sourceFreshWithin7dCount, type SourceManifest, type SourceName } from "../lib/schema.ts";
 
 export type HealthFinding = {
   source: SourceName;
@@ -20,7 +20,7 @@ export type CoverageFinding = {
   currentDate: string;
   coverage: number;
   eligibleCount: number;
-  fetchedCount: number;
+  freshWithin7dCount: number;
   threshold: number;
 };
 
@@ -140,7 +140,7 @@ export function collectCoverageFindings(
       currentDate,
       coverage: source.coverage ?? 0,
       eligibleCount: eligible,
-      fetchedCount: source.fetchedCount ?? 0,
+      freshWithin7dCount: sourceFreshWithin7dCount(source) ?? 0,
       threshold,
     });
   }
@@ -202,7 +202,7 @@ export async function runHealth(options: HealthOptions = {}): Promise<HealthRepo
     const title = `[health] ${finding.source} coverage below ${Math.round(finding.threshold * 100)}%`;
     const body = [
       `Source \`${finding.source}\` coverage is ${formatCoveragePct(finding.coverage)}`,
-      `(${finding.fetchedCount}/${finding.eligibleCount} eligible) on ${finding.currentDate}.`,
+      `(${finding.freshWithin7dCount}/${finding.eligibleCount} fresh within 7d) on ${finding.currentDate}.`,
       `Target is at least ${Math.round(finding.threshold * 100)}% fresh within the weekly refresh window.`,
       "",
       "Details stay in the private data repo. This alert is operational only.",
@@ -212,7 +212,7 @@ export async function runHealth(options: HealthOptions = {}): Promise<HealthRepo
       source: finding.source,
       coverage: formatCoveragePct(finding.coverage),
       eligible: finding.eligibleCount,
-      fetched: finding.fetchedCount,
+      freshWithin7d: finding.freshWithin7dCount,
     });
     const issue = await opener({ title, body, labels: ["source-health"] });
     if (issue.created) {
