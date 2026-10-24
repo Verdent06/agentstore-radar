@@ -1,6 +1,6 @@
 import { coverageFromManifest } from "../commands/report.ts";
 import { listSnapshotDates, readApps, readManifest, readSourceRows } from "../lib/io.ts";
-import type { AppRow, SourceName, SourceRow } from "../lib/schema.ts";
+import { snapshotIsPartial, type AppRow, type SourceName, type SourceRow } from "../lib/schema.ts";
 import { loadPublicAnswerShare } from "./answer-share.ts";
 import { classifyCategory } from "./classify.ts";
 import {
@@ -56,32 +56,56 @@ function weekAgoDate(dates: string[], latest: string): string | null {
 
 function compact(points: HistoryPoint[], dates: string[]): CompactSeries {
   const byDate = new Map(points.map((point) => [point.date, point]));
+  const flag = (carried: boolean | undefined): 0 | 1 => (carried ? 1 : 0);
   const series: CompactSeries = {
     s: dates.map((date) => byDate.get(date)?.stars ?? null),
     u: dates.map((date) => byDate.get(date)?.useCount ?? null),
     n: dates.map((date) => byDate.get(date)?.npmWeeklyDownloads ?? null),
     p: dates.map((date) => byDate.get(date)?.pypiLastWeekDownloads ?? null),
     g: dates.map((date) => byDate.get(date)?.geminiStars ?? null),
+    sc: dates.map((date) => flag(byDate.get(date)?.starsCarriedForward)),
+    uc: dates.map((date) => flag(byDate.get(date)?.useCountCarriedForward)),
+    nc: dates.map((date) => flag(byDate.get(date)?.npmCarriedForward)),
+    pc: dates.map((date) => flag(byDate.get(date)?.pypiCarriedForward)),
   };
-  const prune = (key: keyof CompactSeries) => {
+  const pruneValues = (key: "s" | "u" | "n" | "p" | "g") => {
     if (series[key]?.every((value) => value == null)) {
       delete series[key];
     }
   };
-  prune("s");
-  prune("u");
-  prune("n");
-  prune("p");
-  prune("g");
+  const pruneFlags = (key: "sc" | "uc" | "nc" | "pc") => {
+    if (series[key]?.every((value) => value == null || value === 0)) {
+      delete series[key];
+    }
+  };
+  pruneValues("s");
+  pruneValues("u");
+  pruneValues("n");
+  pruneValues("p");
+  pruneValues("g");
+  pruneFlags("sc");
+  pruneFlags("uc");
+  pruneFlags("nc");
+  pruneFlags("pc");
   return series;
 }
 
 export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir"): Aggregate {
   const allDates = listSnapshotDates(dataDir);
   const snapshotDates = allDates.slice(-HISTORY_CAP_DAYS);
+  const partialDates = snapshotDates.filter((date) => {
+    try {
+      return snapshotIsPartial(readManifest(date, dataDir));
+    } catch {
+      return false;
+    }
+  });
+  const completeDates = snapshotDates.filter((date) => !partialDates.includes(date));
   const latestDate = snapshotDates.at(-1) ?? null;
   const previousDate = snapshotDates.length >= 2 ? snapshotDates.at(-2) ?? null : null;
-  const week = latestDate ? weekAgoDate(snapshotDates, latestDate) : null;
+  const latestCompleteDate = completeDates.at(-1) ?? null;
+  const previousCompleteDate = completeDates.length >= 2 ? completeDates.at(-2) ?? null : null;
+  const week = latestCompleteDate ? weekAgoDate(completeDates, latestCompleteDate) : null;
 
   const firstSeen = new Map<string, string>();
   const history = new Map<string, HistoryPoint[]>();
@@ -111,6 +135,10 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
         npmWeeklyDownloads: asNumber(app.npm_weekly_downloads),
         pypiLastWeekDownloads: asNumber(app.pypi_last_week_downloads),
         geminiStars: geminiStarsFromRows(rowsByApp.get(app.app_id) ?? []),
+        starsCarriedForward: app.stars_carried_forward === true,
+        useCountCarriedForward: app.use_count_carried_forward === true,
+        npmCarriedForward: app.npm_weekly_downloads_carried_forward === true,
+        pypiCarriedForward: app.pypi_last_week_downloads_carried_forward === true,
       });
       history.set(app.app_id, points);
     }
@@ -143,6 +171,7 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
         pypiLastWeekDownloads: asNumber(row.pypi_last_week_downloads),
         geminiStars: geminiStarsFromRows(extra),
         verified: verifiedFromRows(extra),
+        starsSource: row.stars_source ?? null,
       };
     })
     .sort((a, b) => a.id.localeCompare(b.id));
@@ -175,6 +204,9 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
       latestDate,
       previousDate,
       weekAgoDate: week === latestDate ? null : week,
+      partialDates,
+      latestCompleteDate,
+      previousCompleteDate,
       coverage,
     },
     stats,

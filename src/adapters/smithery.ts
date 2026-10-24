@@ -2,8 +2,8 @@ import { z } from "zod";
 import { SMITHERY_SERVERS_URL, SMITHERY_STABLE_SEED } from "../lib/config.ts";
 import { HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, githubRepoUrl, parseGithubRepo } from "../lib/matching.ts";
-import { emptySourceRow, type SourceRow } from "../lib/schema.ts";
-import type { CollectContext, SourceAdapter, SourceResult } from "./types.ts";
+import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
+import { CollectSourceError, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "./types.ts";
 
 const ServerSchema = z
   .object({
@@ -85,11 +85,13 @@ export const smitheryAdapter: SourceAdapter = {
 
     const servers: unknown[] = [];
     let pages = 0;
+    let page = 1;
     let totalCount: number | undefined;
+    let truncated = false;
+    let stoppedAt: SourceResult["stoppedAt"];
     const maxPages = ctx.maxPages ?? Number.POSITIVE_INFINITY;
 
     try {
-      let page = 1;
       let totalPages = 1;
       while (page <= totalPages && pages < maxPages) {
         const url = new URL(SMITHERY_SERVERS_URL);
@@ -123,7 +125,17 @@ export const smitheryAdapter: SourceAdapter = {
           records: [],
         };
       }
-      throw error;
+      stoppedAt = sourceStoppedAt("smithery", error, { page });
+      if (servers.length === 0) {
+        throw new CollectSourceError(stoppedAt);
+      }
+      truncated = true;
+      ctx.log.warn("smithery stopped early; keeping partial catalog", {
+        pages,
+        rows: servers.length,
+        page: stoppedAt.page,
+        error: stoppedAt.error,
+      });
     }
 
     const records: SourceRow[] = [];
@@ -134,7 +146,7 @@ export const smitheryAdapter: SourceAdapter = {
         invalid += 1;
         continue;
       }
-      records.push(row);
+      records.push(withObservation(row, ctx.collectedAt, false));
       if (row.repo_url) {
         const ref = parseGithubRepo(row.repo_url);
         if (ref) {
@@ -149,7 +161,7 @@ export const smitheryAdapter: SourceAdapter = {
       throw new Error(`smithery validation failed for ${invalid}/${servers.length} rows`);
     }
 
-    ctx.log.info("smithery collected", { pages, rows: records.length, totalCount });
+    ctx.log.info("smithery collected", { pages, rows: records.length, totalCount, truncated });
     const raw: SmitheryRawSnapshot = {
       endpoint: SMITHERY_SERVERS_URL,
       fetchedAt: ctx.collectedAt,
@@ -163,6 +175,10 @@ export const smitheryAdapter: SourceAdapter = {
       collectedAt: ctx.collectedAt,
       rowCount: records.length,
       skipped: false,
+      truncated,
+      failed: false,
+      error: stoppedAt?.error,
+      stoppedAt,
       raw,
       records,
     };

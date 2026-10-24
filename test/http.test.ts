@@ -26,6 +26,24 @@ describe("http client", () => {
     expect(calls).toBe(2);
   });
 
+  it("retries HTTP 500s with backoff then returns JSON", async () => {
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls += 1;
+      if (calls < 3) {
+        return new Response(JSON.stringify({ title: "Internal Server Error", detail: "Failed to get registry list" }), {
+          status: 500,
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    };
+    const http = createHttpClient({ fetchImpl, maxRetries: 4, sleep: async () => {} });
+    await expect(http.fetchJson<{ ok: boolean }>("https://registry.modelcontextprotocol.io/v0.1/servers")).resolves.toEqual({
+      ok: true,
+    });
+    expect(calls).toBe(3);
+  });
+
   it("retries 429s and then returns JSON", async () => {
     let calls = 0;
     const fetchImpl = async () => {

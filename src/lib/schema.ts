@@ -36,6 +36,8 @@ export const SourceRowSchema = z.object({
   pypi_last_week_downloads: z.number().int().nullable(),
   pypi_last_month_downloads: z.number().int().nullable(),
   verified: z.boolean().nullable(),
+  fetched_at: z.string().nullable().optional().default(null),
+  carried_forward: z.boolean().optional().default(false),
 });
 
 export type SourceRow = z.infer<typeof SourceRowSchema>;
@@ -59,9 +61,29 @@ export const AppRowSchema = z.object({
   npm_weekly_downloads: z.number().int().nullable(),
   pypi_last_week_downloads: z.number().int().nullable(),
   pypi_last_month_downloads: z.number().int().nullable(),
+  stars_fetched_at: z.string().nullable().optional().default(null),
+  stars_carried_forward: z.boolean().optional().default(false),
+  use_count_fetched_at: z.string().nullable().optional().default(null),
+  use_count_carried_forward: z.boolean().optional().default(false),
+  npm_weekly_downloads_fetched_at: z.string().nullable().optional().default(null),
+  npm_weekly_downloads_carried_forward: z.boolean().optional().default(false),
+  pypi_last_week_downloads_fetched_at: z.string().nullable().optional().default(null),
+  pypi_last_week_downloads_carried_forward: z.boolean().optional().default(false),
+  pypi_last_month_downloads_fetched_at: z.string().nullable().optional().default(null),
+  pypi_last_month_downloads_carried_forward: z.boolean().optional().default(false),
+  stars_source: z.string().nullable().optional().default(null),
 });
 
 export type AppRow = z.infer<typeof AppRowSchema>;
+
+export const SourceStoppedAtSchema = z.object({
+  source: SourceNameSchema,
+  page: z.number().int().nonnegative().optional(),
+  cursor: z.string().optional(),
+  error: z.string(),
+});
+
+export type SourceStoppedAt = z.infer<typeof SourceStoppedAtSchema>;
 
 export const SourceManifestSchema = z.object({
   source: SourceNameSchema,
@@ -74,6 +96,12 @@ export const SourceManifestSchema = z.object({
   fetchedCount: z.number().int().nonnegative().optional(),
   coverage: z.number().min(0).max(1).optional(),
   lastFetchedAt: z.string().optional(),
+  failed: z.boolean().optional(),
+  error: z.string().optional(),
+  truncated: z.boolean().optional(),
+  backfilled: z.boolean().optional(),
+  backfilledFields: z.array(z.string()).optional(),
+  stoppedAt: SourceStoppedAtSchema.optional(),
 });
 
 export type SourceManifest = z.infer<typeof SourceManifestSchema>;
@@ -84,6 +112,9 @@ export const SnapshotManifestSchema = z.object({
   sources: z.array(SourceManifestSchema),
   appCount: z.number().int().nonnegative(),
   sourceRowCount: z.number().int().nonnegative(),
+  partial: z.boolean().optional(),
+  completedSources: z.array(SourceNameSchema).optional(),
+  failedSourceCount: z.number().int().nonnegative().optional(),
 });
 
 export type SnapshotManifest = z.infer<typeof SnapshotManifestSchema>;
@@ -107,6 +138,31 @@ export function emptySourceRow(partial: Partial<SourceRow> & Pick<SourceRow, "sn
     pypi_last_week_downloads: null,
     pypi_last_month_downloads: null,
     verified: null,
+    fetched_at: null,
+    carried_forward: false,
     ...partial,
   };
+}
+
+export function withObservation(
+  row: SourceRow,
+  fetchedAt: string | null | undefined,
+  carriedForward: boolean,
+): SourceRow {
+  return {
+    ...row,
+    fetched_at: fetchedAt ?? null,
+    carried_forward: carriedForward,
+  };
+}
+
+export function sourceIsIncomplete(source: Pick<SourceManifest, "failed" | "truncated">): boolean {
+  return source.failed === true || source.truncated === true;
+}
+
+export function snapshotIsPartial(manifest: SnapshotManifest): boolean {
+  if (manifest.partial === true) {
+    return true;
+  }
+  return manifest.sources.some(sourceIsIncomplete);
 }

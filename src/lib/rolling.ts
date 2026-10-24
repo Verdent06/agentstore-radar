@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { writeFileAtomic } from "./io.ts";
 
 export const DEFAULT_REFRESH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -97,8 +98,7 @@ export function loadJsonState<T>(path: string, fallback: T): T {
 }
 
 export function persistJsonState(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(value)}\n`);
+  writeFileAtomic(path, `${JSON.stringify(value)}\n`);
 }
 
 export function clearStateFile(path: string): void {

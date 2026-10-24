@@ -118,11 +118,13 @@ export function runTool(
     case "movers": {
       const window = args.window === "7d" ? "7d" : "1d";
       const metric = typeof args.metric === "string" ? asMetric(args.metric) : undefined;
+      const rows = movers(agg, { window, metric, limit: typeof args.limit === "number" ? args.limit : 10 });
       return jsonResult({
         window,
-        from: window === "7d" ? agg.meta.weekAgoDate : agg.meta.previousDate,
-        to: agg.meta.latestDate,
-        rows: movers(agg, { window, metric, limit: typeof args.limit === "number" ? args.limit : 10 }),
+        from: window === "7d" ? agg.meta.weekAgoDate : agg.meta.previousCompleteDate ?? agg.meta.previousDate,
+        to: agg.meta.latestCompleteDate ?? agg.meta.latestDate,
+        partialDates: agg.meta.partialDates ?? [],
+        rows,
       });
     }
     case "competitors": {

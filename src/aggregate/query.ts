@@ -96,11 +96,94 @@ export function metricFromSeries(series: CompactSeries | undefined, metric: Metr
   return column?.[index] ?? null;
 }
 
+export function metricCarriedForward(series: CompactSeries | undefined, metric: MetricKey, index: number): boolean {
+  if (!series) {
+    return false;
+  }
+  const column =
+    metric === "use_count"
+      ? series.uc
+      : metric === "stars"
+        ? series.sc
+        : metric === "npm_weekly_downloads"
+          ? series.nc
+          : metric === "pypi_last_week_downloads"
+            ? series.pc
+            : undefined;
+  return column?.[index] === 1;
+}
+
+function previousFreshValue(
+  agg: Aggregate,
+  series: CompactSeries | undefined,
+  metric: MetricKey,
+  fromIndex: number,
+  walkBack: boolean,
+): number | null {
+  const partial = new Set(agg.meta.partialDates ?? []);
+  const skip = (index: number): boolean =>
+    partial.has(agg.meta.snapshotDates[index] ?? "") || metricCarriedForward(series, metric, index);
+  if (walkBack) {
+    for (let index = fromIndex; index >= 0; index -= 1) {
+      if (skip(index)) {
+        continue;
+      }
+      const value = metricFromSeries(series, metric, index);
+      if (value != null) {
+        return value;
+      }
+    }
+    return null;
+  }
+  if (skip(fromIndex)) {
+    return null;
+  }
+  return metricFromSeries(series, metric, fromIndex);
+}
+
 export function dateIndex(agg: Aggregate, date: string | null | undefined): number {
   if (!date) {
     return -1;
   }
   return agg.meta.snapshotDates.indexOf(date);
+}
+
+export function completeSnapshotDates(agg: Aggregate): string[] {
+  const partial = new Set(agg.meta.partialDates ?? []);
+  return agg.meta.snapshotDates.filter((date) => !partial.has(date));
+}
+
+export function addUtcDays(date: string, days: number): string {
+  const next = new Date(`${date}T00:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next.toISOString().slice(0, 10);
+}
+
+export function growthWindow(
+  agg: Aggregate,
+  window: "1d" | "7d",
+): { fromDate: string; toDate: string; fromIndex: number; toIndex: number } | null {
+  const complete = completeSnapshotDates(agg);
+  const toDate = complete.at(-1);
+  if (!toDate) {
+    return null;
+  }
+  let fromDate: string | undefined;
+  if (window === "7d") {
+    const target = addUtcDays(toDate, -7);
+    fromDate = complete.filter((date) => date <= target).at(-1) ?? complete[0];
+  } else {
+    fromDate = complete.length >= 2 ? complete.at(-2) : undefined;
+  }
+  if (!fromDate || fromDate === toDate) {
+    return null;
+  }
+  const fromIndex = dateIndex(agg, fromDate);
+  const toIndex = dateIndex(agg, toDate);
+  if (fromIndex < 0 || toIndex < 0) {
+    return null;
+  }
+  return { fromDate, toDate, fromIndex, toIndex };
 }
 
 export function topChart(agg: Aggregate, chart: ChartId, limit?: number): RankedApp[] {
@@ -110,12 +193,17 @@ export function topChart(agg: Aggregate, chart: ChartId, limit?: number): Ranked
     .filter((row): row is { app: AppSummary; value: number } => row.value != null)
     .sort((a, b) => b.value - a.value || a.app.id.localeCompare(b.app.id));
 
-  const prevDate = agg.meta.previousDate;
+  const prevDate = agg.meta.previousCompleteDate ?? agg.meta.previousDate;
   const prevIndex = dateIndex(agg, prevDate);
   const prevRank = new Map<string, number>();
   if (prevIndex >= 0) {
     const previous = agg.apps
-      .map((app) => ({ id: app.id, value: metricFromSeries(agg.series[app.id], metric, prevIndex) }))
+      .map((app) => ({
+        id: app.id,
+        value: metricCarriedForward(agg.series[app.id], metric, prevIndex)
+          ? null
+          : metricFromSeries(agg.series[app.id], metric, prevIndex),
+      }))
       .filter((row): row is { id: string; value: number } => row.value != null)
       .sort((a, b) => b.value - a.value || a.id.localeCompare(b.id));
     previous.forEach((row, index) => prevRank.set(row.id, index + 1));
@@ -123,7 +211,9 @@ export function topChart(agg: Aggregate, chart: ChartId, limit?: number): Ranked
 
   return rows.slice(0, clampLimit(limit)).map((row, index) => {
     const previousValue =
-      prevIndex >= 0 ? metricFromSeries(agg.series[row.app.id], metric, prevIndex) : null;
+      prevIndex >= 0 && !metricCarriedForward(agg.series[row.app.id], metric, prevIndex)
+        ? metricFromSeries(agg.series[row.app.id], metric, prevIndex)
+        : null;
     return {
       rank: index + 1,
       previousRank: prevRank.get(row.app.id) ?? null,
@@ -160,24 +250,23 @@ export function movers(
   options?: { window?: "1d" | "7d"; metric?: MetricKey; limit?: number },
 ): MoverRow[] {
   const window = options?.window ?? "1d";
-  const fromDate = window === "7d" ? agg.meta.weekAgoDate : agg.meta.previousDate;
-  const toDate = agg.meta.latestDate;
-  if (!fromDate || !toDate || fromDate === toDate) {
+  const range = growthWindow(agg, window);
+  if (!range) {
     return [];
   }
-  const fromIndex = dateIndex(agg, fromDate);
-  const toIndex = dateIndex(agg, toDate);
-  if (fromIndex < 0 || toIndex < 0) {
-    return [];
-  }
+  const { fromIndex, toIndex } = range;
   const metrics: MetricKey[] = options?.metric ? [options.metric] : ["use_count", "stars", "npm_weekly_downloads", "gemini_stars"];
   const limit = clampLimit(options?.limit, 10);
   const out: MoverRow[] = [];
   for (const metric of metrics) {
     const scored: MoverRow[] = [];
     for (const app of agg.apps) {
-      const previous = metricFromSeries(agg.series[app.id], metric, fromIndex);
-      const current = metricFromSeries(agg.series[app.id], metric, toIndex);
+      const series = agg.series[app.id];
+      if (metricCarriedForward(series, metric, toIndex)) {
+        continue;
+      }
+      const current = metricFromSeries(series, metric, toIndex);
+      const previous = previousFreshValue(agg, series, metric, fromIndex, window === "7d");
       if (previous == null || current == null) {
         continue;
       }

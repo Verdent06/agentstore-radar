@@ -1,4 +1,4 @@
-import { HOST_MIN_INTERVAL_MS, MAX_RATE_LIMIT_WAIT_MS, USER_AGENT } from "./config.ts";
+import { HOST_MIN_INTERVAL_MS, HTTP_5XX_MAX_WAIT_MS, HTTP_MAX_RETRIES, MAX_RATE_LIMIT_WAIT_MS, USER_AGENT } from "./config.ts";
 import { sleep } from "./util.ts";
 
 export class HttpError extends Error {
@@ -40,7 +40,9 @@ export interface HttpClient {
   fetchText(url: string, init?: HttpRequestInit): Promise<string>;
 }
 
-const RETRYABLE = new Set([429, 502, 503, 504]);
+export function isRetryableHttpStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599);
+}
 
 export function parseRetryAfterMs(value: string | null | undefined, nowMs = Date.now()): number | undefined {
   if (!value) {
@@ -112,7 +114,7 @@ export function retryWaitMs(input: {
   if (input.rateLimited) {
     return Math.min(180_000, 30_000 * 2 ** input.attempt);
   }
-  return Math.min(16_000, 500 * 2 ** input.attempt);
+  return Math.min(HTTP_5XX_MAX_WAIT_MS, 1_000 * 2 ** input.attempt);
 }
 
 function retryAfterFromBody(body: string): number | undefined {
@@ -132,11 +134,13 @@ export function createHttpClient(options?: {
   userAgent?: string;
   maxRetries?: number;
   defaultTimeoutMs?: number;
+  sleep?: (ms: number) => Promise<void>;
 }): HttpClient {
   const fetchImpl = options?.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const userAgent = options?.userAgent ?? USER_AGENT;
-  const maxRetries = options?.maxRetries ?? 5;
+  const maxRetries = options?.maxRetries ?? HTTP_MAX_RETRIES;
   const defaultTimeoutMs = options?.defaultTimeoutMs ?? 30_000;
+  const sleepFn = options?.sleep ?? sleep;
   const nextAllowed = new Map<string, number>();
 
   async function throttle(url: string, overrideMs?: number): Promise<void> {
@@ -145,7 +149,7 @@ export function createHttpClient(options?: {
     const now = Date.now();
     const allowed = nextAllowed.get(host) ?? 0;
     if (now < allowed) {
-      await sleep(allowed - now);
+      await sleepFn(allowed - now);
     }
     nextAllowed.set(host, Date.now() + interval);
   }
@@ -197,14 +201,14 @@ export function createHttpClient(options?: {
           return body;
         }
         const rateLimited = isRateLimited(response.status, body, response.headers);
-        if ((RETRYABLE.has(response.status) || rateLimited || cloudflare) && attempt < maxRetries) {
+        if ((isRetryableHttpStatus(response.status) || rateLimited || cloudflare) && attempt < maxRetries) {
           const waitMs = retryWaitMs({
             attempt,
             retryAfterMs,
             rateLimited,
             cloudflare,
           });
-          await sleep(waitMs);
+          await sleepFn(waitMs);
           continue;
         }
         throw new HttpError(url, response.status, body.slice(0, 2000), {
@@ -219,7 +223,7 @@ export function createHttpClient(options?: {
           throw error;
         }
         if (attempt < maxRetries) {
-          await sleep(Math.min(16_000, 500 * 2 ** attempt));
+          await sleepFn(Math.min(16_000, 500 * 2 ** attempt));
           continue;
         }
         throw error;

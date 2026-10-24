@@ -52,6 +52,43 @@ function seriesValue(agg: Aggregate, id: string, metric: MetricKey, index: numbe
   return column?.[index] ?? null;
 }
 
+function seriesCarried(agg: Aggregate, id: string, metric: MetricKey, index: number): boolean {
+  const series = agg.series[id];
+  if (!series || index < 0) return false;
+  const column =
+    metric === "use_count"
+      ? series.uc
+      : metric === "stars"
+        ? series.sc
+        : metric === "npm_weekly_downloads"
+          ? series.nc
+          : metric === "pypi_last_week_downloads"
+            ? series.pc
+            : undefined;
+  return column?.[index] === 1;
+}
+
+function completeDates(agg: Aggregate): string[] {
+  const partial = new Set(agg.meta.partialDates ?? []);
+  return agg.meta.snapshotDates.filter((date) => !partial.has(date));
+}
+
+function previousFreshValue(agg: Aggregate, id: string, metric: MetricKey, fromIndex: number, walkBack: boolean): number | null {
+  const partial = new Set(agg.meta.partialDates ?? []);
+  const skip = (index: number) =>
+    partial.has(agg.meta.snapshotDates[index] ?? "") || seriesCarried(agg, id, metric, index);
+  if (walkBack) {
+    for (let index = fromIndex; index >= 0; index -= 1) {
+      if (skip(index)) continue;
+      const value = seriesValue(agg, id, metric, index);
+      if (value != null) return value;
+    }
+    return null;
+  }
+  if (skip(fromIndex)) return null;
+  return seriesValue(agg, id, metric, fromIndex);
+}
+
 export function seriesToPoints(agg: Aggregate, id: string): HistoryPoint[] {
   const packed = agg.series[id];
   if (!packed) return [];
@@ -75,17 +112,24 @@ export function topChart(agg: Aggregate, chart: ChartId, limit = 50): RankedApp[
     .map((app) => ({ app, value: metricFromApp(app, metric) }))
     .filter((row): row is { app: AppSummary; value: number } => row.value != null)
     .sort((a, b) => b.value - a.value || a.app.id.localeCompare(b.app.id));
-  const prevIndex = agg.meta.previousDate ? agg.meta.snapshotDates.indexOf(agg.meta.previousDate) : -1;
+  const prevDate = agg.meta.previousCompleteDate ?? agg.meta.previousDate;
+  const prevIndex = prevDate ? agg.meta.snapshotDates.indexOf(prevDate) : -1;
   const prevRank = new Map<string, number>();
   if (prevIndex >= 0) {
     agg.apps
-      .map((app) => ({ id: app.id, value: seriesValue(agg, app.id, metric, prevIndex) }))
+      .map((app) => ({
+        id: app.id,
+        value: seriesCarried(agg, app.id, metric, prevIndex) ? null : seriesValue(agg, app.id, metric, prevIndex),
+      }))
       .filter((row): row is { id: string; value: number } => row.value != null)
       .sort((a, b) => b.value - a.value || a.id.localeCompare(b.id))
       .forEach((row, index) => prevRank.set(row.id, index + 1));
   }
   return rows.slice(0, clamp(limit, 50)).map((row, index) => {
-    const previousValue = prevIndex >= 0 ? seriesValue(agg, row.app.id, metric, prevIndex) : null;
+    const previousValue =
+      prevIndex >= 0 && !seriesCarried(agg, row.app.id, metric, prevIndex)
+        ? seriesValue(agg, row.app.id, metric, prevIndex)
+        : null;
     return {
       rank: index + 1,
       previousRank: prevRank.get(row.app.id) ?? null,
@@ -101,9 +145,19 @@ export function movers(
   agg: Aggregate,
   options?: { window?: "1d" | "7d"; metric?: MetricKey; limit?: number },
 ): MoverRow[] {
-  const fromDate = options?.window === "7d" ? agg.meta.weekAgoDate : agg.meta.previousDate;
-  const toDate = agg.meta.latestDate;
-  if (!fromDate || !toDate || fromDate === toDate) return [];
+  const complete = completeDates(agg);
+  const toDate = complete.at(-1);
+  if (!toDate) return [];
+  let fromDate: string | undefined;
+  if (options?.window === "7d") {
+    const target = new Date(`${toDate}T00:00:00Z`);
+    target.setUTCDate(target.getUTCDate() - 7);
+    const wanted = target.toISOString().slice(0, 10);
+    fromDate = complete.filter((date) => date <= wanted).at(-1) ?? complete[0];
+  } else {
+    fromDate = complete.length >= 2 ? complete.at(-2) : undefined;
+  }
+  if (!fromDate || fromDate === toDate) return [];
   const fromIndex = agg.meta.snapshotDates.indexOf(fromDate);
   const toIndex = agg.meta.snapshotDates.indexOf(toDate);
   const metrics: MetricKey[] = options?.metric
@@ -114,8 +168,9 @@ export function movers(
   for (const metric of metrics) {
     const scored: MoverRow[] = [];
     for (const app of agg.apps) {
-      const previous = seriesValue(agg, app.id, metric, fromIndex);
+      if (seriesCarried(agg, app.id, metric, toIndex)) continue;
       const current = seriesValue(agg, app.id, metric, toIndex);
+      const previous = previousFreshValue(agg, app.id, metric, fromIndex, options?.window === "7d");
       if (previous == null || current == null || current === previous) continue;
       const delta = current - previous;
       scored.push({

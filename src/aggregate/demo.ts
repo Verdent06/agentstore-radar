@@ -668,6 +668,8 @@ function manifestFor(date: string, sourceRows: SourceRow[], appCount: number): S
     collectedAt: `${date}T12:00:00.000Z`,
     appCount,
     sourceRowCount: sourceRows.length,
+    partial: false,
+    completedSources: sources,
     sources: sources.map((source) => {
       const count = sourceRows.filter((row) => row.source === source).length;
       return {

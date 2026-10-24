@@ -37,9 +37,40 @@ describe("mergeApps", () => {
     expect(apps[0]).toMatchObject({
       app_id: "github:example/weather",
       stars: 42,
+      stars_source: "github",
       npm_weekly_downloads: 1234,
       display_name: "Weather",
     });
     expect(apps[0]?.sources.split("|")).toEqual(["github", "mcp-registry", "npm"]);
+  });
+
+  it("prefers live GitHub stars over the static Gemini gallery value and labels the source", () => {
+    const apps = mergeApps("2026-10-24", [
+      emptySourceRow({
+        snapshot_date: "2026-10-24",
+        app_id: "github:obra/superpowers",
+        source: "gemini-cli",
+        source_id: "obra/superpowers",
+        name: "superpowers",
+        stars: 299294,
+        fetched_at: "2026-10-24T12:00:00Z",
+        carried_forward: false,
+      }),
+      emptySourceRow({
+        snapshot_date: "2026-10-24",
+        app_id: "github:obra/superpowers",
+        source: "github",
+        source_id: "obra/superpowers",
+        name: "obra/superpowers",
+        stars: 304442,
+        fetched_at: "2026-10-24T12:00:00Z",
+        carried_forward: false,
+      }),
+    ]);
+    expect(apps[0]).toMatchObject({
+      stars: 304442,
+      stars_source: "github",
+      stars_carried_forward: false,
+    });
   });
 });

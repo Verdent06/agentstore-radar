@@ -1,6 +1,7 @@
-import { HEALTH_DROP_THRESHOLD, LOW_COVERAGE_THRESHOLD, REPO_URL } from "../lib/config.ts";
+import { COLLECTOR_ISSUE_REPO_DEFAULT, HEALTH_DROP_THRESHOLD, LOW_COVERAGE_THRESHOLD, REPO_URL } from "../lib/config.ts";
 import { formatCoveragePct, isLowCoverage } from "../lib/coverage.ts";
 import { utcDateString } from "../lib/dates.ts";
+import { createGitHubIssueClient } from "../lib/github-issue.ts";
 import { listSnapshotDates, previousSnapshotDate, readManifest, resolveDataDir } from "../lib/io.ts";
 import { createLogger, type Logger } from "../lib/logger.ts";
 import type { SourceManifest, SourceName } from "../lib/schema.ts";
@@ -146,60 +147,28 @@ export function collectCoverageFindings(
   return findings;
 }
 
-export function resolveHealthIssueRepo(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const repo = env.HEALTH_ISSUE_REPO?.trim();
-  return repo && repo.length > 0 ? repo : undefined;
+export function resolveHealthIssueRepo(env: NodeJS.ProcessEnv = process.env): string {
+  return (
+    env.HEALTH_ISSUE_REPO?.trim() ||
+    env.COLLECTOR_ISSUE_REPO?.trim() ||
+    env.GITHUB_REPOSITORY?.trim() ||
+    COLLECTOR_ISSUE_REPO_DEFAULT
+  );
 }
 
 export async function githubIssueOpener(env: NodeJS.ProcessEnv = process.env): Promise<IssueOpener> {
-  const token = env.HEALTH_ISSUE_TOKEN ?? env.GITHUB_TOKEN ?? env.GH_TOKEN;
+  const token = env.GITHUB_TOKEN ?? env.GH_TOKEN ?? env.HEALTH_ISSUE_TOKEN;
   const repo = resolveHealthIssueRepo(env);
   return async ({ title, body, labels }) => {
-    if (!repo) {
-      return { created: false, reason: "HEALTH_ISSUE_REPO unset; not opening issues on the public repo" };
-    }
     if (!token) {
-      return { created: false, reason: "no token available to open a health issue" };
+      return { created: false, reason: "no GITHUB_TOKEN available to open a health issue" };
     }
-    const query = new URL("https://api.github.com/search/issues");
-    query.searchParams.set("q", `repo:${repo} is:issue is:open label:${labels[0] ?? "source-health"} in:title ${title}`);
-    const search = await fetch(query, {
-      headers: {
-        authorization: `Bearer ${token}`,
-        accept: "application/vnd.github+json",
-        "user-agent": "agentstore-radar-health",
-      },
+    const opener = createGitHubIssueClient({
+      repo,
+      token,
+      userAgent: "agentstore-radar-health",
     });
-    if (search.ok) {
-      const payload = (await search.json()) as { items?: Array<{ html_url?: string }> };
-      const existing = payload.items?.[0];
-      if (existing?.html_url) {
-        return { created: false, url: existing.html_url, reason: "open issue already exists" };
-      }
-    }
-    const headers = {
-      authorization: `Bearer ${token}`,
-      accept: "application/vnd.github+json",
-      "content-type": "application/json",
-      "user-agent": "agentstore-radar-health",
-    };
-    let created = await fetch(`https://api.github.com/repos/${repo}/issues`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ title, body, labels }),
-    });
-    if (created.status === 422 && labels.length > 0) {
-      created = await fetch(`https://api.github.com/repos/${repo}/issues`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ title, body }),
-      });
-    }
-    if (!created.ok) {
-      return { created: false, reason: `GitHub issue create failed: HTTP ${created.status}` };
-    }
-    const payload = (await created.json()) as { html_url?: string };
-    return { created: true, url: payload.html_url };
+    return opener({ title, body, labels, commentOnExisting: false });
   };
 }
 

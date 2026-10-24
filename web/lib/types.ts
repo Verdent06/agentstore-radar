@@ -53,6 +53,7 @@ export type AppSummary = {
   pypiLastWeekDownloads: number | null;
   geminiStars: number | null;
   verified: boolean | null;
+  starsSource?: string | null;
 };
 
 export type CompactSeries = {
@@ -61,6 +62,10 @@ export type CompactSeries = {
   n?: Array<number | null>;
   p?: Array<number | null>;
   g?: Array<number | null>;
+  sc?: Array<0 | 1 | null>;
+  uc?: Array<0 | 1 | null>;
+  nc?: Array<0 | 1 | null>;
+  pc?: Array<0 | 1 | null>;
 };
 
 export type HistoryPoint = {
@@ -119,6 +124,9 @@ export type Aggregate = {
     latestDate: string | null;
     previousDate: string | null;
     weekAgoDate: string | null;
+    partialDates?: string[];
+    latestCompleteDate?: string | null;
+    previousCompleteDate?: string | null;
     coverage: CoverageRow[];
   };
   stats: HeadlineStats;
@@ -170,7 +178,7 @@ export const CHART_META: Record<ChartId, { title: string; metric: MetricKey; uni
     title: "Gemini CLI gallery",
     metric: "gemini_stars",
     unit: "gallery stars",
-    blurb: "Stars as published on the Gemini CLI extensions gallery.",
+    blurb: "Static gallery star counts from extensions.json. App-level stars prefer live GitHub.",
   },
 };
 
