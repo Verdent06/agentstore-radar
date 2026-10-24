@@ -37,7 +37,7 @@ export function DemoBanner({ origin, latestDate }: { origin: string; latestDate:
 export function formatKpis(stats: {
   appCount: number;
   storeCount: number;
-  totalUseCount: number;
+  totalNpmWeekly: number;
   totalStars: number;
   multiStoreCount: number;
   newArrivalCount: number;
@@ -47,7 +47,7 @@ export function formatKpis(stats: {
   return [
     { label: "Apps tracked", value: formatNumber(stats.appCount), hint: `${stats.snapshotCount} snapshots` },
     { label: "Stores", value: formatNumber(stats.storeCount), hint: stats.latestDate ?? "" },
-    { label: "Smithery connections", value: formatCount(stats.totalUseCount), hint: "sum of latest use count" },
+    { label: "npm / week", value: formatCount(stats.totalNpmWeekly), hint: "sum of latest weekly downloads" },
     { label: "GitHub stars", value: formatCount(stats.totalStars), hint: `${stats.multiStoreCount} multi-store · ${stats.newArrivalCount} new` },
   ];
 }

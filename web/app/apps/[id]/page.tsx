@@ -47,9 +47,8 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
         <StorePills stores={app.stores} />
       </div>
 
-      <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-5">
+      <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
         {[
-          ["Use count", app.useCount],
           ["Stars", app.stars],
           ["npm / week", app.npmWeeklyDownloads],
           ["PyPI / week", app.pypiLastWeekDownloads],

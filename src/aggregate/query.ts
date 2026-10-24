@@ -524,6 +524,7 @@ export function categoryTrends(agg: Aggregate, slug?: CategorySlug): CategoryTre
     let appCount = 0;
     let stars = 0;
     let sourceBroken = false;
+    let carriedExcluded = false;
     for (const app of agg.apps) {
       if (slug && app.category !== slug) {
         continue;
@@ -544,13 +545,17 @@ export function categoryTrends(agg: Aggregate, slug?: CategorySlug): CategoryTre
       if (previous != null && starsSourceBreak(series, "stars", previous.index, index)) {
         sourceBroken = true;
       }
-      if (!metricCarriedForward(series, "stars", index)) {
-        stars += metricFromSeries(series, "stars", index) ?? 0;
+      if (metricCarriedForward(series, "stars", index)) {
+        carriedExcluded = true;
+        continue;
       }
+      stars += metricFromSeries(series, "stars", index) ?? 0;
     }
     const roundedStars = roundCount(stars) ?? 0;
-    const starsGrowth = sourceBroken ? null : growthFrom(previous?.stars, roundedStars);
-    previous = { index, stars: roundedStars };
+    const starsGrowth = sourceBroken || carriedExcluded ? null : growthFrom(previous?.stars, roundedStars);
+    if (!carriedExcluded) {
+      previous = { index, stars: roundedStars };
+    }
     return { date: day.date, appCount, stars: roundedStars, starsGrowth, gap: null };
   });
 }
@@ -615,19 +620,24 @@ export function competitors(agg: Aggregate, id: string, limit?: number): Array<A
   return scored.slice(0, clampLimit(limit, COMPETITORS_CAP));
 }
 
+function omitUseCount<T extends { useCount?: unknown }>(row: T): Omit<T, "useCount"> {
+  const { useCount: _omitted, ...rest } = row;
+  return rest;
+}
+
 export function appDetail(agg: Aggregate, id: string) {
   const app = findApp(agg, id);
   if (!app) {
     return null;
   }
   return {
-    app,
+    app: omitUseCount(app),
     history: seriesToPoints(agg, app.id),
     ranks: {
       npm_weekly_downloads: rankHistory(agg, app.id, "npm_weekly_downloads"),
       stars: rankHistory(agg, app.id, "stars"),
     },
-    competitors: competitors(agg, app.id, COMPETITORS_CAP),
+    competitors: competitors(agg, app.id, COMPETITORS_CAP).map(omitUseCount),
     answerShare: answerShareForApp(agg.answerShare, app.id),
   };
 }

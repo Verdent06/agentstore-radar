@@ -18,7 +18,6 @@ export default function HomePage() {
   const sparks = new Map(rows.map((row) => [row.app.id, sparkValues(agg, row.app.id, sparkMetric)]));
   const arrivals = newArrivals(agg, 5);
   const charts = [
-    { href: "/charts/smithery", label: "Smithery", row: topChart(agg, "smithery", 1)[0] },
     { href: "/charts/npm", label: "npm", row: topChart(agg, "npm", 1)[0] },
     { href: "/charts/github", label: "GitHub", row: topChart(agg, "github", 1)[0] },
     { href: "/charts/gemini", label: "Gemini CLI", row: topChart(agg, "gemini", 1)[0] },
@@ -40,7 +39,7 @@ export default function HomePage() {
 
       <KpiGrid items={formatKpis(agg.stats)} />
 
-      <div className="mt-8 grid gap-3 md:grid-cols-4">
+      <div className="mt-8 grid gap-3 md:grid-cols-3">
         {charts.map((card) => (
           <Link key={card.href} href={card.href} className="surface rounded-lg px-4 py-3 hover:border-accent">
             <div className="text-[11px] uppercase tracking-wide text-muted">{card.label}</div>

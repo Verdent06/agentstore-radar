@@ -1,6 +1,6 @@
 import type { SourceName } from "../lib/schema.ts";
 
-export const CHART_IDS = ["smithery", "npm", "github", "gemini"] as const;
+export const CHART_IDS = ["npm", "github", "gemini"] as const;
 export type ChartId = (typeof CHART_IDS)[number];
 
 export const METRIC_KEYS = [
@@ -202,13 +202,6 @@ export const CHART_META: Record<
   ChartId,
   { title: string; metric: MetricKey; source: string; unit: string; blurb: string }
 > = {
-  smithery: {
-    title: "Smithery connections",
-    metric: "use_count",
-    source: "smithery",
-    unit: "use count",
-    blurb: "Live connections reported by the Smithery catalog.",
-  },
   npm: {
     title: "npm weekly downloads",
     metric: "npm_weekly_downloads",

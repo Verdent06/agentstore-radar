@@ -32,17 +32,26 @@ export const TOOL_NAMES = [
 
 export type ToolName = (typeof TOOL_NAMES)[number];
 
-function asChart(value: string | undefined): ChartId {
-  if (value && (CHART_IDS as readonly string[]).includes(value)) {
+function asChart(value: string | undefined): ChartId | { error: string } {
+  if (value == null || value === "") {
+    return "npm";
+  }
+  if (value === "smithery") {
+    return { error: "chart unavailable: smithery" };
+  }
+  if ((CHART_IDS as readonly string[]).includes(value)) {
     return value as ChartId;
   }
-  return "smithery";
+  return { error: `unknown chart: ${value}` };
 }
 
-/** Missing metric defaults to npm downloads. Unknown names are rejected. */
+/** Missing metric defaults to npm downloads. Unknown names and use_count are rejected. */
 function asMetric(value: string | undefined): MetricKey | { error: string } {
   if (value == null || value === "") {
     return "npm_weekly_downloads";
+  }
+  if (value === "use_count") {
+    return { error: "unknown metric: use_count" };
   }
   if ((METRIC_KEYS as readonly string[]).includes(value)) {
     return value as MetricKey;
@@ -109,6 +118,9 @@ export function runTool(
     }
     case "top_charts": {
       const chart = asChart(typeof args.chart === "string" ? args.chart : undefined);
+      if (typeof chart !== "string") {
+        return jsonResult(chart);
+      }
       const limit = typeof args.limit === "number" ? args.limit : PUBLIC_DEFAULT_LIMIT;
       return jsonResult({
         chart,

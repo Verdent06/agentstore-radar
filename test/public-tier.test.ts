@@ -29,6 +29,7 @@ import {
   topChart,
 } from "../src/aggregate/query.ts";
 import { runTool } from "../src/aggregate/tools.ts";
+import { CHART_IDS } from "../src/aggregate/types.ts";
 import { addUtcDays } from "../src/lib/dates.ts";
 import { writeNormalized } from "../src/lib/io.ts";
 import { mergeApps } from "../src/lib/merge.ts";
@@ -167,16 +168,17 @@ describe("list caps and public app pages", () => {
       id: `github:example/app-${String(index + 1).padStart(2, "0")}`,
       name: `App ${index + 1}`,
       useCount: (index + 1) * 1000,
+      npmWeekly: (index + 1) * 1000,
     }));
     writeDay(
       dataDir,
       "2026-10-14",
-      ids.map((row, index) => ({ ...row, useCount: row.useCount - (index + 1) * 100 })),
+      ids.map((row, index) => ({ ...row, useCount: row.useCount - (index + 1) * 100, npmWeekly: row.npmWeekly - (index + 1) * 100 })),
     );
     writeDay(dataDir, "2026-10-15", ids);
     const agg = buildAggregate(dataDir, "fixture");
 
-    expect(topChart(agg, "smithery", 50).length).toBeLessThanOrEqual(PUBLIC_TOP_N);
+    expect(topChart(agg, "npm", 50).length).toBeLessThanOrEqual(PUBLIC_TOP_N);
     expect(searchApps(agg, "", { limit: 50 }).length).toBeLessThanOrEqual(PUBLIC_TOP_N);
     expect(movers(agg, { window: "1d", metric: "use_count", limit: 50 }).length).toBeLessThanOrEqual(PUBLIC_TOP_N * 2);
     expect(clampLimit(50)).toBe(PUBLIC_MAX_LIMIT);
@@ -248,25 +250,31 @@ describe("partial snapshot exclusion", () => {
 });
 
 describe("rank_history metric fallback", () => {
-  it("never ranks by use_count when metric is missing or unknown", () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "radar-metric-"));
+  it("rank_history with no metric uses npm", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-metric-npm-"));
     writeDemoSnapshots(dataDir);
     const agg = buildAggregate(dataDir, "fixture");
-    const id = "github:example/github-mcp";
-    const missing = JSON.parse(runTool(agg, "rank_history", { app_id: id }).content[0]!.text);
+    const missing = JSON.parse(runTool(agg, "rank_history", { app_id: "github:example/github-mcp" }).content[0]!.text);
     expect(missing.metric).toBe("npm_weekly_downloads");
     expect(missing.metric).not.toBe("use_count");
-    expect(JSON.stringify(missing)).not.toContain("use_count");
+    expect(JSON.stringify(missing)).not.toMatch(/use_count|useCount/);
     expect(missing.points.every((point: { growth?: string | null }) => point.growth == null || /%$/.test(point.growth))).toBe(true);
+  });
 
-    const unknown = JSON.parse(runTool(agg, "rank_history", { app_id: id, metric: "not_a_metric" }).content[0]!.text);
+  it("rank_history with an unknown metric errors", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-metric-unknown-"));
+    writeDemoSnapshots(dataDir);
+    const agg = buildAggregate(dataDir, "fixture");
+    const unknown = JSON.parse(
+      runTool(agg, "rank_history", { app_id: "github:example/github-mcp", metric: "not_a_metric" }).content[0]!.text,
+    );
     expect(unknown).toEqual({ error: "unknown metric: not_a_metric" });
-    expect(JSON.stringify(unknown)).not.toContain("use_count");
+    expect(JSON.stringify(unknown)).not.toMatch(/use_count|useCount/);
     expect(unknown.points).toBeUndefined();
 
     const moversUnknown = JSON.parse(runTool(agg, "movers", { metric: "not_a_metric" }).content[0]!.text);
     expect(moversUnknown).toEqual({ error: "unknown metric: not_a_metric" });
-    expect(JSON.stringify(moversUnknown)).not.toContain("use_count");
+    expect(JSON.stringify(moversUnknown)).not.toMatch(/use_count|useCount/);
   });
 });
 
@@ -338,7 +346,7 @@ describe("MCP tool free-tier envelope", () => {
       runTool(agg, "app_details", { app_id: brave }),
       runTool(agg, "rank_history", { app_id: "github:example/github-mcp" }),
       runTool(agg, "rank_history", { app_id: brave, metric: "stars" }),
-      runTool(agg, "top_charts", { chart: "smithery", limit: 50 }),
+      runTool(agg, "top_charts", { chart: "npm", limit: 50 }),
       runTool(agg, "movers", { window: "7d", limit: 50 }),
       runTool(agg, "competitors", { app_id: brave, limit: 50 }),
       runTool(agg, "category_trends", { category: "search" }),
@@ -369,7 +377,7 @@ describe("MCP tool free-tier envelope", () => {
     }
     const detail = JSON.parse(runTool(agg, "app_details", { app_id: brave }).content[0]!.text);
     expect(detail.ranks.use_count).toBeUndefined();
-    expect(JSON.stringify(detail.history)).not.toMatch(/useCount|use_count/);
+    expect(JSON.stringify(detail)).not.toMatch(/useCount|use_count/);
     const charts = JSON.parse(runTool(agg, "top_charts", { chart: "npm", limit: 50 }).content[0]!.text);
     expect(charts.rows.length).toBeLessThanOrEqual(PUBLIC_TOP_N);
     expect(charts.rows[0]).not.toHaveProperty("delta");
@@ -523,5 +531,66 @@ describe("gap marking and window anchoring", () => {
     expect(values[carriedIndex]).toBeNull();
     expect(values.some((value) => value != null)).toBe(true);
     expect(JSON.stringify(values)).not.toContain("99999");
+  });
+
+  it("nulls categoryTrends starsGrowth when a carried_forward app is excluded from the sum", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-cat-carry-"));
+    const id = "github:example/carry";
+    writeDay(dataDir, "2026-10-10", [{ id, name: "Carry", stars: 100 }]);
+    writeDay(dataDir, "2026-10-11", [{ id, name: "Carry", stars: 140, starsCarried: true }]);
+    writeDay(dataDir, "2026-10-12", [{ id, name: "Carry", stars: 180 }]);
+    const agg = buildAggregate(dataDir, "fixture");
+    const points = categoryTrends(agg);
+    expect(points.find((point) => point.date === "2026-10-11")).toMatchObject({
+      starsGrowth: null,
+      gap: null,
+    });
+    expect(points.find((point) => point.date === "2026-10-12")?.starsGrowth).toBeTruthy();
+  });
+});
+
+describe("hidden smithery chart and public use_count", () => {
+  it("top_charts with no chart never ranks on use_count", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-default-chart-"));
+    writeDemoSnapshots(dataDir);
+    const agg = buildAggregate(dataDir, "fixture");
+    const payload = JSON.parse(runTool(agg, "top_charts", {}).content[0]!.text);
+    expect(payload.chart).toBe("npm");
+    expect(payload.chart).not.toBe("smithery");
+    expect(JSON.stringify(payload)).not.toMatch(/use_count|useCount/);
+    expect(payload.rows[0]?.id).toBe("github:example/github-mcp");
+  });
+
+  it("top_charts with chart=smithery returns unavailable and /charts/smithery is not generated", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-no-smithery-"));
+    writeDemoSnapshots(dataDir);
+    const agg = buildAggregate(dataDir, "fixture");
+    const hidden = JSON.parse(runTool(agg, "top_charts", { chart: "smithery" }).content[0]!.text);
+    expect(hidden).toEqual({ error: "chart unavailable: smithery" });
+    expect(hidden.rows).toBeUndefined();
+    expect(CHART_IDS).toEqual(["npm", "github", "gemini"]);
+    expect(CHART_IDS).not.toContain("smithery");
+    const chartPage = readFileSync(join(repoRoot, "web/app/charts/[chart]/page.tsx"), "utf8");
+    expect(chartPage).toContain("generateStaticParams");
+    expect(chartPage).toContain("CHART_IDS.map");
+    expect(readFileSync(join(repoRoot, "web/app/charts/page.tsx"), "utf8")).toContain("/charts/npm");
+    expect(readFileSync(join(repoRoot, "web/components/shell.tsx"), "utf8")).not.toContain("/charts/smithery");
+    expect(readFileSync(join(repoRoot, "web/app/page.tsx"), "utf8")).not.toContain("/charts/smithery");
+  });
+
+  it("app_details and the app page contain no use_count/useCount", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-no-use-"));
+    writeDemoSnapshots(dataDir);
+    const agg = buildAggregate(dataDir, "fixture");
+    const detail = JSON.parse(runTool(agg, "app_details", { app_id: "github:brave/brave-search-mcp" }).content[0]!.text);
+    expect(JSON.stringify(detail)).not.toMatch(/use_count|useCount/);
+    expect(detail.app).not.toHaveProperty("useCount");
+    const viaHelper = appDetail(agg, "github:brave/brave-search-mcp");
+    expect(JSON.stringify(viaHelper)).not.toMatch(/use_count|useCount/);
+    const page = readFileSync(join(repoRoot, "web/app/apps/[id]/page.tsx"), "utf8");
+    expect(page).not.toMatch(/use_count|useCount/);
+    expect(page).not.toMatch(/Use count/);
+    const kpis = readFileSync(join(repoRoot, "web/components/kpis.tsx"), "utf8");
+    expect(kpis).not.toMatch(/use_count|useCount|totalUseCount/);
   });
 });

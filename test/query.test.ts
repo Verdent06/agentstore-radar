@@ -31,12 +31,11 @@ function demoAggregate() {
 describe("public aggregate queries", () => {
   const agg = demoAggregate();
 
-  it("ranks Smithery / npm / GitHub / Gemini charts", () => {
-    expect(topChart(agg, "smithery", 3)[0]?.app.id).toBe("github:brave/brave-search-mcp");
+  it("ranks npm / GitHub / Gemini charts", () => {
     expect(topChart(agg, "npm", 1)[0]?.app.id).toBe("github:example/github-mcp");
     expect(topChart(agg, "github", 1)[0]?.app.id).toBe("github:obra/superpowers");
     expect(topChart(agg, "gemini", 1)[0]?.app.id).toBe("github:obra/superpowers");
-    expect(topChart(agg, "smithery", 5)[0]?.previousRank).toBe(1);
+    expect(topChart(agg, "npm", 5)[0]?.previousRank).toBe(1);
   });
 
   it("uses day-over-day npm movers on the home list when 2+ days exist", () => {
@@ -94,8 +93,8 @@ describe("public aggregate queries", () => {
     const payload = JSON.parse(result.content[0]!.text) as { apps: unknown[] };
     expect(payload.apps.length).toBeLessThanOrEqual(10);
     expect(result.content[0]!.text).not.toContain("source_rows.ndjson");
-    const charts = runTool(agg, "top_charts", { chart: "smithery", limit: 3 });
-    expect(charts.content[0]!.text).toContain("Brave Search");
+    const charts = runTool(agg, "top_charts", { chart: "npm", limit: 3 });
+    expect(charts.content[0]!.text).toContain("GitHub");
   });
 });
 

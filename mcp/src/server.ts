@@ -49,9 +49,7 @@ export function createRadarServer(): McpServer {
       description: "Rank and value over snapshot dates for one app and metric.",
       inputSchema: z.object({
         app_id: z.string(),
-        metric: z
-          .enum(["use_count", "stars", "npm_weekly_downloads", "pypi_last_week_downloads", "gemini_stars"])
-          .optional(),
+        metric: z.enum(["stars", "npm_weekly_downloads", "pypi_last_week_downloads", "gemini_stars"]).optional(),
       }),
     },
     async ({ app_id, metric }) => textTool("rank_history", { app_id, metric }),
@@ -60,9 +58,9 @@ export function createRadarServer(): McpServer {
   server.registerTool(
     "top_charts",
     {
-      description: "Leaderboard for smithery, npm, github, or gemini.",
+      description: "Leaderboard for npm, github, or gemini.",
       inputSchema: z.object({
-        chart: z.enum(["smithery", "npm", "github", "gemini"]).optional(),
+        chart: z.enum(["npm", "github", "gemini"]).optional(),
         limit: PublicLimitSchema,
       }),
     },
@@ -75,9 +73,7 @@ export function createRadarServer(): McpServer {
       description: "Largest absolute metric changes over 1 day or ~7 days.",
       inputSchema: z.object({
         window: z.enum(["1d", "7d"]).optional(),
-        metric: z
-          .enum(["use_count", "stars", "npm_weekly_downloads", "pypi_last_week_downloads", "gemini_stars"])
-          .optional(),
+        metric: z.enum(["stars", "npm_weekly_downloads", "pypi_last_week_downloads", "gemini_stars"]).optional(),
         limit: PublicLimitSchema,
       }),
     },
