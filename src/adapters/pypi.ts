@@ -6,6 +6,7 @@ import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import {
   clearCheckpoint,
   countFresh,
+  isCarriedForward,
   loadCheckpoint,
   loadEntityCache,
   loadLastFetched,
@@ -79,7 +80,7 @@ function recordsFromCache(
     const row = normalizePypiRecent(snapshotDate, name, item);
     if (row) {
       const fetchedAt = lastFetched[name] ?? null;
-      records.push(withObservation(row, fetchedAt, fetchedAt != null && fetchedAt !== collectedAt));
+      records.push(withObservation(row, fetchedAt, isCarriedForward(fetchedAt, snapshotDate, collectedAt)));
     }
   }
   return records;

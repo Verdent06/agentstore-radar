@@ -32,7 +32,7 @@ User-Agent: agentstore-radar/0.1 (+https://github.com/Verdent06/agentstore-radar
 
 ## Data layout (private repo)
 
-Never overwrite a past day's snapshot. Same-day re-runs may refresh today's files.
+Never overwrite a past day's snapshot. A complete same-day snapshot is left in place; re-runs skip unless `--force` (workflow_dispatch `force`) is set. Incomplete/partial days may be collected again.
 
 ```
 data/raw/<source>/<YYYY-MM-DD>.json      # or .json.gz when payload ≥ 256 KiB
@@ -53,7 +53,7 @@ npm run report
 
 `--data` wins over `DATA_DIR`, which wins over `./data`.
 
-Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true when GitHub/npm/PyPI reused last week's cache). Merged `apps.ndjson` copies those onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*` freshness fields, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a weekly refresh or a truncated MCP catalog is not treated as a one-day jump.
+Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true only when GitHub/npm/PyPI reused a value fetched on a **previous snapshot day**, not a live fetch earlier the same day). Merged `apps.ndjson` copies those onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*` freshness fields, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a weekly refresh or a truncated MCP catalog is not treated as a one-day jump.
 
 `manifest.json` always records `partial: true|false` and `completedSources: [...]`. Incomplete sources include `stoppedAt: { source, page, cursor, error }` so a mid-pagination MCP 500 can resume from the last cursor instead of page 1.
 

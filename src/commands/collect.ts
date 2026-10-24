@@ -30,6 +30,7 @@ export type CollectOptions = {
   log?: Logger;
   now?: Date;
   ifIncomplete?: boolean;
+  force?: boolean;
   sourceAttempts?: number;
   sleep?: SleepFn;
 };
@@ -124,24 +125,30 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     log.warn("removed broken snapshot entries", { entries: cleaned });
   }
 
+  const inspection = inspectSnapshot(snapshotDate, dataDir);
+  if (!options.force && inspection.usable && !inspection.needsRetry) {
+    log.info("snapshot already complete; refusing to overwrite", { date: snapshotDate });
+    return {
+      ok: true,
+      skipped: true,
+      skipReason: `snapshot ${snapshotDate} already complete; pass --force to overwrite`,
+      wrote: false,
+      manifest: inspection.hasManifest ? readManifest(snapshotDate, dataDir) : undefined,
+      failedSources: [],
+      cleaned,
+      date: snapshotDate,
+    };
+  }
   if (options.ifIncomplete) {
-    const inspection = inspectSnapshot(snapshotDate, dataDir);
-    if (inspection.usable && !inspection.needsRetry) {
-      log.info("snapshot already complete; skipping collect", { date: snapshotDate });
-      return {
-        ok: true,
-        skipped: true,
-        skipReason: `snapshot ${snapshotDate} already complete`,
-        wrote: false,
-        manifest: inspection.hasManifest ? readManifest(snapshotDate, dataDir) : undefined,
-        failedSources: [],
-        cleaned,
-        date: snapshotDate,
-      };
-    }
     log.info("snapshot missing or incomplete; collecting", {
       date: snapshotDate,
       reason: inspection.reason ?? "missing",
+    });
+  }
+  if (options.force && inspection.usable) {
+    log.warn("force overwrite of existing snapshot", {
+      date: snapshotDate,
+      partial: inspection.needsRetry,
     });
   }
 

@@ -113,6 +113,85 @@ describe("collect resilience", () => {
     expect(inspectSnapshot("2026-10-23", dataDir).usable).toBe(false);
   });
 
+  it("refuses to overwrite a complete snapshot unless --force", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-no-overwrite-"));
+    const manifest: SnapshotManifest = {
+      snapshotDate: "2026-10-24",
+      collectedAt: "2026-10-24T11:07:24.740Z",
+      appCount: 1,
+      sourceRowCount: 1,
+      partial: false,
+      completedSources: ["gemini-cli"],
+      sources: [
+        {
+          source: "gemini-cli",
+          rowCount: 1,
+          skipped: false,
+          collectedAt: "2026-10-24T11:07:24.740Z",
+        },
+      ],
+    };
+    const rows = [
+      emptySourceRow({
+        snapshot_date: "2026-10-24",
+        app_id: "github:x/y",
+        source: "gemini-cli",
+        source_id: "x",
+        name: "x",
+        stars: 1,
+        fetched_at: "2026-10-24T11:07:24.740Z",
+        carried_forward: false,
+      }),
+    ];
+    writeNormalized("2026-10-24", rows, mergeApps("2026-10-24", rows), manifest, dataDir);
+    let calls = 0;
+    const skipped = await collect({
+      date: "2026-10-24",
+      dataDir,
+      now: new Date("2026-10-24T19:48:02Z"),
+      http: createHttpClient({
+        fetchImpl: async () => {
+          calls += 1;
+          throw new Error("should not fetch");
+        },
+        maxRetries: 0,
+      }),
+      log: silent,
+    });
+    expect(skipped.skipped).toBe(true);
+    expect(skipped.wrote).toBe(false);
+    expect(skipped.skipReason).toMatch(/already complete.*--force/);
+    expect(calls).toBe(0);
+    expect(readManifest("2026-10-24", dataDir).collectedAt).toBe("2026-10-24T11:07:24.740Z");
+
+    const catalogFetch = fixtureFetch(catalogs);
+    const forced = await collect({
+      date: "2026-10-24",
+      dataDir,
+      now: new Date("2026-10-24T19:48:02Z"),
+      force: true,
+      env: {},
+      http: createHttpClient({
+        fetchImpl: async (input, init) => {
+          calls += 1;
+          if (String(input).includes("registry.modelcontextprotocol.io")) {
+            return new Response("nope", { status: 500 });
+          }
+          return catalogFetch(input, init);
+        },
+        maxRetries: 0,
+      }),
+      log: silent,
+      sourceAttempts: 1,
+      sleep: async () => {},
+    });
+    expect(forced.skipped).toBe(false);
+    expect(forced.wrote).toBe(true);
+    expect(forced.manifest?.collectedAt).toBe("2026-10-24T19:48:02.000Z");
+    expect(readManifest("2026-10-24", dataDir).collectedAt).toBe("2026-10-24T19:48:02.000Z");
+    expect(calls).toBeGreaterThan(0);
+  });
+
   it("skips collect when --if-incomplete and today's snapshot is complete", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-skip-"));
     const manifest: SnapshotManifest = {
@@ -159,6 +238,7 @@ describe("collect resilience", () => {
     });
     expect(outcome.skipped).toBe(true);
     expect(outcome.ok).toBe(true);
+    expect(outcome.wrote).toBe(false);
     expect(calls).toBe(0);
     expect(readManifest("2026-10-24", dataDir).snapshotDate).toBe("2026-10-24");
   });

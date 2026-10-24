@@ -6,6 +6,7 @@ import { appIdFromIdentity, type GithubRepoRef } from "../lib/matching.ts";
 import {
   clearCheckpoint,
   countFresh,
+  isCarriedForward,
   loadCheckpoint,
   loadEntityCache,
   loadLastFetched,
@@ -197,7 +198,7 @@ function recordsFromCache(
     const row = normalizeGithubRepo(snapshotDate, item, refFromKey(key));
     if (row) {
       const fetchedAt = lastFetched[key] ?? null;
-      records.push(withObservation(row, fetchedAt, fetchedAt != null && fetchedAt !== collectedAt));
+      records.push(withObservation(row, fetchedAt, isCarriedForward(fetchedAt, snapshotDate, collectedAt)));
     }
   }
   return records;
