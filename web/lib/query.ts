@@ -1,4 +1,4 @@
-import { growthBucket } from "./format";
+import { growthBucket, round2sf } from "./format";
 import {
   CATEGORY_LABELS,
   CHART_IDS,
@@ -16,6 +16,7 @@ import {
 export const PUBLIC_TOP_N = 10;
 export const MOVERS_PER_SIDE = 5;
 export const COMPETITORS_CAP = 5;
+export const HISTORY_CAP_DAYS = 14;
 
 /** Default movers rank fresh npm downloads only until stars pass data audit. `use_count` stays out. */
 export const DEFAULT_MOVER_METRICS: MetricKey[] = ["npm_weekly_downloads"];
@@ -143,19 +144,46 @@ function starsSourceBreak(agg: Aggregate, id: string, metric: MetricKey, fromInd
 export function seriesToPoints(agg: Aggregate, id: string): HistoryPoint[] {
   const packed = agg.series[id];
   if (!packed) return [];
-  return agg.meta.snapshotDates.map((date, index) => ({
-    date,
-    stars: packed.s?.[index] ?? null,
-    useCount: packed.u?.[index] ?? null,
-    npmWeeklyDownloads: packed.n?.[index] ?? null,
-    pypiLastWeekDownloads: packed.p?.[index] ?? null,
-    geminiStars: packed.g?.[index] ?? null,
-    starsCarriedForward: packed.sc?.[index] === 1,
-    useCountCarriedForward: packed.uc?.[index] === 1,
-    npmCarriedForward: packed.nc?.[index] === 1,
-    pypiCarriedForward: packed.pc?.[index] === 1,
-    starsSource: packed.ss?.[index] ?? null,
-  }));
+  const cutoff = agg.meta.latestDate ? addUtcDays(agg.meta.latestDate, -(HISTORY_CAP_DAYS - 1)) : null;
+  const partial = partialDates(agg);
+  const lastFresh: Partial<Record<MetricKey, { index: number; value: number }>> = {};
+  const points: HistoryPoint[] = [];
+  const take = (metric: MetricKey, index: number): { value: number | null; growth: string | null } => {
+    if (seriesCarried(agg, id, metric, index)) return { value: null, growth: null };
+    const raw = seriesValue(agg, id, metric, index);
+    const value = raw == null ? null : round2sf(raw);
+    if (value == null) return { value: null, growth: null };
+    const prev = lastFresh[metric];
+    const broken =
+      metric === "stars" && prev != null && (packed.ss?.[prev.index] ?? null) !== (packed.ss?.[index] ?? null);
+    const growth =
+      broken || prev == null || prev.value === 0 ? null : growthBucket((value - prev.value) / prev.value);
+    lastFresh[metric] = { index, value };
+    return { value, growth };
+  };
+  agg.meta.snapshotDates.forEach((date, index) => {
+    if (cutoff && date < cutoff) return;
+    if (partial.has(date)) return;
+    const stars = take("stars", index);
+    const useCount = take("use_count", index);
+    const npm = take("npm_weekly_downloads", index);
+    const pypi = take("pypi_last_week_downloads", index);
+    const gemini = take("gemini_stars", index);
+    points.push({
+      date,
+      stars: stars.value,
+      useCount: useCount.value,
+      npmWeeklyDownloads: npm.value,
+      pypiLastWeekDownloads: pypi.value,
+      geminiStars: gemini.value,
+      starsGrowth: stars.growth,
+      useCountGrowth: useCount.growth,
+      npmGrowth: npm.growth,
+      pypiGrowth: pypi.growth,
+      geminiGrowth: gemini.growth,
+    });
+  });
+  return points;
 }
 
 export function sparkValues(agg: Aggregate, id: string, metric: MetricKey): Array<number | null> {

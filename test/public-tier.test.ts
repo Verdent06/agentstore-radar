@@ -13,7 +13,7 @@ import {
   historyCutoffDate,
   round2sf,
 } from "../src/aggregate/public.ts";
-import { clampLimit, findApp, movers, publicAppIds, rankHistory, searchApps, topChart } from "../src/aggregate/query.ts";
+import { appDetail, clampLimit, findApp, movers, publicAppIds, rankHistory, searchApps, seriesToPoints, topChart } from "../src/aggregate/query.ts";
 import { runTool } from "../src/aggregate/tools.ts";
 import { addUtcDays } from "../src/lib/dates.ts";
 import { writeNormalized } from "../src/lib/io.ts";
@@ -26,7 +26,15 @@ const repoRoot = join(here, "..");
 function writeDay(
   dataDir: string,
   date: string,
-  rows: Array<{ id: string; name?: string; useCount?: number; stars?: number }>,
+  rows: Array<{
+    id: string;
+    name?: string;
+    useCount?: number;
+    stars?: number;
+    npmWeekly?: number;
+    starsCarried?: boolean;
+    npmCarried?: boolean;
+  }>,
   partial = false,
 ): void {
   const sourceRows = rows.flatMap((row) => {
@@ -54,6 +62,23 @@ function writeDay(
           name: row.name ?? row.id,
           display_name: row.name ?? row.id,
           stars: row.stars,
+          fetched_at: `${date}T12:00:00.000Z`,
+          carried_forward: row.starsCarried === true,
+        }),
+      );
+    }
+    if (row.npmWeekly != null) {
+      out.push(
+        emptySourceRow({
+          snapshot_date: date,
+          app_id: row.id,
+          source: "npm",
+          source_id: `@example/${row.id.replace(/^github:/, "")}`,
+          name: row.name ?? row.id,
+          display_name: row.name ?? row.id,
+          npm_weekly_downloads: row.npmWeekly,
+          fetched_at: `${date}T12:00:00.000Z`,
+          carried_forward: row.npmCarried === true,
         }),
       );
     }
@@ -198,6 +223,124 @@ describe("partial snapshot exclusion", () => {
     expect(payload.from).toBe("2026-10-13");
     expect(payload.to).toBe("2026-10-14");
     expect(payload.partialDates).toEqual(["2026-10-15"]);
+  });
+});
+
+describe("rank_history metric fallback", () => {
+  it("never ranks by use_count when metric is missing or unknown", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-metric-"));
+    writeDemoSnapshots(dataDir);
+    const agg = buildAggregate(dataDir, "fixture");
+    const id = "github:example/github-mcp";
+    const missing = JSON.parse(runTool(agg, "rank_history", { app_id: id }).content[0]!.text);
+    expect(missing.metric).toBe("npm_weekly_downloads");
+    expect(missing.metric).not.toBe("use_count");
+    expect(JSON.stringify(missing)).not.toContain("use_count");
+    expect(missing.points.every((point: { growth?: string | null }) => point.growth == null || /%$/.test(point.growth))).toBe(true);
+
+    const unknown = JSON.parse(runTool(agg, "rank_history", { app_id: id, metric: "not_a_metric" }).content[0]!.text);
+    expect(unknown).toEqual({ error: "unknown metric: not_a_metric" });
+    expect(JSON.stringify(unknown)).not.toContain("use_count");
+    expect(unknown.points).toBeUndefined();
+
+    const moversUnknown = JSON.parse(runTool(agg, "movers", { metric: "not_a_metric" }).content[0]!.text);
+    expect(moversUnknown).toEqual({ error: "unknown metric: not_a_metric" });
+    expect(JSON.stringify(moversUnknown)).not.toContain("use_count");
+  });
+});
+
+describe("appDetail public history", () => {
+  it("caps history to 14 complete days, rounds values, buckets growth, and skips partial/carried-forward points", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-app-hist-"));
+    const latest = "2026-10-20";
+    const id = "github:example/hist";
+    for (let offset = 16; offset >= 0; offset -= 1) {
+      const date = addUtcDays(latest, -offset);
+      const partial = date === "2026-10-12";
+      const starsCarried = date === "2026-10-18";
+      writeDay(
+        dataDir,
+        date,
+        [
+          {
+            id,
+            name: "Hist",
+            stars: starsCarried ? 99_999 : 100 + (16 - offset) * 3,
+            starsCarried,
+            npmWeekly: 1540 + (16 - offset) * 40,
+          },
+        ],
+        partial,
+      );
+    }
+    const agg = buildAggregate(dataDir, "fixture");
+    const cutoff = historyCutoffDate(latest);
+    const detail = appDetail(agg, id);
+    expect(detail).not.toBeNull();
+    expect(detail?.ranks).not.toHaveProperty("use_count");
+    expect(detail?.ranks).toHaveProperty("npm_weekly_downloads");
+    expect(detail?.ranks).toHaveProperty("stars");
+
+    const history = detail!.history;
+    expect(history.length).toBeLessThanOrEqual(HISTORY_CAP_DAYS);
+    expect(history.every((point) => point.date >= cutoff)).toBe(true);
+    expect(history.some((point) => point.date === "2026-10-12")).toBe(false);
+    expect(history.some((point) => point.date === "2026-10-04")).toBe(false);
+    const carried = history.find((point) => point.date === "2026-10-18");
+    expect(carried?.stars).toBeNull();
+    expect(carried?.npmWeeklyDownloads).not.toBeNull();
+    expect(JSON.stringify(history)).not.toContain("99999");
+    expect(history.every((point) => point.stars == null || point.stars === round2sf(point.stars))).toBe(true);
+    expect(history.some((point) => point.starsGrowth != null || point.npmGrowth != null)).toBe(true);
+    expect(history.every((point) => point.starsGrowth == null || /%$/.test(point.starsGrowth))).toBe(true);
+    expect(history.every((point) => point.npmGrowth == null || /%$/.test(point.npmGrowth))).toBe(true);
+
+    const viaHelper = seriesToPoints(agg, id);
+    expect(viaHelper.map((point) => point.date)).toEqual(history.map((point) => point.date));
+  });
+});
+
+describe("MCP tool free-tier envelope", () => {
+  it("keeps every tool at rounded values, ≤14-day history, and limit max 10", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-mcp-env-"));
+    writeDemoSnapshots(dataDir);
+    const agg = buildAggregate(dataDir, "fixture");
+    const brave = "github:brave/brave-search-mcp";
+    const payloads = [
+      runTool(agg, "search_apps", { query: "mcp", limit: 50 }),
+      runTool(agg, "app_details", { app_id: brave }),
+      runTool(agg, "rank_history", { app_id: "github:example/github-mcp" }),
+      runTool(agg, "rank_history", { app_id: brave, metric: "stars" }),
+      runTool(agg, "top_charts", { chart: "smithery", limit: 50 }),
+      runTool(agg, "movers", { window: "7d", limit: 50 }),
+      runTool(agg, "competitors", { app_id: brave, limit: 50 }),
+      runTool(agg, "category_trends", { category: "search" }),
+      runTool(agg, "category_trends", {}),
+      runTool(agg, "multi_store", { limit: 50 }),
+      runTool(agg, "answer_share", { limit: 50 }),
+    ];
+    for (const result of payloads) {
+      const text = result.content[0]!.text;
+      expect(text).not.toContain("87579");
+      expect(text).not.toContain("299294");
+      expect(text).not.toContain("source_rows.ndjson");
+      const body = JSON.parse(text) as Record<string, unknown>;
+      expect(body).not.toHaveProperty("pct");
+      if (Array.isArray(body.apps)) expect(body.apps.length).toBeLessThanOrEqual(PUBLIC_TOP_N);
+      if (Array.isArray(body.rows)) expect(body.rows.length).toBeLessThanOrEqual(PUBLIC_TOP_N * 2);
+      if (Array.isArray(body.points)) expect(body.points.length).toBeLessThanOrEqual(HISTORY_CAP_DAYS);
+      if (Array.isArray((body as { history?: unknown[] }).history)) {
+        expect((body as { history: unknown[] }).history.length).toBeLessThanOrEqual(HISTORY_CAP_DAYS);
+      }
+    }
+    const detail = JSON.parse(runTool(agg, "app_details", { app_id: brave }).content[0]!.text);
+    expect(detail.ranks.use_count).toBeUndefined();
+    const charts = JSON.parse(runTool(agg, "top_charts", { chart: "npm", limit: 50 }).content[0]!.text);
+    expect(charts.rows.length).toBeLessThanOrEqual(PUBLIC_TOP_N);
+    expect(charts.rows[0]).not.toHaveProperty("delta");
+    const trends = JSON.parse(runTool(agg, "category_trends", { category: "search" }).content[0]!.text);
+    expect(trends.points.every((point: { date: string }) => !agg.meta.partialDates.includes(point.date))).toBe(true);
+    expect(trends.apps.length).toBeLessThanOrEqual(PUBLIC_TOP_N);
   });
 });
 

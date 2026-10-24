@@ -15,7 +15,7 @@ import {
   searchApps,
   topChart,
 } from "./query.ts";
-import { PUBLIC_DEFAULT_LIMIT, PUBLIC_TOP_N } from "./public.ts";
+import { PUBLIC_DEFAULT_LIMIT, PUBLIC_TOP_N, growthBucket, roundCount } from "./public.ts";
 import { CHART_IDS, CATEGORY_SLUGS, METRIC_KEYS, type Aggregate, type CategorySlug, type ChartId, type MetricKey } from "./types.ts";
 
 export const TOOL_NAMES = [
@@ -39,11 +39,15 @@ function asChart(value: string | undefined): ChartId {
   return "smithery";
 }
 
-function asMetric(value: string | undefined): MetricKey {
-  if (value && (METRIC_KEYS as readonly string[]).includes(value)) {
+/** Missing metric defaults to npm downloads. Unknown names are rejected. */
+function asMetric(value: string | undefined): MetricKey | { error: string } {
+  if (value == null || value === "") {
+    return "npm_weekly_downloads";
+  }
+  if ((METRIC_KEYS as readonly string[]).includes(value)) {
     return value as MetricKey;
   }
-  return "use_count";
+  return { error: `unknown metric: ${value}` };
 }
 
 function asCategory(value: string | undefined): CategorySlug | undefined {
@@ -94,6 +98,9 @@ export function runTool(
     case "rank_history": {
       const id = String(args.app_id ?? args.id ?? "");
       const metric = asMetric(typeof args.metric === "string" ? args.metric : undefined);
+      if (typeof metric !== "string") {
+        return jsonResult(metric);
+      }
       return jsonResult({
         app_id: id,
         metric,
@@ -112,14 +119,24 @@ export function runTool(
           id: row.app.id,
           name: row.app.displayName,
           category: row.app.category,
-          value: row.value,
-          delta: row.delta,
+          value: roundCount(row.value),
+          growth:
+            row.previousValue == null || row.previousValue === 0
+              ? null
+              : growthBucket((row.value - row.previousValue) / row.previousValue),
         })),
       });
     }
     case "movers": {
       const window = args.window === "7d" ? "7d" : "1d";
-      const metric = typeof args.metric === "string" ? asMetric(args.metric) : undefined;
+      let metric: MetricKey | undefined;
+      if (typeof args.metric === "string") {
+        const parsed = asMetric(args.metric);
+        if (typeof parsed !== "string") {
+          return jsonResult(parsed);
+        }
+        metric = parsed;
+      }
       const ends = growthWindow(agg, window);
       return jsonResult({
         window,
@@ -137,7 +154,7 @@ export function runTool(
           id: row.id,
           name: row.displayName,
           category: row.category,
-          score: Number(row.score.toFixed(3)),
+          score: roundCount(row.score),
           useCount: row.useCount,
           stars: row.stars,
           description: row.description,
@@ -180,8 +197,11 @@ export function runTool(
         homeLeaders: homeLeaders(agg, PUBLIC_DEFAULT_LIMIT).map((row) => ({
           id: row.app.id,
           name: row.app.displayName,
-          value: row.value,
-          delta: row.delta,
+          value: roundCount(row.value),
+          growth:
+            row.previousValue == null || row.previousValue === 0 || row.delta == null
+              ? null
+              : growthBucket(row.delta / row.previousValue),
         })),
       });
     }

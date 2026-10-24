@@ -72,6 +72,11 @@ export type HistoryPoint = {
   npmWeeklyDownloads: number | null;
   pypiLastWeekDownloads: number | null;
   geminiStars: number | null;
+  starsGrowth?: string | null;
+  useCountGrowth?: string | null;
+  npmGrowth?: string | null;
+  pypiGrowth?: string | null;
+  geminiGrowth?: string | null;
   starsCarriedForward?: boolean;
   useCountCarriedForward?: boolean;
   npmCarriedForward?: boolean;
@@ -154,6 +159,8 @@ export type CategoryTrendPoint = {
   appCount: number;
   useCount: number;
   stars: number;
+  useCountGrowth?: string | null;
+  starsGrowth?: string | null;
 };
 
 export type AggregateMeta = {

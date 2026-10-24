@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isValidDateString } from "../lib/dates.ts";
 import { AnswerShareSnapshotSchema, type AnswerShareRow, type AnswerShareSnapshot } from "../answer-share/schema.ts";
-import { PUBLIC_TOP_N, roundCount } from "./public.ts";
+import { PUBLIC_TOP_N, round2sf, roundCount } from "./public.ts";
 import type { AnswerSharePublic, AnswerShareRowPublic } from "./types.ts";
 
 const OVERALL_LIMIT = PUBLIC_TOP_N;
@@ -23,8 +23,8 @@ function compactRow(row: AnswerShareRow): AnswerShareRowPublic {
     name: row.name,
     appId: row.matched_app_id,
     mentionCount: roundCount(row.mention_count) ?? 0,
-    answerShare: row.answer_share,
-    runShare: row.run_share,
+    answerShare: round2sf(row.answer_share),
+    runShare: round2sf(row.run_share),
   };
 }
 
@@ -45,7 +45,7 @@ export function compactAnswerShare(snapshot: AnswerShareSnapshot): AnswerSharePu
   return {
     probeDate: snapshot.probeDate,
     promptVersion: snapshot.promptVersion,
-    meanJaccard: snapshot.meanJaccard,
+    meanJaccard: snapshot.meanJaccard == null ? null : round2sf(snapshot.meanJaccard),
     overall: topRows(overall, OVERALL_LIMIT),
     byProvider,
   };

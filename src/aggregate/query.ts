@@ -3,12 +3,14 @@ import { answerShareForApp } from "./answer-share.ts";
 import { jaccardTokens, tokenize } from "./classify.ts";
 import {
   COMPETITORS_CAP,
+  HISTORY_CAP_DAYS,
   MOVERS_PER_SIDE,
   PUBLIC_DEFAULT_LIMIT,
   PUBLIC_MAX_LIMIT,
   PUBLIC_TOP_N,
   completeSnapshotDates,
   growthBucket,
+  historyCutoffDate,
   roundCount,
 } from "./public.ts";
 import {
@@ -46,24 +48,70 @@ export function findApp(agg: Aggregate, id: string): AppSummary | undefined {
   return agg.apps.find((app) => app.id.toLowerCase() === needle);
 }
 
+function publicDateIndices(agg: Aggregate): number[] {
+  const cutoff = agg.meta.latestDate ? historyCutoffDate(agg.meta.latestDate, HISTORY_CAP_DAYS) : null;
+  const partial = new Set(agg.meta.partialDates ?? []);
+  const indices: number[] = [];
+  for (let index = 0; index < agg.meta.snapshotDates.length; index += 1) {
+    const date = agg.meta.snapshotDates[index]!;
+    if (cutoff && date < cutoff) {
+      continue;
+    }
+    if (partial.has(date)) {
+      continue;
+    }
+    indices.push(index);
+  }
+  return indices;
+}
+
+function growthFrom(previous: number | null | undefined, current: number | null | undefined): string | null {
+  if (previous == null || current == null || previous === 0) {
+    return null;
+  }
+  return growthBucket((current - previous) / previous);
+}
+
 export function seriesToPoints(agg: Aggregate, id: string): HistoryPoint[] {
   const packed = agg.series[id];
   if (!packed) {
     return [];
   }
-  return agg.meta.snapshotDates.map((date, index) => ({
-    date,
-    stars: packed.s?.[index] ?? null,
-    useCount: packed.u?.[index] ?? null,
-    npmWeeklyDownloads: packed.n?.[index] ?? null,
-    pypiLastWeekDownloads: packed.p?.[index] ?? null,
-    geminiStars: packed.g?.[index] ?? null,
-    starsCarriedForward: packed.sc?.[index] === 1,
-    useCountCarriedForward: packed.uc?.[index] === 1,
-    npmCarriedForward: packed.nc?.[index] === 1,
-    pypiCarriedForward: packed.pc?.[index] === 1,
-    starsSource: packed.ss?.[index] ?? null,
-  }));
+  const lastFresh: Partial<Record<MetricKey, { index: number; value: number }>> = {};
+  const take = (metric: MetricKey, index: number): { value: number | null; growth: string | null } => {
+    if (metricCarriedForward(packed, metric, index)) {
+      return { value: null, growth: null };
+    }
+    const value = roundCount(metricFromSeries(packed, metric, index));
+    if (value == null) {
+      return { value: null, growth: null };
+    }
+    const prev = lastFresh[metric];
+    const broken = prev != null && starsSourceBreak(packed, metric, prev.index, index);
+    const growth = broken ? null : growthFrom(prev?.value, value);
+    lastFresh[metric] = { index, value };
+    return { value, growth };
+  };
+  return publicDateIndices(agg).map((index) => {
+    const stars = take("stars", index);
+    const useCount = take("use_count", index);
+    const npm = take("npm_weekly_downloads", index);
+    const pypi = take("pypi_last_week_downloads", index);
+    const gemini = take("gemini_stars", index);
+    return {
+      date: agg.meta.snapshotDates[index]!,
+      stars: stars.value,
+      useCount: useCount.value,
+      npmWeeklyDownloads: npm.value,
+      pypiLastWeekDownloads: pypi.value,
+      geminiStars: gemini.value,
+      starsGrowth: stars.growth,
+      useCountGrowth: useCount.growth,
+      npmGrowth: npm.growth,
+      pypiGrowth: pypi.growth,
+      geminiGrowth: gemini.growth,
+    };
+  });
 }
 
 export function metricFromApp(app: AppSummary, metric: MetricKey): number | null {
@@ -435,7 +483,10 @@ export function appsInCategory(agg: Aggregate, slug: CategorySlug, limit?: numbe
 }
 
 export function categoryTrends(agg: Aggregate, slug?: CategorySlug): CategoryTrendPoint[] {
-  return agg.meta.snapshotDates.map((date, index) => {
+  let prevUse: number | null = null;
+  let prevStars: number | null = null;
+  return publicDateIndices(agg).map((index) => {
+    const date = agg.meta.snapshotDates[index]!;
     let appCount = 0;
     let useCount = 0;
     let stars = 0;
@@ -450,27 +501,70 @@ export function categoryTrends(agg: Aggregate, slug?: CategorySlug): CategoryTre
         continue;
       }
       appCount += 1;
-      useCount += metricFromSeries(series, "use_count", index) ?? 0;
-      stars += metricFromSeries(series, "stars", index) ?? 0;
+      if (!metricCarriedForward(series, "use_count", index)) {
+        useCount += metricFromSeries(series, "use_count", index) ?? 0;
+      }
+      if (!metricCarriedForward(series, "stars", index)) {
+        stars += metricFromSeries(series, "stars", index) ?? 0;
+      }
     }
-    return { date, appCount, useCount: roundCount(useCount) ?? 0, stars: roundCount(stars) ?? 0 };
+    const roundedUse = roundCount(useCount) ?? 0;
+    const roundedStars = roundCount(stars) ?? 0;
+    const point: CategoryTrendPoint = {
+      date,
+      appCount,
+      useCount: roundedUse,
+      stars: roundedStars,
+      useCountGrowth: growthFrom(prevUse, roundedUse),
+      starsGrowth: growthFrom(prevStars, roundedStars),
+    };
+    prevUse = roundedUse;
+    prevStars = roundedStars;
+    return point;
   });
 }
 
-export function rankHistory(agg: Aggregate, id: string, metric: MetricKey): Array<{ date: string; rank: number | null; value: number | null }> {
+export function rankHistory(
+  agg: Aggregate,
+  id: string,
+  metric: MetricKey,
+): Array<{ date: string; rank: number | null; value: number | null; growth: string | null }> {
   const app = findApp(agg, id);
   if (!app) {
     return [];
   }
-  return agg.meta.snapshotDates.map((date, index) => {
+  let previous: { index: number; value: number } | null = null;
+  const points: Array<{ date: string; rank: number | null; value: number | null; growth: string | null }> = [];
+  for (const index of publicDateIndices(agg)) {
+    if (metricCarriedForward(agg.series[app.id], metric, index)) {
+      continue;
+    }
+    const value = roundCount(metricFromSeries(agg.series[app.id], metric, index));
+    if (value == null) {
+      continue;
+    }
     const scored = agg.apps
-      .map((candidate) => ({ id: candidate.id, value: metricFromSeries(agg.series[candidate.id], metric, index) }))
+      .map((candidate) => ({
+        id: candidate.id,
+        value:
+          metricCarriedForward(agg.series[candidate.id], metric, index)
+            ? null
+            : metricFromSeries(agg.series[candidate.id], metric, index),
+      }))
       .filter((row): row is { id: string; value: number } => row.value != null)
       .sort((a, b) => b.value - a.value || a.id.localeCompare(b.id));
     const rank = scored.findIndex((row) => row.id === app.id);
-    const value = metricFromSeries(agg.series[app.id], metric, index);
-    return { date, rank: rank === -1 ? null : rank + 1, value };
-  });
+    const broken = previous != null && starsSourceBreak(agg.series[app.id], metric, previous.index, index);
+    const growth = broken ? null : growthFrom(previous?.value, value);
+    previous = { index, value };
+    points.push({
+      date: agg.meta.snapshotDates[index]!,
+      rank: rank === -1 ? null : rank + 1,
+      value,
+      growth,
+    });
+  }
+  return points;
 }
 
 export function competitors(agg: Aggregate, id: string, limit?: number): Array<AppSummary & { score: number }> {
@@ -505,7 +599,7 @@ export function appDetail(agg: Aggregate, id: string) {
     app,
     history: seriesToPoints(agg, app.id),
     ranks: {
-      use_count: rankHistory(agg, app.id, "use_count"),
+      npm_weekly_downloads: rankHistory(agg, app.id, "npm_weekly_downloads"),
       stars: rankHistory(agg, app.id, "stars"),
     },
     competitors: competitors(agg, app.id, COMPETITORS_CAP),

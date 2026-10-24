@@ -40,6 +40,19 @@ describe("MCP tool payloads", () => {
     assert.ok(share.rows.length > 0);
   });
 
+  it("rank_history without a metric (or with an unknown metric) never ranks by use_count", () => {
+    const missing = JSON.parse(runTool(agg, "rank_history", { app_id: "github:example/github-mcp" }).content[0]!.text);
+    assert.equal(missing.metric, "npm_weekly_downloads");
+    assert.notEqual(missing.metric, "use_count");
+    assert.equal(JSON.stringify(missing).includes("use_count"), false);
+    const unknown = JSON.parse(
+      runTool(agg, "rank_history", { app_id: "github:example/github-mcp", metric: "not_a_metric" }).content[0]!.text,
+    );
+    assert.equal(unknown.error, "unknown metric: not_a_metric");
+    assert.equal(unknown.points, undefined);
+    assert.equal(JSON.stringify(unknown).includes("use_count"), false);
+  });
+
   it("rejects limit: 50 on the public tool schema", () => {
     assert.equal(PublicLimitSchema.safeParse(50).success, false);
     assert.equal(PublicLimitSchema.safeParse(10).success, true);

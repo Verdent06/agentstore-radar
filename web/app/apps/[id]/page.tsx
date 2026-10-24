@@ -2,9 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { LineChart } from "@/components/sparkline";
 import { Shell } from "@/components/shell";
-import { Delta, StorePills } from "@/components/table";
+import { StorePills } from "@/components/table";
 import { formatCount, formatDate, formatPct } from "@/lib/format";
-import { COMPETITORS_CAP, appPageParams, findApp, isPartialDay, seriesToPoints } from "@/lib/query";
+import { COMPETITORS_CAP, appPageParams, findApp, seriesToPoints } from "@/lib/query";
 import { loadAggregate } from "@/lib/store";
 import { CATEGORY_LABELS } from "@/lib/types";
 
@@ -83,23 +83,24 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
             </tr>
           </thead>
           <tbody>
-            {history.map((point, index) => {
-              const prev = history[index - 1];
-              const skipDelta = isPartialDay(agg, point.date) || (prev ? isPartialDay(agg, prev.date) : false);
-              const delta =
-                skipDelta || !prev || point.useCount == null || prev.useCount == null ? null : point.useCount - prev.useCount;
-              return (
-                <tr key={point.date} className="border-t border-line">
-                  <td className="py-1">{formatDate(point.date)}</td>
-                  <td className="py-1 text-right font-mono">
-                    {formatCount(point.useCount)} <Delta value={delta} />
-                  </td>
-                  <td className="py-1 text-right font-mono">{formatCount(point.stars)}</td>
-                  <td className="py-1 text-right font-mono">{formatCount(point.npmWeeklyDownloads)}</td>
-                  <td className="py-1 text-right font-mono">{formatCount(point.geminiStars)}</td>
-                </tr>
-              );
-            })}
+            {history.map((point) => (
+              <tr key={point.date} className="border-t border-line">
+                <td className="py-1">{formatDate(point.date)}</td>
+                <td className="py-1 text-right font-mono">
+                  {formatCount(point.useCount)}
+                  {point.useCountGrowth ? <span className="ml-1 text-muted">{point.useCountGrowth}</span> : null}
+                </td>
+                <td className="py-1 text-right font-mono">
+                  {formatCount(point.stars)}
+                  {point.starsGrowth ? <span className="ml-1 text-muted">{point.starsGrowth}</span> : null}
+                </td>
+                <td className="py-1 text-right font-mono">
+                  {formatCount(point.npmWeeklyDownloads)}
+                  {point.npmGrowth ? <span className="ml-1 text-muted">{point.npmGrowth}</span> : null}
+                </td>
+                <td className="py-1 text-right font-mono">{formatCount(point.geminiStars)}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </section>
