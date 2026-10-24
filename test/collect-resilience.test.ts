@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { collect } from "../src/commands/collect.ts";
 import { createHttpClient } from "../src/lib/http.ts";
 import {
@@ -16,6 +16,14 @@ import { createLogger } from "../src/lib/logger.ts";
 import { mergeApps } from "../src/lib/merge.ts";
 import { emptySourceRow, type SnapshotManifest } from "../src/lib/schema.ts";
 import { fixtureFetch, loadFixture } from "./helpers.ts";
+
+vi.mock("../src/lib/io.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/io.ts")>();
+  return {
+    ...actual,
+    writeNormalized: vi.fn((...args: Parameters<typeof actual.writeNormalized>) => actual.writeNormalized(...args)),
+  };
+});
 
 const silent = createLogger({
   log() {},
@@ -275,6 +283,77 @@ describe("collect resilience", () => {
     expect(listSnapshotDates(dataDir)).toEqual(["2026-10-24"]);
     expect(cleanupBrokenNormalizedEntries(dataDir)).toEqual([]);
     expect(existsSync(join(backupDir, "manifest.json"))).toBe(true);
+  });
+
+  it("restores the previous complete snapshot when --force writeNormalized throws", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-force-restore-"));
+    const rows = Array.from({ length: 800 }, (_, index) =>
+      emptySourceRow({
+        snapshot_date: "2026-10-24",
+        app_id: `github:example/app-${index}`,
+        source: "gemini-cli",
+        source_id: `app-${index}`,
+        name: `app-${index}`,
+        description: "x".repeat(400),
+        stars: 1,
+        fetched_at: "2026-10-24T11:07:24.740Z",
+        carried_forward: false,
+      }),
+    );
+    writeNormalized(
+      "2026-10-24",
+      rows,
+      mergeApps("2026-10-24", rows),
+      {
+        snapshotDate: "2026-10-24",
+        collectedAt: "2026-10-24T11:07:24.740Z",
+        appCount: rows.length,
+        sourceRowCount: rows.length,
+        partial: false,
+        completedSources: ["gemini-cli"],
+        sources: [
+          {
+            source: "gemini-cli",
+            rowCount: rows.length,
+            skipped: false,
+            collectedAt: "2026-10-24T11:07:24.740Z",
+          },
+        ],
+      },
+      dataDir,
+    );
+    const appsGz = join(dataDir, "normalized", "2026-10-24", "apps.ndjson.gz");
+    expect(existsSync(appsGz)).toBe(true);
+
+    const catalogFetch = fixtureFetch(catalogs);
+    vi.mocked(writeNormalized).mockImplementationOnce(() => {
+      throw new Error("writeNormalized failed");
+    });
+    await expect(
+      collect({
+        date: "2026-10-24",
+        dataDir,
+        now: new Date("2026-10-24T19:48:02Z"),
+        force: true,
+        env: {},
+        http: createHttpClient({
+          fetchImpl: async (input, init) => {
+            if (String(input).includes("registry.modelcontextprotocol.io")) {
+              return new Response("nope", { status: 500 });
+            }
+            return catalogFetch(input, init);
+          },
+          maxRetries: 0,
+        }),
+        log: silent,
+        sourceAttempts: 1,
+        sleep: async () => {},
+      }),
+    ).rejects.toThrow(/writeNormalized failed/);
+
+    expect(readManifest("2026-10-24", dataDir).collectedAt).toBe("2026-10-24T11:07:24.740Z");
+    expect(existsSync(join(dataDir, "normalized", "2026-10-24", "manifest.json"))).toBe(true);
+    expect(existsSync(appsGz)).toBe(true);
   });
 
   it("skips collect when --if-incomplete and today's snapshot is complete", async () => {
