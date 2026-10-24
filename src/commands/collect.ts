@@ -1,3 +1,5 @@
+import { existsSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import { adaptersByKind } from "../adapters/index.ts";
 import { createDiscoveredRefs, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "../adapters/types.ts";
 import { SOURCE_COLLECT_ATTEMPTS } from "../lib/config.ts";
@@ -5,10 +7,15 @@ import { computeCoverage } from "../lib/coverage.ts";
 import { utcDateString } from "../lib/dates.ts";
 import { createHttpClient, type HttpClient } from "../lib/http.ts";
 import {
+  backupNormalizedSnapshot,
   cleanupBrokenNormalizedEntries,
+  dataPaths,
   inspectSnapshot,
   readManifest,
   resolveDataDir,
+  restoreNormalizedSnapshot,
+  snapshotBackupStamp,
+  tryGitHead,
   writeJsonSnapshot,
   writeNormalized,
 } from "../lib/io.ts";
@@ -31,6 +38,7 @@ export type CollectOptions = {
   now?: Date;
   ifIncomplete?: boolean;
   force?: boolean;
+  runId?: string;
   sourceAttempts?: number;
   sleep?: SleepFn;
 };
@@ -71,7 +79,8 @@ function failedResult(source: SourceName, collectedAt: string, error: unknown): 
     raw: { failed: true, error: stoppedAt.error, stoppedAt },
     records: [],
     eligibleCount: 0,
-    fetchedCount: 0,
+    freshWithin7dCount: 0,
+    fetchedThisRunCount: 0,
   };
 }
 
@@ -145,14 +154,9 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
       reason: inspection.reason ?? "missing",
     });
   }
-  if (options.force && inspection.usable) {
-    log.warn("force overwrite of existing snapshot", {
-      date: snapshotDate,
-      partial: inspection.needsRetry,
-    });
-  }
 
   const collectedAt = now.toISOString();
+  const runId = options.runId ?? envRunId(options.env);
   const ctx: CollectContext = {
     snapshotDate,
     collectedAt,
@@ -209,6 +213,30 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
   }
 
   const partial = incompleteSources.length > 0;
+  const dest = dataPaths(dataDir).normalizedDir(snapshotDate);
+  let previousBackupPath: string | undefined;
+  let overwrite: SnapshotManifest["overwrite"] = undefined;
+  if (options.force && existsSync(dest) && statSync(dest).isDirectory()) {
+    let previous: SnapshotManifest | undefined;
+    if (inspection.hasManifest) {
+      try {
+        previous = readManifest(snapshotDate, dataDir);
+      } catch {
+        previous = undefined;
+      }
+    }
+    const stamp = snapshotBackupStamp(previous?.collectedAt, previous?.runId);
+    previousBackupPath = backupNormalizedSnapshot(snapshotDate, dataDir, stamp);
+    overwrite = {
+      overwrittenAt: collectedAt,
+      previousBackupPath,
+      previousCollectedAt: previous?.collectedAt,
+      previousRunId: previous?.runId,
+      previousGitSha: tryGitHead(dataDir) ?? tryGitHead(dirname(dataDir)),
+    };
+    log.warn("force overwrite of existing snapshot; previous day kept as backup", overwrite);
+  }
+
   const manifest: SnapshotManifest = {
     snapshotDate,
     collectedAt,
@@ -218,9 +246,18 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     partial,
     completedSources,
     failedSourceCount: failedSources.length,
+    runId,
+    overwrite,
   };
 
-  writeNormalized(snapshotDate, sourceRows, apps, manifest, dataDir);
+  try {
+    writeNormalized(snapshotDate, sourceRows, apps, manifest, dataDir);
+  } catch (error) {
+    if (previousBackupPath) {
+      restoreNormalizedSnapshot(previousBackupPath, snapshotDate, dataDir);
+    }
+    throw error;
+  }
   log.info("normalized snapshot written", {
     date: snapshotDate,
     apps: apps.length,
@@ -240,10 +277,16 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
   };
 }
 
+function envRunId(env?: NodeJS.ProcessEnv): string | undefined {
+  const value = (env ?? process.env).GITHUB_RUN_ID?.trim();
+  return value && value.length > 0 ? value : undefined;
+}
+
 function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifest {
   const eligible = result.eligibleCount ?? (result.skipped ? 0 : result.rowCount);
-  const fetched = result.fetchedCount ?? (result.skipped ? 0 : result.rowCount);
-  const { coverage } = computeCoverage(eligible, fetched);
+  const freshWithin7d = result.freshWithin7dCount ?? (result.skipped ? 0 : result.rowCount);
+  const fetchedThisRun = result.fetchedThisRunCount ?? (result.skipped || result.failed ? 0 : result.rowCount);
+  const { coverage } = computeCoverage(eligible, freshWithin7d);
   return {
     source: result.source,
     rowCount: result.rowCount,
@@ -252,7 +295,8 @@ function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifes
     rawFile,
     collectedAt: result.collectedAt,
     eligibleCount: eligible,
-    fetchedCount: fetched,
+    freshWithin7dCount: freshWithin7d,
+    fetchedThisRunCount: fetchedThisRun,
     coverage: result.skipped && eligible === 0 ? undefined : result.coverage ?? coverage,
     lastFetchedAt: result.lastFetchedAt,
     failed: result.failed,

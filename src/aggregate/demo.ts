@@ -678,7 +678,8 @@ function manifestFor(date: string, sourceRows: SourceRow[], appCount: number): S
         skipped: false,
         collectedAt: `${date}T12:00:00.000Z`,
         eligibleCount: count,
-        fetchedCount: count,
+        freshWithin7dCount: count,
+        fetchedThisRunCount: count,
         coverage: 1,
       };
     }),

@@ -1,10 +1,17 @@
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { collect } from "../src/commands/collect.ts";
 import { createHttpClient } from "../src/lib/http.ts";
-import { inspectSnapshot, readManifest, readSourceRows, writeNormalized } from "../src/lib/io.ts";
+import {
+  cleanupBrokenNormalizedEntries,
+  inspectSnapshot,
+  listSnapshotDates,
+  readManifest,
+  readSourceRows,
+  writeNormalized,
+} from "../src/lib/io.ts";
 import { createLogger } from "../src/lib/logger.ts";
 import { mergeApps } from "../src/lib/merge.ts";
 import { emptySourceRow, type SnapshotManifest } from "../src/lib/schema.ts";
@@ -190,6 +197,84 @@ describe("collect resilience", () => {
     expect(forced.manifest?.collectedAt).toBe("2026-10-24T19:48:02.000Z");
     expect(readManifest("2026-10-24", dataDir).collectedAt).toBe("2026-10-24T19:48:02.000Z");
     expect(calls).toBeGreaterThan(0);
+  });
+
+  it("backs up the previous complete snapshot on --force and records the overwrite", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-force-backup-"));
+    const rows = [
+      emptySourceRow({
+        snapshot_date: "2026-10-24",
+        app_id: "github:x/y",
+        source: "gemini-cli",
+        source_id: "x",
+        name: "x",
+        stars: 1,
+        fetched_at: "2026-10-24T11:07:24.740Z",
+        carried_forward: false,
+      }),
+    ];
+    writeNormalized(
+      "2026-10-24",
+      rows,
+      mergeApps("2026-10-24", rows),
+      {
+        snapshotDate: "2026-10-24",
+        collectedAt: "2026-10-24T11:07:24.740Z",
+        appCount: 1,
+        sourceRowCount: 1,
+        partial: false,
+        completedSources: ["gemini-cli"],
+        runId: "run-morning",
+        sources: [
+          {
+            source: "gemini-cli",
+            rowCount: 1,
+            skipped: false,
+            collectedAt: "2026-10-24T11:07:24.740Z",
+          },
+        ],
+      },
+      dataDir,
+    );
+    const catalogFetch = fixtureFetch(catalogs);
+    const forced = await collect({
+      date: "2026-10-24",
+      dataDir,
+      now: new Date("2026-10-24T19:48:02Z"),
+      force: true,
+      runId: "run-evening",
+      env: {},
+      http: createHttpClient({
+        fetchImpl: async (input, init) => {
+          if (String(input).includes("registry.modelcontextprotocol.io")) {
+            return new Response("nope", { status: 500 });
+          }
+          return catalogFetch(input, init);
+        },
+        maxRetries: 0,
+      }),
+      log: silent,
+      sourceAttempts: 1,
+      sleep: async () => {},
+    });
+    expect(forced.wrote).toBe(true);
+    const next = readManifest("2026-10-24", dataDir);
+    expect(next.runId).toBe("run-evening");
+    expect(next.overwrite).toMatchObject({
+      overwrittenAt: "2026-10-24T19:48:02.000Z",
+      previousCollectedAt: "2026-10-24T11:07:24.740Z",
+      previousRunId: "run-morning",
+    });
+    const backupRel = next.overwrite?.previousBackupPath;
+    expect(backupRel).toMatch(/^backups\/normalized\/2026-10-24\//);
+    const backupDir = join(dataDir, backupRel!);
+    expect(existsSync(join(backupDir, "manifest.json"))).toBe(true);
+    const previous = JSON.parse(readFileSync(join(backupDir, "manifest.json"), "utf8")) as SnapshotManifest;
+    expect(previous.collectedAt).toBe("2026-10-24T11:07:24.740Z");
+    expect(previous.runId).toBe("run-morning");
+    expect(listSnapshotDates(dataDir)).toEqual(["2026-10-24"]);
+    expect(cleanupBrokenNormalizedEntries(dataDir)).toEqual([]);
+    expect(existsSync(join(backupDir, "manifest.json"))).toBe(true);
   });
 
   it("skips collect when --if-incomplete and today's snapshot is complete", async () => {

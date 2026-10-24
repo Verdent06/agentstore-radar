@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   existsSync,
@@ -412,6 +413,52 @@ function assertUsableNormalizedDir(dir: string, date: string, manifest: Snapshot
   }
   if (manifest.snapshotDate !== date) {
     throw new Error(`manifest snapshotDate ${manifest.snapshotDate} does not match ${date}`);
+  }
+}
+
+export function snapshotBackupStamp(collectedAt?: string, runId?: string): string {
+  const raw = collectedAt?.trim() || new Date().toISOString();
+  const time = raw.replaceAll(":", "").replaceAll(".", "-");
+  const run = runId?.replaceAll(/[^A-Za-z0-9._-]/g, "") ?? "";
+  return run ? `${time}-${run}` : time;
+}
+
+export function backupNormalizedSnapshot(date: string, root: string, stamp: string): string {
+  const dest = dataPaths(root).normalizedDir(date);
+  if (!existsSync(dest) || !statSync(dest).isDirectory()) {
+    throw new Error(`no normalized snapshot directory to backup for ${date}`);
+  }
+  let rel = join("backups", "normalized", date, stamp).replaceAll("\\", "/");
+  let backup = join(root, rel);
+  if (existsSync(backup)) {
+    rel = join("backups", "normalized", date, `${stamp}-${randomBytes(4).toString("hex")}`).replaceAll("\\", "/");
+    backup = join(root, rel);
+  }
+  ensureDir(dirname(backup));
+  renameSync(dest, backup);
+  return rel;
+}
+
+export function restoreNormalizedSnapshot(backupRelPath: string, date: string, root: string): void {
+  const dest = dataPaths(root).normalizedDir(date);
+  const backup = join(root, backupRelPath);
+  if (existsSync(dest) || !existsSync(backup)) {
+    return;
+  }
+  ensureDir(dirname(dest));
+  renameSync(backup, dest);
+}
+
+export function tryGitHead(dir: string): string | undefined {
+  try {
+    const sha = execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      timeout: 2000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return /^[0-9a-f]{7,40}$/i.test(sha) ? sha : undefined;
+  } catch {
+    return undefined;
   }
 }
 

@@ -123,8 +123,8 @@ export const npmAdapter: SourceAdapter = {
       stoppedAt?: SourceResult["stoppedAt"];
     }): SourceResult => {
       const records = recordsFromCache(ctx.snapshotDate, allKeys, cache, lastFetched, fetchedAt);
-      const fetchedCount = countFresh(allKeys, lastFetched, ctx.now);
-      const { coverage } = computeCoverage(allKeys.length, fetchedCount);
+      const freshWithin7dCount = countFresh(allKeys, lastFetched, ctx.now);
+      const { coverage } = computeCoverage(allKeys.length, freshWithin7dCount);
       persistLastFetched(ctx.dataDir, "npm", lastFetched);
       persistEntityCache(ctx.dataDir, "npm", cache);
       if (input.truncated) {
@@ -144,7 +144,8 @@ export const npmAdapter: SourceAdapter = {
         skipped: false,
         truncated: input.truncated,
         eligibleCount: allKeys.length,
-        fetchedCount,
+        freshWithin7dCount,
+        fetchedThisRunCount: input.fetchedThisRun,
         coverage,
         lastFetchedAt: Object.values(lastFetched).sort().at(-1),
         stoppedAt: input.stoppedAt,

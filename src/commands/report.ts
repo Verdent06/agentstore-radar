@@ -1,6 +1,6 @@
 import { formatCoveragePct } from "../lib/coverage.ts";
 import { listSnapshotDates, previousSnapshotDate, readApps, readManifest, resolveDataDir } from "../lib/io.ts";
-import type { AppRow, SnapshotManifest } from "../lib/schema.ts";
+import { sourceFreshWithin7dCount, type AppRow, type SnapshotManifest } from "../lib/schema.ts";
 
 export type Mover = {
   app_id: string;
@@ -16,7 +16,14 @@ export type ReportResult = {
   to?: string;
   movers: Mover[];
   leaders: Array<{ metric: string; rows: AppRow[] }>;
-  coverage?: Array<{ source: string; coverage?: number; eligibleCount?: number; fetchedCount?: number; skipped: boolean }>;
+  coverage?: Array<{
+    source: string;
+    coverage?: number;
+    eligibleCount?: number;
+    freshWithin7dCount?: number;
+    fetchedThisRunCount?: number;
+    skipped: boolean;
+  }>;
 };
 
 const METRICS = [
@@ -107,7 +114,8 @@ export function coverageFromManifest(manifest: SnapshotManifest): ReportResult["
     source: source.source,
     coverage: source.coverage,
     eligibleCount: source.eligibleCount,
-    fetchedCount: source.fetchedCount,
+    freshWithin7dCount: sourceFreshWithin7dCount(source),
+    fetchedThisRunCount: source.fetchedThisRunCount,
     skipped: source.skipped,
   }));
 }
@@ -152,10 +160,13 @@ export function formatReport(report: ReportResult): string {
   if (report.coverage && report.coverage.length > 0) {
     lines.push("Source coverage");
     for (const source of report.coverage) {
-      const ratio =
-        source.eligibleCount != null ? `  ${source.fetchedCount ?? 0}/${source.eligibleCount} eligible` : "";
+      const window =
+        source.eligibleCount != null
+          ? `  ${source.freshWithin7dCount ?? 0}/${source.eligibleCount} fresh within 7d`
+          : "";
+      const thisRun = source.fetchedThisRunCount != null ? `  ${source.fetchedThisRunCount} this run` : "";
       const skipped = source.skipped ? "  (skipped)" : "";
-      lines.push(`  ${source.source.padEnd(16)} ${formatCoveragePct(source.coverage)}${ratio}${skipped}`);
+      lines.push(`  ${source.source.padEnd(16)} ${formatCoveragePct(source.coverage)}${window}${thisRun}${skipped}`);
     }
     lines.push("");
   }

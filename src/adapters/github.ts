@@ -226,8 +226,8 @@ export const githubAdapter: SourceAdapter = {
       stoppedAt?: SourceResult["stoppedAt"];
     }): SourceResult => {
       const records = recordsFromCache(ctx.snapshotDate, allKeys, cache, lastFetched, fetchedAt);
-      const fetchedCount = countFresh(allKeys, lastFetched, ctx.now);
-      const { coverage } = computeCoverage(allKeys.length, fetchedCount);
+      const freshWithin7dCount = countFresh(allKeys, lastFetched, ctx.now);
+      const { coverage } = computeCoverage(allKeys.length, freshWithin7dCount);
       const lastFetchedAt = Object.values(lastFetched).sort().at(-1);
       persistLastFetched(ctx.dataDir, "github", lastFetched);
       persistEntityCache(ctx.dataDir, "github", cache);
@@ -249,7 +249,8 @@ export const githubAdapter: SourceAdapter = {
         skipReason: input.skipReason,
         truncated: input.truncated,
         eligibleCount: allKeys.length,
-        fetchedCount,
+        freshWithin7dCount,
+        fetchedThisRunCount: input.fetchedThisRun,
         coverage,
         lastFetchedAt,
         stoppedAt: input.stoppedAt,
@@ -278,7 +279,8 @@ export const githubAdapter: SourceAdapter = {
           skipped: true,
           skipReason: "GITHUB_TOKEN not set",
           eligibleCount: allKeys.length,
-          fetchedCount: 0,
+          freshWithin7dCount: 0,
+          fetchedThisRunCount: 0,
           coverage: allKeys.length === 0 ? 1 : 0,
           raw: { skipped: true, requested: allKeys.length },
           records: [],
@@ -395,7 +397,8 @@ export const githubAdapter: SourceAdapter = {
           skipped: true,
           skipReason: "GITHUB_TOKEN rejected (HTTP 401)",
           eligibleCount: allKeys.length,
-          fetchedCount: 0,
+          freshWithin7dCount: 0,
+          fetchedThisRunCount: 0,
           coverage: allKeys.length === 0 ? 1 : 0,
           raw: { skipped: true, requested: allKeys.length },
           records: [],
