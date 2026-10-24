@@ -65,23 +65,22 @@ export type AppSummary = {
   starsSource?: string | null;
 };
 
+export type HistoryGap = "partial" | "carried_forward" | "missing";
+
 export type HistoryPoint = {
   date: string;
   stars: number | null;
-  useCount: number | null;
   npmWeeklyDownloads: number | null;
   pypiLastWeekDownloads: number | null;
   geminiStars: number | null;
+  starsGap?: HistoryGap | null;
+  npmGap?: HistoryGap | null;
+  pypiGap?: HistoryGap | null;
+  geminiGap?: HistoryGap | null;
   starsGrowth?: string | null;
-  useCountGrowth?: string | null;
   npmGrowth?: string | null;
   pypiGrowth?: string | null;
   geminiGrowth?: string | null;
-  starsCarriedForward?: boolean;
-  useCountCarriedForward?: boolean;
-  npmCarriedForward?: boolean;
-  pypiCarriedForward?: boolean;
-  starsSource?: string | null;
 };
 
 /** Parallel arrays aligned to `meta.snapshotDates`. Omitted when every value is null. */
@@ -149,18 +148,16 @@ export type CategorySummary = {
   slug: CategorySlug;
   label: string;
   appCount: number;
-  useCount: number;
   stars: number;
   newThisSnapshot: number;
 };
 
 export type CategoryTrendPoint = {
   date: string;
-  appCount: number;
-  useCount: number;
-  stars: number;
-  useCountGrowth?: string | null;
+  appCount: number | null;
+  stars: number | null;
   starsGrowth?: string | null;
+  gap: HistoryGap | null;
 };
 
 export type AggregateMeta = {

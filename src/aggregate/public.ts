@@ -1,7 +1,7 @@
 import { addUtcDays } from "../lib/dates.ts";
 import type { Aggregate, AppSummary, CompactSeries, HeadlineStats } from "./types.ts";
 
-/** Inclusive calendar window kept on the public aggregate. */
+/** Last N complete snapshot days kept on the public aggregate (partials in that span stay as gaps). */
 export const HISTORY_CAP_DAYS = 14;
 
 /** Top-N for every public list (charts, movers per side, search, home, MCP max). */
@@ -28,6 +28,19 @@ const GROWTH_EDGES: Array<{ max: number; label: string }> = [
 /** Earliest snapshot date kept when `latest` is the newest day (inclusive 14-day window). */
 export function historyCutoffDate(latest: string, capDays = HISTORY_CAP_DAYS): string {
   return addUtcDays(latest, -(capDays - 1));
+}
+
+/** Inclusive bounds of the public history window: last `capDays` complete snapshot dates. */
+export function completeHistoryBounds(
+  agg: Pick<Aggregate, "meta">,
+  capDays = HISTORY_CAP_DAYS,
+): { fromDate: string; toDate: string } | null {
+  const complete = completeSnapshotDates(agg);
+  const toDate = complete.at(-1);
+  if (!toDate) {
+    return null;
+  }
+  return { fromDate: complete.at(-capDays) ?? complete[0]!, toDate };
 }
 
 /** Round to 2 significant figures (12,345 → 12,000; 987 → 990). */

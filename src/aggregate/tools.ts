@@ -81,7 +81,6 @@ export function runTool(
           name: app.displayName,
           category: app.category,
           stores: app.stores,
-          useCount: app.useCount,
           stars: app.stars,
           description: app.description,
         })),
@@ -155,7 +154,6 @@ export function runTool(
           name: row.displayName,
           category: row.category,
           score: roundCount(row.score),
-          useCount: row.useCount,
           stars: row.stars,
           description: row.description,
         })),
@@ -166,7 +164,7 @@ export function runTool(
       return jsonResult({
         category: slug ?? "all",
         categories: slug ? undefined : categories(agg),
-        apps: slug ? appsInCategory(agg, slug, PUBLIC_TOP_N).map((app) => ({ id: app.id, name: app.displayName, useCount: app.useCount, stars: app.stars })) : undefined,
+        apps: slug ? appsInCategory(agg, slug, PUBLIC_TOP_N).map((app) => ({ id: app.id, name: app.displayName, stars: app.stars })) : undefined,
         points: categoryTrends(agg, slug),
       });
     }
@@ -191,7 +189,6 @@ export function runTool(
           stores: app.stores,
           category: app.category,
           firstSeen: app.firstSeen,
-          useCount: app.useCount,
           stars: app.stars,
         })),
         homeLeaders: homeLeaders(agg, PUBLIC_DEFAULT_LIMIT).map((row) => ({

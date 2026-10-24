@@ -33,7 +33,7 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
   const history = seriesToPoints(agg, app.id);
   const similar = agg.apps
     .filter((other) => other.id !== app.id && other.category === app.category)
-    .sort((a, b) => (b.useCount ?? -1) - (a.useCount ?? -1))
+    .sort((a, b) => (b.stars ?? -1) - (a.stars ?? -1))
     .slice(0, COMPETITORS_CAP);
 
   return (
@@ -67,16 +67,15 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
         <LineChart
           labels={history.map((point) => point.date)}
           series={[
-            { name: "use", color: "var(--accent)", values: history.map((point) => point.useCount) },
             { name: "stars", color: "var(--up)", values: history.map((point) => point.stars) },
             { name: "npm", color: "var(--warn)", values: history.map((point) => point.npmWeeklyDownloads) },
+            { name: "gemini", color: "var(--accent)", values: history.map((point) => point.geminiStars) },
           ]}
         />
         <table className="mt-4 w-full text-xs">
           <thead className="text-muted">
             <tr>
               <th className="py-1 text-left font-medium">Date</th>
-              <th className="py-1 text-right font-medium">Use</th>
               <th className="py-1 text-right font-medium">Stars</th>
               <th className="py-1 text-right font-medium">npm</th>
               <th className="py-1 text-right font-medium">Gemini</th>
@@ -86,10 +85,6 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
             {history.map((point) => (
               <tr key={point.date} className="border-t border-line">
                 <td className="py-1">{formatDate(point.date)}</td>
-                <td className="py-1 text-right font-mono">
-                  {formatCount(point.useCount)}
-                  {point.useCountGrowth ? <span className="ml-1 text-muted">{point.useCountGrowth}</span> : null}
-                </td>
                 <td className="py-1 text-right font-mono">
                   {formatCount(point.stars)}
                   {point.starsGrowth ? <span className="ml-1 text-muted">{point.starsGrowth}</span> : null}

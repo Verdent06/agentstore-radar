@@ -13,7 +13,21 @@ import {
   historyCutoffDate,
   round2sf,
 } from "../src/aggregate/public.ts";
-import { appDetail, clampLimit, findApp, movers, publicAppIds, rankHistory, searchApps, seriesToPoints, topChart } from "../src/aggregate/query.ts";
+import {
+  appDetail,
+  categoryTrends,
+  clampLimit,
+  findApp,
+  movers,
+  publicAppIds,
+  publicHistoryWindow,
+  publicMetricSeries,
+  rankHistory,
+  searchApps,
+  seriesToPoints,
+  sparkValues,
+  topChart,
+} from "../src/aggregate/query.ts";
 import { runTool } from "../src/aggregate/tools.ts";
 import { addUtcDays } from "../src/lib/dates.ts";
 import { writeNormalized } from "../src/lib/io.ts";
@@ -34,6 +48,7 @@ function writeDay(
     npmWeekly?: number;
     starsCarried?: boolean;
     npmCarried?: boolean;
+    starsSource?: "github" | "gemini-cli";
   }>,
   partial = false,
 ): void {
@@ -53,11 +68,12 @@ function writeDay(
       );
     }
     if (row.stars != null) {
+      const source = row.starsSource === "gemini-cli" ? "gemini-cli" : "github";
       out.push(
         emptySourceRow({
           snapshot_date: date,
           app_id: row.id,
-          source: "github",
+          source,
           source_id: row.id.replace(/^github:/, ""),
           name: row.name ?? row.id,
           display_name: row.name ?? row.id,
@@ -121,22 +137,26 @@ describe("free-tier rounding", () => {
 });
 
 describe("history window", () => {
-  it("keeps only the last 14 calendar days", () => {
+  it("keeps the last 14 complete snapshot days, not a calendar cutoff from latestDate", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-hist-"));
     const latest = "2026-10-15";
     const cutoff = historyCutoffDate(latest);
     expect(cutoff).toBe("2026-10-02");
     for (let offset = 20; offset >= 0; offset -= 1) {
       const date = addUtcDays(latest, -offset);
-      writeDay(dataDir, date, [{ id: "github:example/a", useCount: 100 + offset }]);
+      writeDay(dataDir, date, [{ id: "github:example/a", useCount: 100 + offset, npmWeekly: 200 + offset }]);
     }
     const agg = buildAggregate(dataDir, "fixture");
     expect(agg.meta.snapshotDates.length).toBeLessThanOrEqual(HISTORY_CAP_DAYS);
-    expect(agg.meta.snapshotDates.every((date) => date >= cutoff)).toBe(true);
+    expect(agg.meta.snapshotDates[0]).toBe("2026-10-02");
+    expect(agg.meta.snapshotDates.at(-1)).toBe("2026-10-15");
     expect(agg.meta.snapshotDates).not.toContain("2026-10-01");
     expect(JSON.stringify(agg)).not.toContain("2026-09-25");
-    const history = rankHistory(agg, agg.apps[0]!.id, "use_count");
-    expect(history.length).toBeLessThanOrEqual(HISTORY_CAP_DAYS);
+    const history = rankHistory(agg, agg.apps[0]!.id, "npm_weekly_downloads");
+    const valued = history.filter((point) => point.gap == null && point.value != null);
+    expect(valued.length).toBeLessThanOrEqual(HISTORY_CAP_DAYS);
+    expect(history[0]?.date).toBe("2026-10-02");
+    expect(history.at(-1)?.date).toBe("2026-10-15");
   });
 });
 
@@ -222,7 +242,8 @@ describe("partial snapshot exclusion", () => {
     const payload = JSON.parse(runTool(agg, "movers", { window: "1d", metric: "stars" }).content[0]!.text);
     expect(payload.from).toBe("2026-10-13");
     expect(payload.to).toBe("2026-10-14");
-    expect(payload.partialDates).toEqual(["2026-10-15"]);
+    expect(agg.meta.snapshotDates).not.toContain("2026-10-15");
+    expect(agg.meta.partialDates).toEqual([]);
   });
 });
 
@@ -250,7 +271,7 @@ describe("rank_history metric fallback", () => {
 });
 
 describe("appDetail public history", () => {
-  it("caps history to 14 complete days, rounds values, buckets growth, and skips partial/carried-forward points", () => {
+  it("caps history to the last 14 complete days, marks gaps, and omits use_count", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-app-hist-"));
     const latest = "2026-10-20";
     const id = "github:example/hist";
@@ -274,7 +295,6 @@ describe("appDetail public history", () => {
       );
     }
     const agg = buildAggregate(dataDir, "fixture");
-    const cutoff = historyCutoffDate(latest);
     const detail = appDetail(agg, id);
     expect(detail).not.toBeNull();
     expect(detail?.ranks).not.toHaveProperty("use_count");
@@ -282,18 +302,25 @@ describe("appDetail public history", () => {
     expect(detail?.ranks).toHaveProperty("stars");
 
     const history = detail!.history;
-    expect(history.length).toBeLessThanOrEqual(HISTORY_CAP_DAYS);
-    expect(history.every((point) => point.date >= cutoff)).toBe(true);
-    expect(history.some((point) => point.date === "2026-10-12")).toBe(false);
+    const completeValued = history.filter((point) => point.starsGap == null && point.stars != null);
+    expect(completeValued.length).toBeLessThanOrEqual(HISTORY_CAP_DAYS);
+    expect(history[0]?.date).toBe("2026-10-06");
+    expect(history.at(-1)?.date).toBe("2026-10-20");
     expect(history.some((point) => point.date === "2026-10-04")).toBe(false);
+    const partialPoint = history.find((point) => point.date === "2026-10-12");
+    expect(partialPoint).toMatchObject({ stars: null, starsGap: "partial", starsGrowth: null });
     const carried = history.find((point) => point.date === "2026-10-18");
-    expect(carried?.stars).toBeNull();
+    expect(carried).toMatchObject({ stars: null, starsGap: "carried_forward", starsGrowth: null });
     expect(carried?.npmWeeklyDownloads).not.toBeNull();
     expect(JSON.stringify(history)).not.toContain("99999");
+    expect(JSON.stringify(history)).not.toMatch(/useCount|use_count/);
+    expect(history.every((point) => !("useCount" in point))).toBe(true);
     expect(history.every((point) => point.stars == null || point.stars === round2sf(point.stars))).toBe(true);
     expect(history.some((point) => point.starsGrowth != null || point.npmGrowth != null)).toBe(true);
     expect(history.every((point) => point.starsGrowth == null || /%$/.test(point.starsGrowth))).toBe(true);
     expect(history.every((point) => point.npmGrowth == null || /%$/.test(point.npmGrowth))).toBe(true);
+    const afterPartial = history.find((point) => point.date === "2026-10-13");
+    expect(afterPartial?.starsGrowth).toBeNull();
 
     const viaHelper = seriesToPoints(agg, id);
     expect(viaHelper.map((point) => point.date)).toEqual(history.map((point) => point.date));
@@ -328,19 +355,34 @@ describe("MCP tool free-tier envelope", () => {
       expect(body).not.toHaveProperty("pct");
       if (Array.isArray(body.apps)) expect(body.apps.length).toBeLessThanOrEqual(PUBLIC_TOP_N);
       if (Array.isArray(body.rows)) expect(body.rows.length).toBeLessThanOrEqual(PUBLIC_TOP_N * 2);
-      if (Array.isArray(body.points)) expect(body.points.length).toBeLessThanOrEqual(HISTORY_CAP_DAYS);
+      const capComplete = (points: Array<{ gap?: string | null; value?: unknown; stars?: unknown }>) => {
+        const valued = points.filter((point) => point.gap == null && (point.value != null || point.stars != null));
+        expect(valued.length).toBeLessThanOrEqual(HISTORY_CAP_DAYS);
+      };
+      if (Array.isArray(body.points)) capComplete(body.points as Array<{ gap?: string | null; value?: unknown; stars?: unknown }>);
       if (Array.isArray((body as { history?: unknown[] }).history)) {
-        expect((body as { history: unknown[] }).history.length).toBeLessThanOrEqual(HISTORY_CAP_DAYS);
+        capComplete((body as { history: Array<{ starsGap?: string | null; stars?: unknown }> }).history.map((point) => ({
+          gap: point.starsGap,
+          stars: point.stars,
+        })));
       }
     }
     const detail = JSON.parse(runTool(agg, "app_details", { app_id: brave }).content[0]!.text);
     expect(detail.ranks.use_count).toBeUndefined();
+    expect(JSON.stringify(detail.history)).not.toMatch(/useCount|use_count/);
     const charts = JSON.parse(runTool(agg, "top_charts", { chart: "npm", limit: 50 }).content[0]!.text);
     expect(charts.rows.length).toBeLessThanOrEqual(PUBLIC_TOP_N);
     expect(charts.rows[0]).not.toHaveProperty("delta");
     const trends = JSON.parse(runTool(agg, "category_trends", { category: "search" }).content[0]!.text);
-    expect(trends.points.every((point: { date: string }) => !agg.meta.partialDates.includes(point.date))).toBe(true);
+    expect(trends.points.some((point: { gap: string | null }) => point.gap === "missing")).toBe(true);
     expect(trends.apps.length).toBeLessThanOrEqual(PUBLIC_TOP_N);
+    expect(JSON.stringify(trends)).not.toMatch(/useCount/);
+    const search = JSON.parse(runTool(agg, "search_apps", { query: "mcp" }).content[0]!.text);
+    expect(JSON.stringify(search.apps)).not.toMatch(/useCount/);
+    const comps = JSON.parse(runTool(agg, "competitors", { app_id: brave }).content[0]!.text);
+    expect(JSON.stringify(comps.rows)).not.toMatch(/useCount/);
+    const multi = JSON.parse(runTool(agg, "multi_store", { limit: 5 }).content[0]!.text);
+    expect(JSON.stringify(multi.rows)).not.toMatch(/useCount/);
   });
 });
 
@@ -357,5 +399,129 @@ describe("built radar.json never holds exact fixture counts", () => {
     const weekly = movers(agg, { window: "7d", metric: "use_count" }).find((row) => row.id === "github:brave/brave-search-mcp");
     expect(weekly?.growth).toMatch(/%$/);
     expect(weekly).not.toHaveProperty("pct");
+  });
+});
+
+describe("gap marking and window anchoring", () => {
+  it("returns partial, carried_forward, and missing days as marked gaps with no growth across them", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-gaps-"));
+    const id = "github:example/gap";
+    writeDay(dataDir, "2026-10-10", [{ id, name: "Gap", stars: 100, npmWeekly: 50 }]);
+    writeDay(dataDir, "2026-10-11", [{ id, name: "Gap", stars: 10_000, npmWeekly: 9_999 }], true);
+    writeDay(dataDir, "2026-10-13", [{ id, name: "Gap", stars: 130, npmWeekly: 80, starsCarried: true }]);
+    writeDay(dataDir, "2026-10-14", [{ id, name: "Gap", stars: 160, npmWeekly: 90 }]);
+    const agg = buildAggregate(dataDir, "fixture");
+    const window = publicHistoryWindow(agg);
+    expect(window.map((day) => [day.date, day.gap])).toEqual([
+      ["2026-10-10", null],
+      ["2026-10-11", "partial"],
+      ["2026-10-12", "missing"],
+      ["2026-10-13", null],
+      ["2026-10-14", null],
+    ]);
+
+    const ranks = rankHistory(agg, id, "stars");
+    expect(ranks.find((point) => point.date === "2026-10-11")).toMatchObject({
+      value: null,
+      rank: null,
+      growth: null,
+      gap: "partial",
+    });
+    expect(ranks.find((point) => point.date === "2026-10-12")).toMatchObject({
+      value: null,
+      rank: null,
+      growth: null,
+      gap: "missing",
+    });
+    expect(ranks.find((point) => point.date === "2026-10-13")).toMatchObject({
+      value: null,
+      rank: null,
+      growth: null,
+      gap: "carried_forward",
+    });
+    expect(ranks.find((point) => point.date === "2026-10-14")).toMatchObject({
+      value: 160,
+      growth: null,
+      gap: null,
+    });
+    const series = publicMetricSeries(agg, id, "stars");
+    expect(series.find((point) => point.date === "2026-10-14")?.growth).toBeNull();
+  });
+
+  it("anchors the window on the latest complete date and drops a trailing partial", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-anchor-"));
+    const id = "github:example/anchor";
+    for (let offset = 16; offset >= 0; offset -= 1) {
+      const date = addUtcDays("2026-10-20", -offset);
+      const partial = date === "2026-10-12" || date === "2026-10-20";
+      writeDay(dataDir, date, [{ id, name: "Anchor", npmWeekly: 100 + (16 - offset) }], partial);
+    }
+    const agg = buildAggregate(dataDir, "fixture");
+    expect(agg.meta.latestCompleteDate).toBe("2026-10-19");
+    expect(agg.meta.snapshotDates.at(-1)).toBe("2026-10-19");
+    expect(agg.meta.snapshotDates).not.toContain("2026-10-20");
+    const window = publicHistoryWindow(agg);
+    expect(window.at(-1)?.date).toBe("2026-10-19");
+    expect(window[0]?.date).toBe("2026-10-05");
+    expect(window.some((day) => day.date === "2026-10-12" && day.gap === "partial")).toBe(true);
+    const completeDays = window.filter((day) => day.gap == null);
+    expect(completeDays.length).toBe(HISTORY_CAP_DAYS);
+    expect(window.some((day) => day.date === "2026-10-04")).toBe(false);
+  });
+
+  it("resets categoryTrends previous at each gap and breaks on stars_source change", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-cat-gap-"));
+    const id = "github:example/cat";
+    writeDay(dataDir, "2026-10-10", [{ id, name: "Cat", stars: 100 }]);
+    writeDay(dataDir, "2026-10-11", [{ id, name: "Cat", stars: 10_000 }], true);
+    writeDay(dataDir, "2026-10-12", [{ id, name: "Cat", stars: 130 }]);
+    writeDay(dataDir, "2026-10-13", [{ id, name: "Cat", stars: 500, starsSource: "gemini-cli" }]);
+    const agg = buildAggregate(dataDir, "fixture");
+    const points = categoryTrends(agg);
+    expect(points.find((point) => point.date === "2026-10-11")).toMatchObject({
+      appCount: null,
+      stars: null,
+      starsGrowth: null,
+      gap: "partial",
+    });
+    expect(points.find((point) => point.date === "2026-10-12")).toMatchObject({
+      stars: 130,
+      starsGrowth: null,
+      gap: null,
+    });
+    expect(points.find((point) => point.date === "2026-10-13")).toMatchObject({
+      stars: 500,
+      starsGrowth: null,
+      gap: null,
+    });
+  });
+
+  it("applies the 14-complete-day window and gap nulls to sparkValues", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-spark-"));
+    const id = "github:example/spark";
+    for (let offset = 16; offset >= 0; offset -= 1) {
+      const date = addUtcDays("2026-10-20", -offset);
+      const partial = date === "2026-10-12";
+      const npmCarried = date === "2026-10-18";
+      writeDay(
+        dataDir,
+        date,
+        [{ id, name: "Spark", npmWeekly: npmCarried ? 99_999 : 100 + (16 - offset), npmCarried }],
+        partial,
+      );
+    }
+    const agg = buildAggregate(dataDir, "fixture");
+    const values = sparkValues(agg, id, "npm_weekly_downloads");
+    const window = publicHistoryWindow(agg);
+    expect(values).toHaveLength(window.length);
+    expect(window[0]?.date).toBe("2026-10-06");
+    expect(window.at(-1)?.date).toBe("2026-10-20");
+    expect(agg.meta.snapshotDates.length).toBeGreaterThan(values.filter((value) => value != null).length);
+    const partialIndex = window.findIndex((day) => day.date === "2026-10-12");
+    const carriedIndex = window.findIndex((day) => day.date === "2026-10-18");
+    expect(values[partialIndex]).toBeNull();
+    expect(values[carriedIndex]).toBeNull();
+    expect(values.some((value) => value != null)).toBe(true);
+    expect(JSON.stringify(values)).not.toContain("99999");
   });
 });

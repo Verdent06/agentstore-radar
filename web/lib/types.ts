@@ -69,23 +69,22 @@ export type CompactSeries = {
   ss?: Array<string | null>;
 };
 
+export type HistoryGap = "partial" | "carried_forward" | "missing";
+
 export type HistoryPoint = {
   date: string;
   stars: number | null;
-  useCount: number | null;
   npmWeeklyDownloads: number | null;
   pypiLastWeekDownloads: number | null;
   geminiStars: number | null;
+  starsGap?: HistoryGap | null;
+  npmGap?: HistoryGap | null;
+  pypiGap?: HistoryGap | null;
+  geminiGap?: HistoryGap | null;
   starsGrowth?: string | null;
-  useCountGrowth?: string | null;
   npmGrowth?: string | null;
   pypiGrowth?: string | null;
   geminiGrowth?: string | null;
-  starsCarriedForward?: boolean;
-  useCountCarriedForward?: boolean;
-  npmCarriedForward?: boolean;
-  pypiCarriedForward?: boolean;
-  starsSource?: string | null;
 };
 
 export type HeadlineStats = {

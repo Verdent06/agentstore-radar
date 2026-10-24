@@ -6,7 +6,6 @@ import { loadPublicAnswerShare } from "./answer-share.ts";
 import { classifyCategory } from "./classify.ts";
 import {
   HISTORY_CAP_DAYS,
-  historyCutoffDate,
   roundAppMetrics,
   roundHeadlineStats,
   roundSeries,
@@ -20,9 +19,22 @@ import {
   type CoverageRow,
   type DataOrigin,
   type HeadlineStats,
-  type HistoryPoint,
   type StoreSource,
 } from "./types.ts";
+
+type PackedPoint = {
+  date: string;
+  stars: number | null;
+  useCount: number | null;
+  npmWeeklyDownloads: number | null;
+  pypiLastWeekDownloads: number | null;
+  geminiStars: number | null;
+  starsCarriedForward?: boolean;
+  useCountCarriedForward?: boolean;
+  npmCarriedForward?: boolean;
+  pypiCarriedForward?: boolean;
+  starsSource?: string | null;
+};
 
 function asNumber(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -59,7 +71,7 @@ function weekAgoDate(dates: string[], latest: string): string | null {
   return earlier.at(-1) ?? dates[0] ?? null;
 }
 
-function compact(points: HistoryPoint[], dates: string[]): CompactSeries {
+function compact(points: PackedPoint[], dates: string[]): CompactSeries {
   const byDate = new Map(points.map((point) => [point.date, point]));
   const flag = (carried: boolean | undefined): 0 | 1 => (carried ? 1 : 0);
   const series: CompactSeries = {
@@ -101,16 +113,19 @@ function compact(points: HistoryPoint[], dates: string[]): CompactSeries {
 
 export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir"): Aggregate {
   const allDates = listSnapshotDates(dataDir);
-  const latestAll = allDates.at(-1) ?? null;
-  const cutoff = latestAll ? historyCutoffDate(latestAll, HISTORY_CAP_DAYS) : null;
-  const snapshotDates = cutoff ? allDates.filter((date) => date >= cutoff) : [];
-  const partialDates = snapshotDates.filter((date) => {
+  const allPartial = allDates.filter((date) => {
     try {
       return snapshotIsPartial(readManifest(date, dataDir));
     } catch {
       return false;
     }
   });
+  const allComplete = allDates.filter((date) => !allPartial.includes(date));
+  const fromComplete = allComplete.at(-HISTORY_CAP_DAYS) ?? allComplete[0] ?? null;
+  const toComplete = allComplete.at(-1) ?? null;
+  const snapshotDates =
+    fromComplete && toComplete ? allDates.filter((date) => date >= fromComplete && date <= toComplete) : [];
+  const partialDates = snapshotDates.filter((date) => allPartial.includes(date));
   const completeDates = snapshotDates.filter((date) => !partialDates.includes(date));
   const latestDate = snapshotDates.at(-1) ?? null;
   const previousDate = snapshotDates.length >= 2 ? snapshotDates.at(-2) ?? null : null;
@@ -119,7 +134,7 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
   const week = latestCompleteDate ? weekAgoDate(completeDates, latestCompleteDate) : null;
 
   const firstSeen = new Map<string, string>();
-  const history = new Map<string, HistoryPoint[]>();
+  const history = new Map<string, PackedPoint[]>();
   const latestApps = new Map<string, AppRow>();
   const latestSourceRows = new Map<string, SourceRow[]>();
 

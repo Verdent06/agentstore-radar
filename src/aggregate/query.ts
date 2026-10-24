@@ -8,9 +8,9 @@ import {
   PUBLIC_DEFAULT_LIMIT,
   PUBLIC_MAX_LIMIT,
   PUBLIC_TOP_N,
+  completeHistoryBounds,
   completeSnapshotDates,
   growthBucket,
-  historyCutoffDate,
   roundCount,
 } from "./public.ts";
 import {
@@ -25,6 +25,7 @@ import {
   type CategoryTrendPoint,
   type ChartId,
   type CompactSeries,
+  type HistoryGap,
   type HistoryPoint,
   type MetricKey,
   type MoverRow,
@@ -48,21 +49,37 @@ export function findApp(agg: Aggregate, id: string): AppSummary | undefined {
   return agg.apps.find((app) => app.id.toLowerCase() === needle);
 }
 
-function publicDateIndices(agg: Aggregate): number[] {
-  const cutoff = agg.meta.latestDate ? historyCutoffDate(agg.meta.latestDate, HISTORY_CAP_DAYS) : null;
-  const partial = new Set(agg.meta.partialDates ?? []);
-  const indices: number[] = [];
-  for (let index = 0; index < agg.meta.snapshotDates.length; index += 1) {
-    const date = agg.meta.snapshotDates[index]!;
-    if (cutoff && date < cutoff) {
-      continue;
-    }
-    if (partial.has(date)) {
-      continue;
-    }
-    indices.push(index);
+export type PublicHistoryDay = {
+  date: string;
+  index: number | null;
+  gap: HistoryGap | null;
+};
+
+export type PublicMetricPoint = {
+  date: string;
+  value: number | null;
+  growth: string | null;
+  gap: HistoryGap | null;
+};
+
+/** Calendar days from the 14th-last complete snapshot through the latest complete snapshot. */
+export function publicHistoryWindow(agg: Aggregate, capDays = HISTORY_CAP_DAYS): PublicHistoryDay[] {
+  const bounds = completeHistoryBounds(agg, capDays);
+  if (!bounds) {
+    return [];
   }
-  return indices;
+  const partial = new Set(agg.meta.partialDates ?? []);
+  const indexOf = new Map(agg.meta.snapshotDates.map((date, index) => [date, index]));
+  const days: PublicHistoryDay[] = [];
+  for (let date = bounds.fromDate; date <= bounds.toDate; date = addUtcDays(date, 1)) {
+    const index = indexOf.get(date);
+    if (index == null) {
+      days.push({ date, index: null, gap: "missing" });
+      continue;
+    }
+    days.push({ date, index, gap: partial.has(date) ? "partial" : null });
+  }
+  return days;
 }
 
 function growthFrom(previous: number | null | undefined, current: number | null | undefined): string | null {
@@ -72,46 +89,59 @@ function growthFrom(previous: number | null | undefined, current: number | null 
   return growthBucket((current - previous) / previous);
 }
 
-export function seriesToPoints(agg: Aggregate, id: string): HistoryPoint[] {
-  const packed = agg.series[id];
-  if (!packed) {
-    return [];
-  }
-  const lastFresh: Partial<Record<MetricKey, { index: number; value: number }>> = {};
-  const take = (metric: MetricKey, index: number): { value: number | null; growth: string | null } => {
-    if (metricCarriedForward(packed, metric, index)) {
-      return { value: null, growth: null };
+export function publicMetricSeries(agg: Aggregate, id: string, metric: MetricKey): PublicMetricPoint[] {
+  const series = agg.series[id];
+  let previous: { index: number; value: number } | null = null;
+  return publicHistoryWindow(agg).map((day) => {
+    if (day.gap) {
+      previous = null;
+      return { date: day.date, value: null, growth: null, gap: day.gap };
     }
-    const value = roundCount(metricFromSeries(packed, metric, index));
+    const index = day.index;
+    if (index == null) {
+      previous = null;
+      return { date: day.date, value: null, growth: null, gap: "missing" };
+    }
+    if (metricCarriedForward(series, metric, index)) {
+      previous = null;
+      return { date: day.date, value: null, growth: null, gap: "carried_forward" };
+    }
+    const value = roundCount(metricFromSeries(series, metric, index));
     if (value == null) {
-      return { value: null, growth: null };
+      previous = null;
+      return { date: day.date, value: null, growth: null, gap: "missing" };
     }
-    const prev = lastFresh[metric];
-    const broken = prev != null && starsSourceBreak(packed, metric, prev.index, index);
-    const growth = broken ? null : growthFrom(prev?.value, value);
-    lastFresh[metric] = { index, value };
-    return { value, growth };
-  };
-  return publicDateIndices(agg).map((index) => {
-    const stars = take("stars", index);
-    const useCount = take("use_count", index);
-    const npm = take("npm_weekly_downloads", index);
-    const pypi = take("pypi_last_week_downloads", index);
-    const gemini = take("gemini_stars", index);
-    return {
-      date: agg.meta.snapshotDates[index]!,
-      stars: stars.value,
-      useCount: useCount.value,
-      npmWeeklyDownloads: npm.value,
-      pypiLastWeekDownloads: pypi.value,
-      geminiStars: gemini.value,
-      starsGrowth: stars.growth,
-      useCountGrowth: useCount.growth,
-      npmGrowth: npm.growth,
-      pypiGrowth: pypi.growth,
-      geminiGrowth: gemini.growth,
-    };
+    const broken = previous != null && starsSourceBreak(series, metric, previous.index, index);
+    const growth = broken ? null : growthFrom(previous?.value, value);
+    previous = { index, value };
+    return { date: day.date, value, growth, gap: null };
   });
+}
+
+export function sparkValues(agg: Aggregate, id: string, metric: MetricKey): Array<number | null> {
+  return publicMetricSeries(agg, id, metric).map((point) => point.value);
+}
+
+export function seriesToPoints(agg: Aggregate, id: string): HistoryPoint[] {
+  const stars = publicMetricSeries(agg, id, "stars");
+  const npm = publicMetricSeries(agg, id, "npm_weekly_downloads");
+  const pypi = publicMetricSeries(agg, id, "pypi_last_week_downloads");
+  const gemini = publicMetricSeries(agg, id, "gemini_stars");
+  return stars.map((point, index) => ({
+    date: point.date,
+    stars: point.value,
+    npmWeeklyDownloads: npm[index]?.value ?? null,
+    pypiLastWeekDownloads: pypi[index]?.value ?? null,
+    geminiStars: gemini[index]?.value ?? null,
+    starsGap: point.gap,
+    npmGap: npm[index]?.gap ?? null,
+    pypiGap: pypi[index]?.gap ?? null,
+    geminiGap: gemini[index]?.gap ?? null,
+    starsGrowth: point.growth,
+    npmGrowth: npm[index]?.growth ?? null,
+    pypiGrowth: pypi[index]?.growth ?? null,
+    geminiGrowth: gemini[index]?.growth ?? null,
+  }));
 }
 
 export function metricFromApp(app: AppSummary, metric: MetricKey): number | null {
@@ -132,7 +162,7 @@ export function metricFromApp(app: AppSummary, metric: MetricKey): number | null
 export function metricFromPoint(point: HistoryPoint, metric: MetricKey): number | null {
   switch (metric) {
     case "use_count":
-      return point.useCount;
+      return null;
     case "stars":
       return point.stars;
     case "npm_weekly_downloads":
@@ -418,14 +448,14 @@ export function searchApps(
       const hay = `${app.id} ${app.name} ${app.displayName} ${app.description ?? ""} ${app.npmPackage ?? ""} ${app.pypiPackage ?? ""}`.toLowerCase();
       return tokens.every((token) => hay.includes(token));
     })
-    .sort((a, b) => (b.useCount ?? -1) - (a.useCount ?? -1) || a.displayName.localeCompare(b.displayName))
+    .sort((a, b) => (b.stars ?? -1) - (a.stars ?? -1) || a.displayName.localeCompare(b.displayName))
     .slice(0, limit);
 }
 
 export function multiStoreApps(agg: Aggregate, limit?: number): AppSummary[] {
   return agg.apps
     .filter((app) => app.stores.length >= 2)
-    .sort((a, b) => b.stores.length - a.stores.length || (b.useCount ?? -1) - (a.useCount ?? -1) || a.id.localeCompare(b.id))
+    .sort((a, b) => b.stores.length - a.stores.length || (b.stars ?? -1) - (a.stars ?? -1) || a.id.localeCompare(b.id))
     .slice(0, clampLimit(limit, PUBLIC_TOP_N));
 }
 
@@ -436,7 +466,7 @@ export function newArrivals(agg: Aggregate, limit?: number): AppSummary[] {
   }
   return agg.apps
     .filter((app) => app.firstSeen === latest)
-    .sort((a, b) => (b.useCount ?? b.stars ?? 0) - (a.useCount ?? a.stars ?? 0) || a.displayName.localeCompare(b.displayName))
+    .sort((a, b) => (b.stars ?? b.npmWeeklyDownloads ?? 0) - (a.stars ?? a.npmWeeklyDownloads ?? 0) || a.displayName.localeCompare(b.displayName))
     .slice(0, clampLimit(limit, PUBLIC_TOP_N));
 }
 
@@ -448,7 +478,6 @@ export function categories(agg: Aggregate): CategorySummary[] {
       slug,
       label: CATEGORY_LABELS[slug],
       appCount: 0,
-      useCount: 0,
       stars: 0,
       newThisSnapshot: 0,
     });
@@ -459,7 +488,6 @@ export function categories(agg: Aggregate): CategorySummary[] {
       continue;
     }
     row.appCount += 1;
-    row.useCount += app.useCount ?? 0;
     row.stars += app.stars ?? 0;
     if (latest && app.firstSeen === latest) {
       row.newThisSnapshot += 1;
@@ -469,7 +497,6 @@ export function categories(agg: Aggregate): CategorySummary[] {
     .filter((row) => row.appCount > 0)
     .map((row) => ({
       ...row,
-      useCount: roundCount(row.useCount) ?? 0,
       stars: roundCount(row.stars) ?? 0,
     }))
     .sort((a, b) => b.appCount - a.appCount || a.slug.localeCompare(b.slug));
@@ -478,49 +505,53 @@ export function categories(agg: Aggregate): CategorySummary[] {
 export function appsInCategory(agg: Aggregate, slug: CategorySlug, limit?: number): AppSummary[] {
   return agg.apps
     .filter((app) => app.category === slug)
-    .sort((a, b) => (b.useCount ?? -1) - (a.useCount ?? -1) || (b.stars ?? -1) - (a.stars ?? -1) || a.id.localeCompare(b.id))
+    .sort((a, b) => (b.stars ?? -1) - (a.stars ?? -1) || a.id.localeCompare(b.id))
     .slice(0, clampLimit(limit, PUBLIC_TOP_N));
 }
 
 export function categoryTrends(agg: Aggregate, slug?: CategorySlug): CategoryTrendPoint[] {
-  let prevUse: number | null = null;
-  let prevStars: number | null = null;
-  return publicDateIndices(agg).map((index) => {
-    const date = agg.meta.snapshotDates[index]!;
+  let previous: { index: number; stars: number } | null = null;
+  return publicHistoryWindow(agg).map((day) => {
+    if (day.gap) {
+      previous = null;
+      return { date: day.date, appCount: null, stars: null, starsGrowth: null, gap: day.gap };
+    }
+    const index = day.index;
+    if (index == null) {
+      previous = null;
+      return { date: day.date, appCount: null, stars: null, starsGrowth: null, gap: "missing" };
+    }
     let appCount = 0;
-    let useCount = 0;
     let stars = 0;
+    let sourceBroken = false;
     for (const app of agg.apps) {
       if (slug && app.category !== slug) {
         continue;
       }
       const series = agg.series[app.id];
-      const appeared = series && (series.s?.[index] != null || series.u?.[index] != null || series.n?.[index] != null || series.p?.[index] != null || series.g?.[index] != null);
-      const knownByThen = app.firstSeen <= date && app.lastSeen >= date;
+      const appeared =
+        series &&
+        (series.s?.[index] != null ||
+          series.u?.[index] != null ||
+          series.n?.[index] != null ||
+          series.p?.[index] != null ||
+          series.g?.[index] != null);
+      const knownByThen = app.firstSeen <= day.date && app.lastSeen >= day.date;
       if (!appeared && !knownByThen) {
         continue;
       }
       appCount += 1;
-      if (!metricCarriedForward(series, "use_count", index)) {
-        useCount += metricFromSeries(series, "use_count", index) ?? 0;
+      if (previous != null && starsSourceBreak(series, "stars", previous.index, index)) {
+        sourceBroken = true;
       }
       if (!metricCarriedForward(series, "stars", index)) {
         stars += metricFromSeries(series, "stars", index) ?? 0;
       }
     }
-    const roundedUse = roundCount(useCount) ?? 0;
     const roundedStars = roundCount(stars) ?? 0;
-    const point: CategoryTrendPoint = {
-      date,
-      appCount,
-      useCount: roundedUse,
-      stars: roundedStars,
-      useCountGrowth: growthFrom(prevUse, roundedUse),
-      starsGrowth: growthFrom(prevStars, roundedStars),
-    };
-    prevUse = roundedUse;
-    prevStars = roundedStars;
-    return point;
+    const starsGrowth = sourceBroken ? null : growthFrom(previous?.stars, roundedStars);
+    previous = { index, stars: roundedStars };
+    return { date: day.date, appCount, stars: roundedStars, starsGrowth, gap: null };
   });
 }
 
@@ -528,21 +559,18 @@ export function rankHistory(
   agg: Aggregate,
   id: string,
   metric: MetricKey,
-): Array<{ date: string; rank: number | null; value: number | null; growth: string | null }> {
+): Array<{ date: string; rank: number | null; value: number | null; growth: string | null; gap: HistoryGap | null }> {
   const app = findApp(agg, id);
   if (!app) {
     return [];
   }
-  let previous: { index: number; value: number } | null = null;
-  const points: Array<{ date: string; rank: number | null; value: number | null; growth: string | null }> = [];
-  for (const index of publicDateIndices(agg)) {
-    if (metricCarriedForward(agg.series[app.id], metric, index)) {
-      continue;
+  const window = publicHistoryWindow(agg);
+  return publicMetricSeries(agg, id, metric).map((point, offset) => {
+    const day = window[offset]!;
+    if (point.gap || day.index == null) {
+      return { date: point.date, rank: null, value: null, growth: null, gap: point.gap ?? "missing" };
     }
-    const value = roundCount(metricFromSeries(agg.series[app.id], metric, index));
-    if (value == null) {
-      continue;
-    }
+    const index = day.index;
     const scored = agg.apps
       .map((candidate) => ({
         id: candidate.id,
@@ -554,17 +582,14 @@ export function rankHistory(
       .filter((row): row is { id: string; value: number } => row.value != null)
       .sort((a, b) => b.value - a.value || a.id.localeCompare(b.id));
     const rank = scored.findIndex((row) => row.id === app.id);
-    const broken = previous != null && starsSourceBreak(agg.series[app.id], metric, previous.index, index);
-    const growth = broken ? null : growthFrom(previous?.value, value);
-    previous = { index, value };
-    points.push({
-      date: agg.meta.snapshotDates[index]!,
+    return {
+      date: point.date,
       rank: rank === -1 ? null : rank + 1,
-      value,
-      growth,
-    });
-  }
-  return points;
+      value: point.value,
+      growth: point.growth,
+      gap: null,
+    };
+  });
 }
 
 export function competitors(agg: Aggregate, id: string, limit?: number): Array<AppSummary & { score: number }> {
