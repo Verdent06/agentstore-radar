@@ -115,6 +115,7 @@ export type Aggregate = {
   meta: {
     builtAt: string;
     origin: "data_dir" | "github" | "fixture";
+    source: "private" | "fixture";
     snapshotDates: string[];
     latestDate: string | null;
     previousDate: string | null;

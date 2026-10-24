@@ -14,6 +14,7 @@ describe("buildAggregate", () => {
     const agg = buildAggregate(dataDir, "fixture");
 
     expect(agg.meta.origin).toBe("fixture");
+    expect(agg.meta.source).toBe("fixture");
     expect(agg.meta.snapshotDates).toEqual(["2026-10-08", "2026-10-14", "2026-10-15"]);
     expect(agg.meta.latestDate).toBe("2026-10-15");
     expect(agg.meta.previousDate).toBe("2026-10-14");
@@ -43,6 +44,14 @@ describe("buildAggregate", () => {
     expect(JSON.stringify(parsed)).not.toMatch(/source_rows/);
     expect(agg.answerShare?.probeDate).toBe("2026-10-13");
     expect(agg.answerShare?.overall[0]?.appId).toBe("github:brave/brave-search-mcp");
+  });
+
+  it("records meta.source=private when origin is a live data dir", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-priv-src-"));
+    writeDemoSnapshots(dataDir);
+    const agg = buildAggregate(dataDir, "data_dir");
+    expect(agg.meta.origin).toBe("data_dir");
+    expect(agg.meta.source).toBe("private");
   });
 
   it("does not treat a single snapshot as having movers windows", () => {

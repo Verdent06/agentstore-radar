@@ -66,7 +66,7 @@ export default async function MoversPage({ searchParams }: { searchParams: Promi
             <h1 className="mt-2 text-4xl font-semibold tracking-tight">AgentStore Radar</h1>
             <p className="mt-2 text-sm text-muted">
               {formatDate(agg.meta.weekAgoDate)} → {formatDate(agg.meta.latestDate)}
-              {agg.meta.origin === "fixture" ? " · demo data" : ""}
+              {agg.meta.source === "fixture" || agg.meta.origin === "fixture" ? " · demo data" : ""}
             </p>
           </div>
           {!shot ? (

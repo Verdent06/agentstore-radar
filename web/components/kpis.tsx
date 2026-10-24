@@ -18,8 +18,16 @@ export function KpiGrid({
   );
 }
 
-export function DemoBanner({ origin, latestDate }: { origin: string; latestDate: string | null }) {
-  if (origin !== "fixture") {
+export function DemoBanner({
+  origin,
+  source,
+  latestDate,
+}: {
+  origin: string;
+  source?: string;
+  latestDate: string | null;
+}) {
+  if (source !== "fixture" && origin !== "fixture") {
     return (
       <p className="text-xs text-muted">
         Snapshot {latestDate ?? "—"} · sourced from private history via build-time aggregate

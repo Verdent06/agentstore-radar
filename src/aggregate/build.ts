@@ -13,6 +13,7 @@ import {
   type HeadlineStats,
   type HistoryPoint,
   type StoreSource,
+  sourceFromOrigin,
 } from "./types.ts";
 
 const HISTORY_CAP_DAYS = 90;
@@ -171,6 +172,7 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
     meta: {
       builtAt: new Date().toISOString(),
       origin,
+      source: sourceFromOrigin(origin),
       snapshotDates,
       latestDate,
       previousDate,

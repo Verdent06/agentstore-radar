@@ -32,7 +32,7 @@ export default function HomePage() {
             This site publishes chosen aggregates only.
           </p>
         </div>
-        <DemoBanner origin={agg.meta.origin} latestDate={agg.meta.latestDate} />
+        <DemoBanner origin={agg.meta.origin} source={agg.meta.source} latestDate={agg.meta.latestDate} />
       </div>
 
       <KpiGrid items={formatKpis(agg.stats)} />

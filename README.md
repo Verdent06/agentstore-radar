@@ -87,8 +87,9 @@ npx tsx src/cli.ts report --data "$DATA_DIR" --limit 15
 Optional env:
 
 - `DATA_DIR` — snapshot root (see above)
+- `DATA_GITHUB_TOKEN` — PAT used by the public aggregate builder to read the private data repo (the only data-token env var to set on Vercel)
 - `GH_STATS_TOKEN` — optional PAT used first for GraphQL repo stats (higher budget than the default Actions token)
-- `GITHUB_TOKEN` / `GH_TOKEN` — GitHub GraphQL fallback (Actions provides `GITHUB_TOKEN` automatically)
+- `GITHUB_TOKEN` / `GH_TOKEN` — GitHub GraphQL fallback (Actions provides `GITHUB_TOKEN` automatically); also accepted as a local fallback when cloning private snapshots if `DATA_GITHUB_TOKEN` is unset
 - `SMITHERY_API_KEY` — only if Smithery starts requiring auth for public list
 - `HEALTH_ISSUE_REPO` — `owner/name` for health issues (defaults to unset; we do not open issues on the public repo)
 - `HEALTH_ISSUE_TOKEN` — optional token that can write issues on the data repo
@@ -101,7 +102,7 @@ Optional env:
 
 - [`.github/workflows/collect.yml`](.github/workflows/collect.yml) — daily cron (`17 6 * * *`) plus `workflow_dispatch`. `timeout-minutes: 360` so GitHub/npm/PyPI can wait through rate-limit resets. Checks out the private data repo over SSH (`DATA_REPO_DEPLOY_KEY`), **once** copies `data/` from this repo’s git history if the data repo has no snapshots yet (writes `data/.migrated-from-public`), then collects into `DATA_DIR` and pushes **only** to the data repo. After that first success it never reads public history again. `seed_only` skips collect and just does that one-time copy.
 - [`.github/workflows/answer-share.yml`](.github/workflows/answer-share.yml) — weekly cron (Mondays `17 7 * * 1`) plus `workflow_dispatch`. Same private-repo deploy key. Asks each configured assistant which apps/tools/MCP servers it would recommend (`N=3` for variance). Missing provider keys are skipped. `MAX_CALLS` is a hard cost cap (workflow default `1200`).
-- [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — lint, typecheck, collector tests, aggregate build (fixtures unless a data token is set), Next.js build, MCP tests.
+- [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — lint, typecheck, collector tests, aggregate build (explicit `--allow-fixture` unless a data token/`DATA_DIR` is set), Next.js build, MCP tests.
 
 ### Answer share
 
@@ -159,46 +160,44 @@ Adapters live under `src/adapters/` and share a `SourceAdapter` interface (`cata
 Next.js App Router + Tailwind. Pages: home (headline stats + movers once two snapshot days exist, otherwise top by Smithery use count), per-source charts (Smithery / npm / GitHub / Gemini CLI), multi-store, new arrivals, keyword categories, per-app history, search, answer share (weekly assistant recommendations when `normalized/answer-share/<date>/shares.json` exists; empty state otherwise), and a screenshot-oriented [`/movers?shot=1`](web/app/movers/page.tsx) weekly card. Each leaderboard has an OG image for sharing.
 
 ```bash
-npm run aggregate          # DATA_DIR, else GitHub token, else bundled demo snapshots
+npm run aggregate                 # requires DATA_DIR or DATA_GITHUB_TOKEN (fails in CI/Vercel without them)
+npm run aggregate:fixture         # explicit opt-in to bundled demo snapshots (local + CI)
+npm run site:build                # production path: --require-private then Next.js build
+npm run site:build:fixture        # local/CI site build from fixtures
 npm run dev --workspace=web
 ```
 
-The builder writes compact `web/data/radar.json` (and `radar.sqlite` when `node:sqlite` is available). That file is a summary: latest app cards, short metric series, coverage. It is **not** a dump of private NDJSON.
+The builder writes compact `web/data/radar.json` (and `radar.sqlite` when `node:sqlite` is available). That file is a summary: latest app cards, short metric series, coverage. It is **not** a dump of private NDJSON. `meta.source` is `"private"` or `"fixture"` so a production bundle cannot silently look like live data.
+
+Locally, with neither `CI` nor `VERCEL` set, `npm run aggregate` may still use fixtures if no token/`DATA_DIR` is present. **Vercel and CI never do that** unless you pass `--allow-fixture` or set `ALLOW_FIXTURE=1`. `npm run site:build` always passes `--require-private`.
 
 ### Vercel
 
-Create a project from this repo. Two layouts work:
+Create a **new** project from this repo. Set **Root Directory** to `web` so Next.js detection, `.next` output, and `next.config.ts` all live in the project root Vercel sees. Keep [web/vercel.json](web/vercel.json); there is no repo-root `vercel.json`.
 
-**A. Root Directory = repository root** (matches [vercel.json](vercel.json))
-
-| Setting | Value |
-| --- | --- |
-| Framework | Next.js |
-| Install | `npm ci` |
-| Build | `npm run site:build` |
-
-**B. Root Directory = `web`** (matches [web/vercel.json](web/vercel.json))
+Leave the dashboard Install / Build overrides empty — the config supplies them. Turn on **Include files outside the root directory** (the Vercel default) so the parent workspace install can reach `scripts/` and `src/`.
 
 | Setting | Value |
 | --- | --- |
+| Root Directory | `web` |
 | Framework | Next.js |
 | Install | `cd .. && npm ci` |
-| Build | `npx tsx ../scripts/build-aggregate.ts --out data && next build` |
+| Build | `npx tsx ../scripts/build-aggregate.ts --out data --require-private && next build` |
 
-Prefer **A**. If Vercel does not detect Next.js from the repo root, use **B**.
+Refresh live charts by redeploying (a Deploy Hook from the data repo, or a manual redeploy). The Hobby build is static: no ISR revalidation against GitHub.
 
-**Required / recommended env vars**
+**Required / recommended env vars** (Production + Preview)
 
 | Name | Required | Purpose |
 | --- | --- | --- |
-| `DATA_DIR` | one of these | Absolute path to the private `data/` tree (local or CI cache). |
-| `DATA_GITHUB_TOKEN` | one of these | Fine-grained or classic PAT that can **read** `Verdent06/agentstore-radar-data`. Used at **build time** to sparse-clone `data/normalized`. |
-| `GITHUB_TOKEN` | fallback | Same as above if it can read the private data repo. The default Vercel GitHub token usually **cannot**. |
+| `DATA_GITHUB_TOKEN` | **yes on Vercel** | Fine-grained PAT, **Contents: Read-only** on `Verdent06/agentstore-radar-data` only. Used at **build time** to sparse-clone `data/normalized`. Mark it Sensitive. Do not set `GITHUB_TOKEN` or `GH_TOKEN` on Vercel — the data-token source should stay unambiguous. |
+| `DATA_DIR` | local/CI alternative | Absolute path to the private `data/` tree. |
 | `DATA_REPO` | no | Defaults to `Verdent06/agentstore-radar-data`. |
 | `NEXT_PUBLIC_SITE_URL` | recommended | Canonical site URL for Open Graph (`https://your-project.vercel.app`). |
 | `AGGREGATE_PATH` | no | Override path to `radar.json` (site + MCP). |
+| `ALLOW_FIXTURE` | no | Explicit fixture opt-in for local/CI. Ignored when `--require-private` is set (Vercel always sets that). |
 
-Without `DATA_DIR` or a token that can read the data repo, the build falls back to **demo fixtures** and the site banners that. Do not treat those numbers as live.
+A Vercel build **fails** if it cannot load the private data repo. It will not ship demo fixtures. The build log should show `token from DATA_GITHUB_TOKEN` and `source=private`.
 
 The Vercel build never downloads raw history to the public internet. Only the compact aggregate is bundled with the serverless/node build.
 
@@ -207,7 +206,7 @@ The Vercel build never downloads raw history to the public internet. Only the co
 Read-only official MCP TypeScript SDK v2 server (`@modelcontextprotocol/server`) with **Streamable HTTP** and **stdio**.
 
 ```bash
-npm run aggregate
+npm run aggregate                 # or npm run aggregate:fixture for demo data
 npx tsx mcp/src/stdio.ts          # stdio
 npx tsx mcp/src/http.ts           # http://0.0.0.0:8787/mcp  (PORT / HOST)
 ```

@@ -66,6 +66,7 @@ export function writeAggregateSqlite(agg: Aggregate, path: string): string | nul
     const insertMeta = db.prepare("INSERT INTO meta(key, value) VALUES (?, ?)");
     insertMeta.run("built_at", agg.meta.builtAt);
     insertMeta.run("origin", agg.meta.origin);
+    insertMeta.run("source", agg.meta.source);
     insertMeta.run("snapshot_dates", JSON.stringify(agg.meta.snapshotDates));
     insertMeta.run("stats", JSON.stringify(agg.stats));
     insertMeta.run("coverage", JSON.stringify(agg.meta.coverage));
