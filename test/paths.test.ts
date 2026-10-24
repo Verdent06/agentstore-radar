@@ -12,12 +12,12 @@ describe("resolveDataDir", () => {
 });
 
 describe("resolveHealthIssueRepo", () => {
-  it("does not fall back to the public GITHUB_REPOSITORY", () => {
+  it("uses this repo via GITHUB_REPOSITORY and does not require HEALTH_ISSUE_TOKEN", () => {
     expect(
       resolveHealthIssueRepo({
         GITHUB_REPOSITORY: "Verdent06/agentstore-radar",
       }),
-    ).toBeUndefined();
+    ).toBe("Verdent06/agentstore-radar");
     expect(
       resolveHealthIssueRepo({
         HEALTH_ISSUE_REPO: "Verdent06/agentstore-radar-data",

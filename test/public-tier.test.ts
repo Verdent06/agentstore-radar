@@ -172,30 +172,32 @@ describe("list caps and public app pages", () => {
 describe("partial snapshot exclusion", () => {
   it("skips a partial day in the middle of a growth window", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-partial-mid-"));
-    writeDay(dataDir, "2026-10-13", [{ id: "github:example/a", name: "A", useCount: 100 }]);
-    writeDay(dataDir, "2026-10-14", [{ id: "github:example/a", name: "A", useCount: 10_000 }], true);
-    writeDay(dataDir, "2026-10-15", [{ id: "github:example/a", name: "A", useCount: 130 }]);
+    writeDay(dataDir, "2026-10-13", [{ id: "github:example/a", name: "A", stars: 100 }]);
+    writeDay(dataDir, "2026-10-14", [{ id: "github:example/a", name: "A", stars: 10_000 }], true);
+    writeDay(dataDir, "2026-10-15", [{ id: "github:example/a", name: "A", stars: 130 }]);
     const agg = buildAggregate(dataDir, "fixture");
     expect(agg.meta.partialDates).toEqual(["2026-10-14"]);
-    const rows = movers(agg, { window: "1d", metric: "use_count" });
+    const rows = movers(agg, { window: "1d", metric: "stars" });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.previous).toBe(100);
     expect(rows[0]?.current).toBe(130);
     expect(rows[0]?.delta).toBe(30);
   });
 
-  it("returns no movers when the latest day is partial", () => {
+  it("uses the latest complete day when the newest snapshot is partial", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-partial-latest-"));
-    writeDay(dataDir, "2026-10-13", [{ id: "github:example/a", name: "A", useCount: 100 }]);
-    writeDay(dataDir, "2026-10-14", [{ id: "github:example/a", name: "A", useCount: 130 }]);
-    writeDay(dataDir, "2026-10-15", [{ id: "github:example/a", name: "A", useCount: 10_000 }], true);
+    writeDay(dataDir, "2026-10-13", [{ id: "github:example/a", name: "A", stars: 100 }]);
+    writeDay(dataDir, "2026-10-14", [{ id: "github:example/a", name: "A", stars: 130 }]);
+    writeDay(dataDir, "2026-10-15", [{ id: "github:example/a", name: "A", stars: 10_000 }], true);
     const agg = buildAggregate(dataDir, "fixture");
-    expect(movers(agg, { window: "1d", metric: "use_count" })).toEqual([]);
-    expect(movers(agg, { window: "7d", metric: "use_count" })).toEqual([]);
-    const payload = JSON.parse(runTool(agg, "movers", { window: "1d", metric: "use_count" }).content[0]!.text);
-    expect(payload.rows).toEqual([]);
-    expect(payload.from).toBeNull();
-    expect(payload.to).toBeNull();
+    expect(agg.meta.latestCompleteDate).toBe("2026-10-14");
+    expect(agg.meta.previousCompleteDate).toBe("2026-10-13");
+    const rows = movers(agg, { window: "1d", metric: "stars" });
+    expect(rows[0]).toMatchObject({ previous: 100, current: 130, delta: 30 });
+    const payload = JSON.parse(runTool(agg, "movers", { window: "1d", metric: "stars" }).content[0]!.text);
+    expect(payload.from).toBe("2026-10-13");
+    expect(payload.to).toBe("2026-10-14");
+    expect(payload.partialDates).toEqual(["2026-10-15"]);
   });
 });
 

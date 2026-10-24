@@ -123,8 +123,9 @@ export function runTool(
       const ends = growthWindow(agg, window);
       return jsonResult({
         window,
-        from: ends?.from ?? null,
-        to: ends?.to ?? null,
+        from: ends?.fromDate ?? null,
+        to: ends?.toDate ?? null,
+        partialDates: agg.meta.partialDates ?? [],
         rows: movers(agg, { window, metric, limit: typeof args.limit === "number" ? args.limit : PUBLIC_DEFAULT_LIMIT }),
       });
     }

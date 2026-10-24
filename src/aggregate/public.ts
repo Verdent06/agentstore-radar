@@ -105,17 +105,34 @@ export function roundSeries(series: CompactSeries): CompactSeries {
     n: roundColumn(series.n),
     p: roundColumn(series.p),
     g: roundColumn(series.g),
+    sc: series.sc,
+    uc: series.uc,
+    nc: series.nc,
+    pc: series.pc,
+    ss: series.ss,
   };
-  const prune = (key: keyof CompactSeries) => {
+  const pruneValues = (key: "s" | "u" | "n" | "p" | "g") => {
     if (next[key]?.every((value) => value == null)) {
       delete next[key];
     }
   };
-  prune("s");
-  prune("u");
-  prune("n");
-  prune("p");
-  prune("g");
+  const pruneFlags = (key: "sc" | "uc" | "nc" | "pc") => {
+    if (next[key]?.every((value) => value == null || value === 0)) {
+      delete next[key];
+    }
+  };
+  pruneValues("s");
+  pruneValues("u");
+  pruneValues("n");
+  pruneValues("p");
+  pruneValues("g");
+  pruneFlags("sc");
+  pruneFlags("uc");
+  pruneFlags("nc");
+  pruneFlags("pc");
+  if (next.ss?.every((value) => value == null)) {
+    delete next.ss;
+  }
   return next;
 }
 

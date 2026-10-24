@@ -4,7 +4,7 @@ import { Delta } from "@/components/table";
 import { formatCount, formatDate } from "@/lib/format";
 import { MOVERS_PER_SIDE, movers } from "@/lib/query";
 import { appHref, loadAggregate } from "@/lib/store";
-import { METRIC_LABELS, type MetricKey } from "@/lib/types";
+import { METRIC_LABELS } from "@/lib/types";
 
 export const metadata = {
   title: "Weekly movers",
@@ -48,14 +48,12 @@ export default async function MoversPage({ searchParams }: { searchParams: Promi
   const agg = loadAggregate();
   const { shot: shotFlag } = await searchParams;
   const shot = shotFlag === "1";
-  const use = movers(agg, { window: "7d", metric: "use_count", limit: MOVERS_PER_SIDE });
-  const stars = movers(agg, { window: "7d", metric: "stars", limit: MOVERS_PER_SIDE });
-  const split = (rows: typeof use) => ({
+  const npm = movers(agg, { window: "7d", metric: "npm_weekly_downloads", limit: MOVERS_PER_SIDE });
+  const split = (rows: typeof npm) => ({
     up: [...rows].filter((row) => row.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, MOVERS_PER_SIDE),
     down: [...rows].filter((row) => row.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, MOVERS_PER_SIDE),
   });
-  const useSplit = split(use);
-  const starSplit = split(stars);
+  const npmSplit = split(npm);
 
   return (
     <Shell shot={shot}>
@@ -65,7 +63,7 @@ export default async function MoversPage({ searchParams }: { searchParams: Promi
             <p className="text-xs uppercase tracking-[0.25em] text-accent">Weekly movers</p>
             <h1 className="mt-2 text-4xl font-semibold tracking-tight">AgentStore Radar</h1>
             <p className="mt-2 text-sm text-muted">
-              {formatDate(agg.meta.weekAgoDate)} → {formatDate(agg.meta.latestDate)}
+              {formatDate(agg.meta.weekAgoDate)} → {formatDate(agg.meta.latestCompleteDate ?? agg.meta.latestDate)}
               {agg.meta.origin === "fixture" ? " · demo data" : ""}
             </p>
           </div>
@@ -77,15 +75,13 @@ export default async function MoversPage({ searchParams }: { searchParams: Promi
         </div>
 
         <div className="mt-8 grid gap-5 md:grid-cols-2">
-          <Column title={`${METRIC_LABELS.use_count as string} · gainers`} rows={useSplit.up} />
-          <Column title={`${METRIC_LABELS.use_count as string} · losers`} rows={useSplit.down} />
-          <Column title={`${METRIC_LABELS.stars} · gainers`} rows={starSplit.up} />
-          <Column title={`${METRIC_LABELS.stars} · losers`} rows={starSplit.down} />
+          <Column title={`${METRIC_LABELS.npm_weekly_downloads} · gainers`} rows={npmSplit.up} />
+          <Column title={`${METRIC_LABELS.npm_weekly_downloads} · losers`} rows={npmSplit.down} />
         </div>
 
         <p className="mt-6 text-xs text-muted">
-          Absolute change over the weekly window. Public aggregates only — not a bulk history dump.{" "}
-          {(Object.keys(METRIC_LABELS) as MetricKey[]).length} tracked metrics.
+          Absolute change in npm weekly downloads over the weekly window. Public aggregates only — not a bulk
+          history dump.
         </p>
       </div>
     </Shell>

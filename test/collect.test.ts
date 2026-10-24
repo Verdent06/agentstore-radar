@@ -61,7 +61,7 @@ describe("collect", () => {
       return catalogFetch(input, init);
     };
 
-    const manifest = await collect({
+    const { manifest } = await collect({
       date: "2026-10-15",
       dataDir,
       now: new Date("2026-10-15T12:00:00Z"),
@@ -70,20 +70,25 @@ describe("collect", () => {
       log: silent,
     });
 
-    expect(manifest.sources.find((source) => source.source === "mcp-registry")?.rowCount).toBe(3);
-    expect(manifest.sources.find((source) => source.source === "smithery")?.rowCount).toBe(1);
-    expect(manifest.sources.find((source) => source.source === "gemini-cli")?.rowCount).toBe(1);
-    expect(manifest.sources.find((source) => source.source === "github")?.rowCount).toBe(3);
-    expect(manifest.sources.find((source) => source.source === "npm")?.rowCount).toBe(1);
-    expect(manifest.sources.find((source) => source.source === "pypi")?.rowCount).toBe(1);
-    expect(manifest.sources.find((source) => source.source === "github")?.coverage).toBe(1);
-    expect(manifest.sources.find((source) => source.source === "npm")?.coverage).toBe(1);
-    expect(manifest.sources.find((source) => source.source === "pypi")?.coverage).toBe(1);
-    expect(manifest.sources.find((source) => source.source === "mcp-registry")?.coverage).toBe(1);
+    expect(manifest?.sources.find((source) => source.source === "mcp-registry")?.rowCount).toBe(3);
+    expect(manifest?.sources.find((source) => source.source === "smithery")?.rowCount).toBe(1);
+    expect(manifest?.sources.find((source) => source.source === "gemini-cli")?.rowCount).toBe(1);
+    expect(manifest?.sources.find((source) => source.source === "github")?.rowCount).toBe(3);
+    expect(manifest?.sources.find((source) => source.source === "npm")?.rowCount).toBe(1);
+    expect(manifest?.sources.find((source) => source.source === "pypi")?.rowCount).toBe(1);
+    expect(manifest?.sources.find((source) => source.source === "github")?.coverage).toBe(1);
+    expect(manifest?.sources.find((source) => source.source === "npm")?.coverage).toBe(1);
+    expect(manifest?.sources.find((source) => source.source === "pypi")?.coverage).toBe(1);
+    expect(manifest?.partial).toBe(false);
+    expect(manifest?.completedSources).toEqual(
+      expect.arrayContaining(["mcp-registry", "smithery", "gemini-cli", "github", "npm", "pypi"]),
+    );
+    expect(manifest?.sources.find((source) => source.source === "mcp-registry")?.coverage).toBe(1);
 
     const apps = readApps("2026-10-15", dataDir);
     const weather = apps.find((app) => app.app_id === "github:example/weather");
     expect(weather?.stars).toBe(42);
+    expect(weather?.stars_source).toBe("github");
     expect(weather?.npm_weekly_downloads).toBe(1234);
     expect(weather?.sources.split("|")).toEqual(expect.arrayContaining(["github", "mcp-registry", "npm"]));
 
@@ -102,7 +107,7 @@ describe("collect", () => {
       { match: "geminicli.com/extensions.json", body: [] },
       { match: "api.github.com/graphql", body: { message: "Bad credentials" }, status: 401 },
     ]);
-    const manifest = await collect({
+    const { manifest } = await collect({
       date: "2026-10-15",
       dataDir,
       now: new Date("2026-10-15T12:00:00Z"),
@@ -110,7 +115,7 @@ describe("collect", () => {
       http: createHttpClient({ fetchImpl, maxRetries: 0 }),
       log: silent,
     });
-    expect(manifest.sources.find((source) => source.source === "github")?.skipped).toBe(true);
+    expect(manifest?.sources.find((source) => source.source === "github")?.skipped).toBe(true);
   });
 
   it("skips GitHub when no token is present", async () => {
@@ -120,7 +125,7 @@ describe("collect", () => {
       { match: "api.smithery.ai/servers", body: loadFixture("smithery-page.json") },
       { match: "geminicli.com/extensions.json", body: [] },
     ]);
-    const manifest = await collect({
+    const { manifest } = await collect({
       date: "2026-10-15",
       dataDir,
       now: new Date("2026-10-15T12:00:00Z"),
@@ -128,7 +133,7 @@ describe("collect", () => {
       http: createHttpClient({ fetchImpl, maxRetries: 0 }),
       log: silent,
     });
-    const github = manifest.sources.find((source) => source.source === "github");
+    const github = manifest?.sources.find((source) => source.source === "github");
     expect(github?.skipped).toBe(true);
     expect(github?.skipReason).toMatch(/GITHUB_TOKEN/);
   });

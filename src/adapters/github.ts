@@ -14,9 +14,9 @@ import {
   persistLastFetched,
   resumeDueKeys,
 } from "../lib/rolling.ts";
-import { emptySourceRow, type SourceRow } from "../lib/schema.ts";
+import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
 import { chunk, sleep } from "../lib/util.ts";
-import type { CollectContext, SourceAdapter, SourceResult } from "./types.ts";
+import { sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "./types.ts";
 
 const RepoNodeSchema = z
   .object({
@@ -39,12 +39,39 @@ const RateLimitSchema = z
   })
   .passthrough();
 
+const GraphqlErrorSchema = z
+  .object({
+    message: z.string(),
+    type: z.string().optional(),
+    path: z.array(z.union([z.string(), z.number()])).optional(),
+  })
+  .passthrough();
+
 const GraphqlResponseSchema = z.object({
   data: z.record(z.unknown()).nullable().optional(),
-  errors: z
-    .array(z.object({ message: z.string() }).passthrough())
-    .optional(),
+  errors: z.array(GraphqlErrorSchema).optional(),
 });
+
+export function isUnresolvedRepositoryError(error: { message: string; type?: string }): boolean {
+  if (error.type === "NOT_FOUND") {
+    return true;
+  }
+  return /could not resolve to a repository/i.test(error.message) || /could not resolve repository/i.test(error.message);
+}
+
+export function repoNameFromGraphqlError(
+  error: { message: string; path?: Array<string | number> },
+  batch: GithubRepoRef[],
+): string | undefined {
+  const alias = typeof error.path?.[0] === "string" ? error.path[0] : undefined;
+  if (alias && /^r\d+$/.test(alias)) {
+    const ref = batch[Number(alias.slice(1))];
+    if (ref) {
+      return `${ref.owner}/${ref.repo}`;
+    }
+  }
+  return error.message.match(/name '([^']+)'/i)?.[1];
+}
 
 export type GithubRawSnapshot = {
   endpoint: string;
@@ -80,29 +107,35 @@ export function buildGithubGraphqlQuery(batch: GithubRepoRef[]): string {
   return `query { ${selections.join("\n")} rateLimit { remaining resetAt cost } }`;
 }
 
-export function normalizeGithubRepo(snapshotDate: string, item: unknown): SourceRow | null {
+export function normalizeGithubRepo(snapshotDate: string, item: unknown, requested?: GithubRepoRef): SourceRow | null {
   const parsed = RepoNodeSchema.safeParse(item);
   if (!parsed.success) {
     return null;
   }
   const repo = parsed.data;
+  const identity = requested ?? {
+    owner: repo.nameWithOwner.split("/")[0] ?? repo.nameWithOwner,
+    repo: repo.nameWithOwner.split("/")[1] ?? repo.nameWithOwner,
+  };
+  const sourceId = `${identity.owner}/${identity.repo}`.toLowerCase();
+  const repoUrl = requested ? `https://github.com/${identity.owner}/${identity.repo}` : repo.url;
   return emptySourceRow({
     snapshot_date: snapshotDate,
     source: "github",
-    source_id: repo.nameWithOwner.toLowerCase(),
+    source_id: sourceId,
     name: repo.nameWithOwner,
     display_name: repo.nameWithOwner,
     homepage: repo.url,
-    repo_url: repo.url,
+    repo_url: repoUrl,
     stars: repo.stargazerCount,
     forks: repo.forkCount,
     open_issues: repo.issues?.totalCount ?? null,
     pushed_at: repo.pushedAt ?? repo.updatedAt ?? null,
     status: repo.isArchived ? "archived" : "active",
     app_id: appIdFromIdentity({
-      repoUrl: repo.url,
+      repoUrl,
       source: "github",
-      sourceId: repo.nameWithOwner,
+      sourceId,
     }),
   });
 }
@@ -140,10 +173,20 @@ async function waitForGraphqlBudget(
   await sleep(waitMs);
 }
 
+function refFromKey(key: string): GithubRepoRef | undefined {
+  const [owner, repo] = key.split("/");
+  if (!owner || !repo) {
+    return undefined;
+  }
+  return { owner, repo };
+}
+
 function recordsFromCache(
   snapshotDate: string,
   keys: string[],
   cache: Record<string, unknown>,
+  lastFetched: Record<string, string>,
+  collectedAt: string,
 ): SourceRow[] {
   const records: SourceRow[] = [];
   for (const key of keys) {
@@ -151,9 +194,10 @@ function recordsFromCache(
     if (item == null) {
       continue;
     }
-    const row = normalizeGithubRepo(snapshotDate, item);
+    const row = normalizeGithubRepo(snapshotDate, item, refFromKey(key));
     if (row) {
-      records.push(row);
+      const fetchedAt = lastFetched[key] ?? null;
+      records.push(withObservation(row, fetchedAt, fetchedAt != null && fetchedAt !== collectedAt));
     }
   }
   return records;
@@ -178,8 +222,9 @@ export const githubAdapter: SourceAdapter = {
       truncated: boolean;
       fetchedThisRun: number;
       rawExtra?: Record<string, unknown>;
+      stoppedAt?: SourceResult["stoppedAt"];
     }): SourceResult => {
-      const records = recordsFromCache(ctx.snapshotDate, allKeys, cache);
+      const records = recordsFromCache(ctx.snapshotDate, allKeys, cache, lastFetched, fetchedAt);
       const fetchedCount = countFresh(allKeys, lastFetched, ctx.now);
       const { coverage } = computeCoverage(allKeys.length, fetchedCount);
       const lastFetchedAt = Object.values(lastFetched).sort().at(-1);
@@ -206,6 +251,8 @@ export const githubAdapter: SourceAdapter = {
         fetchedCount,
         coverage,
         lastFetchedAt,
+        stoppedAt: input.stoppedAt,
+        error: input.stoppedAt?.error,
         raw: {
           endpoint: GITHUB_GRAPHQL_URL,
           fetchedAt,
@@ -251,6 +298,8 @@ export const githubAdapter: SourceAdapter = {
 
     let fetchedThisRun = 0;
     let truncated = false;
+    let stoppedAt: SourceResult["stoppedAt"];
+    const unresolvedRepos: string[] = [];
     const dueRefs = dueKeys
       .map((key) => ctx.discovered.githubRepos.get(key))
       .filter((ref): ref is GithubRepoRef => Boolean(ref));
@@ -274,41 +323,54 @@ export const githubAdapter: SourceAdapter = {
             body: JSON.stringify({ query: buildGithubGraphqlQuery(batch) }),
           }),
         );
-        if (isGraphqlRateLimit(payload.errors) && !payload.data) {
-          throw new HttpError(GITHUB_GRAPHQL_URL, 403, payload.errors?.map((err) => err.message).join("; ") ?? "rate limit");
+        const errors = payload.errors ?? [];
+        const unresolved = errors.filter(isUnresolvedRepositoryError);
+        const otherErrors = errors.filter((error) => !isUnresolvedRepositoryError(error));
+        for (const error of unresolved) {
+          const repo = repoNameFromGraphqlError(error, batch) ?? error.message;
+          unresolvedRepos.push(repo);
+          ctx.log.warn("github could not resolve repository", { repo, error: error.message });
         }
-        if (payload.errors?.length && !payload.data) {
-          throw new Error(`GitHub GraphQL errors: ${payload.errors.map((err) => err.message).join("; ")}`);
+        if (isGraphqlRateLimit(otherErrors) && !payload.data) {
+          throw new HttpError(GITHUB_GRAPHQL_URL, 403, otherErrors.map((err) => err.message).join("; ") || "rate limit");
         }
-        if (payload.errors?.length && (index + 1) % 20 === 0) {
-          ctx.log.warn("github GraphQL partial errors", {
+        if (otherErrors.length && !payload.data) {
+          throw new Error(`GitHub GraphQL errors: ${otherErrors.map((err) => err.message).join("; ")}`);
+        }
+        if (otherErrors.length && payload.data) {
+          ctx.log.warn("github GraphQL errors", {
             batch: index + 1,
-            count: payload.errors.length,
-            sample: payload.errors[0]?.message,
+            count: otherErrors.length,
+            sample: otherErrors[0]?.message,
           });
         }
+        if (!payload.data) {
+          continue;
+        }
         let rateLimit: z.infer<typeof RateLimitSchema> | undefined;
-        if (payload.data) {
-          for (const [alias, node] of Object.entries(payload.data)) {
-            if (alias === "rateLimit") {
-              const parsed = RateLimitSchema.safeParse(node);
-              if (parsed.success) {
-                rateLimit = parsed.data;
-              }
-              continue;
+        for (const [alias, node] of Object.entries(payload.data)) {
+          if (alias === "rateLimit") {
+            const parsed = RateLimitSchema.safeParse(node);
+            if (parsed.success) {
+              rateLimit = parsed.data;
             }
-            if (!node || typeof node !== "object") {
-              continue;
-            }
-            const parsed = RepoNodeSchema.safeParse(node);
-            if (!parsed.success) {
-              continue;
-            }
-            const key = parsed.data.nameWithOwner.toLowerCase();
-            cache[key] = parsed.data;
-            lastFetched[key] = fetchedAt;
-            fetchedThisRun += 1;
+            continue;
           }
+          if (!node || typeof node !== "object") {
+            continue;
+          }
+          const parsed = RepoNodeSchema.safeParse(node);
+          if (!parsed.success) {
+            continue;
+          }
+          const aliasIndex = Number(alias.slice(1));
+          const requested = Number.isInteger(aliasIndex) ? batch[aliasIndex] : undefined;
+          const key = requested
+            ? `${requested.owner}/${requested.repo}`.toLowerCase()
+            : parsed.data.nameWithOwner.toLowerCase();
+          cache[key] = parsed.data;
+          lastFetched[key] = fetchedAt;
+          fetchedThisRun += 1;
         }
         persistLastFetched(ctx.dataDir, "github", lastFetched);
         persistEntityCache(ctx.dataDir, "github", cache);
@@ -344,10 +406,12 @@ export const githubAdapter: SourceAdapter = {
         (fetchedThisRun > 0 || Object.keys(cache).length > 0)
       ) {
         truncated = true;
+        stoppedAt = sourceStoppedAt("github", error, { page: Math.floor(fetchedThisRun / GITHUB_GRAPHQL_BATCH) + 1 });
         ctx.log.warn("github stopped early after rate limit; keeping partial snapshot", {
           fetchedThisRun,
           requested: allKeys.length,
           due: dueKeys.length,
+          error: stoppedAt.error,
         });
       } else {
         throw error;
@@ -359,7 +423,14 @@ export const githubAdapter: SourceAdapter = {
       due: dueKeys.length,
       fetchedThisRun,
       truncated,
+      unresolved: unresolvedRepos.length,
     });
-    return finish({ skipped: false, truncated, fetchedThisRun });
+    return finish({
+      skipped: false,
+      truncated,
+      fetchedThisRun,
+      stoppedAt,
+      rawExtra: unresolvedRepos.length > 0 ? { unresolvedRepos } : undefined,
+    });
   },
 };

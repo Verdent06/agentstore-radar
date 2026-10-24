@@ -12,6 +12,7 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - Query: `limit` (max 100), `cursor` from `metadata.nextCursor`, `version=latest`, `updated_since` (RFC3339), `include_deleted`
 - `/v0/servers` still aliases the same list as of 2026-10-15; we pin `/v0.1` to the current spec
 - Daily collect takes the full latest catalog (pagination). `updated_since` is supported by the API for incremental sync but a full latest snapshot is what git-scraping needs
+- HTTP 5xx (including 500 `Failed to get registry list`) is retried with exponential backoff **on the current cursor**. A persistent failure keeps earlier pages, marks the source truncated/`stoppedAt`, and still writes every other source. The snapshot is `partial: true` so movers skip that day.
 - Packages (`registryType` `npm` / `pypi`) and `repository.url` drive later enrichment
 
 ## Smithery
@@ -19,8 +20,9 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - Docs: [List all servers](https://smithery.ai/docs/api-reference/servers/list-all-servers)
 - List: `GET https://api.smithery.ai/servers?page=&pageSize=100`
 - Public reads worked without a key on 2026-10-15. `SMITHERY_API_KEY` is optional (`Authorization: Bearer`); 401/403 without a key skips the source instead of failing the run
-- `useCount` is on the list payload (total connections)
+- `useCount` is on the list payload (total connections). The per-server detail endpoint does **not** include `useCount`.
 - Search-index windows are capped at `topK` 500. **Pass a stable `seed`** (we use `1`) for deterministic deep pagination of the full catalog (~20k servers, 204 pages of 100)
+- Seeded and unseeded list responses return the **same** `useCount` for overlapping servers. Live check 2026-10-24: Brave Search is still `87579`, identical to the 2026-10-15 fixture. Smithery's published `useCount` is a slowly-updated (or frozen) registry statistic, not a collector cache. We re-fetch the full catalog every day and stamp `fetched_at` / `carried_forward=false` on those rows.
 - List rows do not include `repositoryUrl`; we match GitHub only when `homepage` is a GitHub URL
 - We do not fan out 20k per-server detail calls
 
@@ -33,6 +35,10 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - Fields: `stargazerCount`, `forkCount`, `issues(states: OPEN) { totalCount }`, `pushedAt`, `updatedAt`
 - Respect `X-RateLimit-Remaining` / `X-RateLimit-Reset`, secondary-limit `Retry-After`, and GraphQL remaining; wait through a reset when it is within ~70 minutes
 - Checkpoint + resume under `data/state/github/`; `last_fetched` skips repos fresher than 7 days so every repo refreshes at least weekly
+- Cached rows are still written into that day's snapshot so rankings have last-known stars, but each row is stamped `fetched_at` + `carried_forward=true`. Movers ignore carried-forward points so a weekly refresh is not mistaken for a one-day jump.
+- GraphQL results are stored under the **requested** `owner/repo` key (not only `nameWithOwner`) so transfers/renames still attach to the discovered app.
+- `Could not resolve to a Repository` / `NOT_FOUND` (deleted or renamed repos) is logged per-app and never fails the GitHub source or the workflow. Those aliases are skipped; cached rows from earlier fetches are still emitted when present.
+- After 2026-10-24 the rolling window is working as designed: keys fresher than 7 days are carried forward with `carried_forward=true`, and due keys are refetched. The 2026-10-15..22 freeze then 10-24 jump was that weekly refresh landing after several failed MCP runs, not a parser bug. `morluto/rea` (~375k stars) is a real repository; the 2-day jump was carry-forward plus a later live fetch, which movers now ignore.
 - Target: all discovered GitHub URLs in one 6h Actions run when budget allows; otherwise rolling coverage across days
 - Repos are discovered from MCP `repository.url` / `io.github.*` names, Smithery GitHub homepages, and the Gemini gallery
 
@@ -42,7 +48,7 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - `GET https://api.npmjs.org/downloads/point/last-week/{package}`
 - Bulk: comma-separated, max **128**, **unscoped only**. Scoped packages (`@scope/name`) are fetched one-by-one with `%2F`
 - Throttle `api.npmjs.org`; back off on HTTP 429 and Cloudflare error 1015 (`Retry-After` + exponential)
-- Checkpoint + weekly `last_fetched` under `data/state/npm/`
+- Checkpoint + weekly `last_fetched` under `data/state/npm/`. Same `fetched_at` / `carried_forward` stamping as GitHub.
 
 ## PyPI / pypistats
 
@@ -51,12 +57,15 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - Returns `last_day`, `last_week`, `last_month`
 - Do **not** use `pypi.org/pypi/{package}/json` `downloads` — it is always `-1`
 - Throttle `pypistats.org`; back off on 429; rolling weekly coverage + checkpoint under `data/state/pypi/`
+- Cached weekly/monthly counts are stamped `carried_forward` like GitHub/npm.
 
 ## Gemini CLI extensions gallery
 
 - Public JSON exists: `https://geminicli.com/extensions.json`
 - Referenced by the official CLI as `ExtensionRegistryClient.DEFAULT_REGISTRY_URL`
 - Array of `{ id, url, fullName, stars, lastUpdated, extensionName, ... }`
+- This **is** the live source. A fetch on 2026-10-24 returned exactly **2198** extensions — the same count as every snapshot that week. The gallery is a slowly changing curated catalog, not a collector cache. There is no richer official feed. Per-extension `lastUpdated` is stored as `pushed_at`.
+- Gallery `stars` (e.g. `obra/superpowers` 299,294) are static catalog values. Merged app `stars` prefer the live GitHub GraphQL count and set `stars_source` accordingly; `geminiStars` keeps the gallery number for the Gemini chart.
 - Included in M1 (not skipped)
 
 ## Answer-share probe (weekly)

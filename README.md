@@ -53,6 +53,10 @@ npm run report
 
 `--data` wins over `DATA_DIR`, which wins over `./data`.
 
+Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true when GitHub/npm/PyPI reused last week's cache). Merged `apps.ndjson` copies those onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*` freshness fields, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a weekly refresh or a truncated MCP catalog is not treated as a one-day jump. Default movers (homepage and MCP) rank fresh npm weekly downloads only — not Smithery `use_count` (static at the source) and not GitHub stars until that series passes data audit. Stars remain available as an explicit metric; a change in `stars_source` between two days is a series break (no growth computed across it).
+
+`manifest.json` always records `partial: true|false` and `completedSources: [...]`. Incomplete sources include `stoppedAt: { source, page, cursor, error }` so a mid-pagination MCP 500 can resume from the last cursor instead of page 1.
+
 ### Entity matching
 
 `app_id` is assigned in this order:
@@ -88,10 +92,10 @@ Optional env:
 
 - `DATA_DIR` — snapshot root (see above)
 - `GH_STATS_TOKEN` — optional PAT used first for GraphQL repo stats (higher budget than the default Actions token)
-- `GITHUB_TOKEN` / `GH_TOKEN` — GitHub GraphQL fallback (Actions provides `GITHUB_TOKEN` automatically)
+- `GITHUB_TOKEN` / `GH_TOKEN` — GitHub GraphQL fallback **and** issue alerts. The collect workflow uses the built-in Actions token with `permissions: issues: write`. No `HEALTH_ISSUE_TOKEN` secret is required.
 - `SMITHERY_API_KEY` — only if Smithery starts requiring auth for public list
-- `HEALTH_ISSUE_REPO` — `owner/name` for health issues (defaults to unset; we do not open issues on the public repo)
-- `HEALTH_ISSUE_TOKEN` — optional token that can write issues on the data repo
+- `HEALTH_ISSUE_REPO` — optional override for source-health issues (defaults to `GITHUB_REPOSITORY` / this public repo)
+- `COLLECTOR_ISSUE_REPO` — public repo for `Collector missed YYYY-MM-DD` issues (defaults to this repo)
 - `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `XAI_API_KEY` — optional; each missing key skips that answer-share provider
 - `MAX_CALLS` — hard cap on answer-share API calls (unset = uncapped)
 - `ANSWER_SHARE_N` — repeats per prompt per provider (default `3`)
@@ -99,7 +103,9 @@ Optional env:
 
 ## Automation
 
-- [`.github/workflows/collect.yml`](.github/workflows/collect.yml) — daily cron (`17 6 * * *`) plus `workflow_dispatch`. `timeout-minutes: 360` so GitHub/npm/PyPI can wait through rate-limit resets. Checks out the private data repo over SSH (`DATA_REPO_DEPLOY_KEY`), **once** copies `data/` from this repo’s git history if the data repo has no snapshots yet (writes `data/.migrated-from-public`), then collects into `DATA_DIR` and pushes **only** to the data repo. After that first success it never reads public history again. `seed_only` skips collect and just does that one-time copy.
+- [`.github/workflows/collect.yml`](.github/workflows/collect.yml) — primary cron `17 6 * * *` (UTC) plus a same-day **backstop** at `17 18 * * *` that only collects if today's snapshot is missing or incomplete (`--if-incomplete`). `workflow_dispatch` always collects unless `if_incomplete` is set. Job `timeout-minutes: 360` (GitHub-hosted max) so GitHub/npm/PyPI can wait through rate-limit resets; the collect step itself is capped at 330 minutes so commit/alert still run. Checks out the private data repo over SSH (`DATA_REPO_DEPLOY_KEY`), **once** copies `data/` from this repo’s git history if the data repo has no snapshots yet (writes `data/.migrated-from-public`), then collects into `DATA_DIR` and pushes **only** to the data repo (pull `--rebase` + retries). After that first success it never reads public history again. `seed_only` skips collect and just does that one-time copy.
+- Sources are collected independently with retries. One source failing still writes the others and records the failure on that day's `manifest.json`. Health coverage alerts `continue-on-error` so a low npm fetch rate does not mark a landed snapshot as a failed workflow.
+- If a run fails to write a usable snapshot, or the backstop still does not have today's snapshot, the job opens or comments on a public issue titled `Collector missed YYYY-MM-DD` in `Verdent06/agentstore-radar` (`issues: write`). No email/Slack.
 - [`.github/workflows/answer-share.yml`](.github/workflows/answer-share.yml) — weekly cron (Mondays `17 7 * * 1`) plus `workflow_dispatch`. Same private-repo deploy key. Asks each configured assistant which apps/tools/MCP servers it would recommend (`N=3` for variance). Missing provider keys are skipped. `MAX_CALLS` is a hard cost cap (workflow default `1200`).
 - [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — lint, typecheck, collector tests, aggregate build (fixtures unless a data token is set), Next.js build, MCP tests.
 
@@ -133,7 +139,7 @@ Rough full-run cost (100 prompts × 3 repeats = 300 calls / provider, web search
 - a source's row count drops **more than 30%** versus the previous snapshot, or
 - a non-skipped source's **coverage** is below **70%** (`fetched / eligible`, where fetched means refreshed within 7 days)
 
-Each source's `eligibleCount`, `fetchedCount`, and `coverage` are stored on that day's `manifest.json`. Catalog sources are typically 100%. GitHub / npm / PyPI use rolling weekly refresh: yesterday's last-known stats are carried forward, and only stale or new keys are fetched. Issues are opened on `HEALTH_ISSUE_REPO` (the private data repo) when a token can write there. The public repo is never used as a fallback, and alerts do not attach snapshot files.
+Each source's `eligibleCount`, `fetchedCount`, and `coverage` are stored on that day's `manifest.json`. Catalog sources are typically 100%. GitHub / npm / PyPI use rolling weekly refresh: yesterday's last-known stats are carried forward, and only stale or new keys are fetched. Health and collector-missed alerts open issues in this public repo with the workflow `GITHUB_TOKEN` (`issues: write`). Alerts do not attach snapshot files. Deleted or renamed GitHub repos log a per-app `could not resolve repository` warning and do not fail the run.
 
 **Coverage expectations**
 

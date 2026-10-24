@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { GEMINI_EXTENSIONS_URL } from "../lib/config.ts";
 import { appIdFromIdentity, githubRepoUrl, parseGithubRepo } from "../lib/matching.ts";
-import { emptySourceRow, type SourceRow } from "../lib/schema.ts";
+import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
 import type { CollectContext, SourceAdapter, SourceResult } from "./types.ts";
 
 const ExtensionSchema = z
@@ -73,7 +73,7 @@ export const geminiAdapter: SourceAdapter = {
         invalid += 1;
         continue;
       }
-      records.push(row);
+      records.push(withObservation(row, ctx.collectedAt, false));
       if (row.repo_url) {
         const ref = parseGithubRepo(row.repo_url);
         if (ref) {

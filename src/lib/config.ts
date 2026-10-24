@@ -5,6 +5,14 @@ export const RAW_GZIP_THRESHOLD_BYTES = 256 * 1024;
 export const HEALTH_DROP_THRESHOLD = 0.3;
 export const LOW_COVERAGE_THRESHOLD = 0.7;
 export const MAX_RATE_LIMIT_WAIT_MS = 70 * 60 * 1000;
+export const HTTP_MAX_RETRIES = 6;
+export const HTTP_5XX_MAX_WAIT_MS = 60_000;
+export const SOURCE_COLLECT_ATTEMPTS = 3;
+export const SOURCE_RETRY_BASE_MS = 2_000;
+export const SOURCE_RETRY_MAX_WAIT_MS = 30_000;
+export const GIT_PUSH_ATTEMPTS = 5;
+export const COLLECTOR_ISSUE_REPO_DEFAULT = "Verdent06/agentstore-radar";
+export const COLLECTOR_MISSED_LABEL = "collector-missed";
 
 export const HOST_MIN_INTERVAL_MS: Record<string, number> = {
   "registry.modelcontextprotocol.io": 150,

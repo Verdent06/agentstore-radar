@@ -62,6 +62,7 @@ export type AppSummary = {
   pypiLastWeekDownloads: number | null;
   geminiStars: number | null;
   verified: boolean | null;
+  starsSource?: string | null;
 };
 
 export type HistoryPoint = {
@@ -71,6 +72,11 @@ export type HistoryPoint = {
   npmWeeklyDownloads: number | null;
   pypiLastWeekDownloads: number | null;
   geminiStars: number | null;
+  starsCarriedForward?: boolean;
+  useCountCarriedForward?: boolean;
+  npmCarriedForward?: boolean;
+  pypiCarriedForward?: boolean;
+  starsSource?: string | null;
 };
 
 /** Parallel arrays aligned to `meta.snapshotDates`. Omitted when every value is null. */
@@ -80,6 +86,13 @@ export type CompactSeries = {
   n?: Array<number | null>;
   p?: Array<number | null>;
   g?: Array<number | null>;
+  /** 1 when the aligned metric was carried forward from an older fetch. */
+  sc?: Array<0 | 1 | null>;
+  uc?: Array<0 | 1 | null>;
+  nc?: Array<0 | 1 | null>;
+  pc?: Array<0 | 1 | null>;
+  /** Stars source (`github`, `gemini-cli`, …) aligned to `meta.snapshotDates`. */
+  ss?: Array<string | null>;
 };
 
 export type CoverageRow = {
@@ -150,8 +163,10 @@ export type AggregateMeta = {
   latestDate: string | null;
   previousDate: string | null;
   weekAgoDate: string | null;
-  /** Snapshot dates whose manifest set `partial: true`. Absent/empty means none. */
+  /** Snapshot dates `snapshotIsPartial` treated as incomplete. */
   partialDates: string[];
+  latestCompleteDate?: string | null;
+  previousCompleteDate?: string | null;
   coverage: CoverageRow[];
 };
 
@@ -209,7 +224,7 @@ export const CHART_META: Record<
     metric: "gemini_stars",
     source: "gemini-cli",
     unit: "gallery stars",
-    blurb: "Stars as published on the Gemini CLI extensions gallery.",
+    blurb: "Static gallery star counts from extensions.json. App-level stars prefer live GitHub.",
   },
 };
 
