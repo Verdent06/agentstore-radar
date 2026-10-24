@@ -32,13 +32,14 @@ User-Agent: agentstore-radar/0.1 (+https://github.com/Verdent06/agentstore-radar
 
 ## Data layout (private repo)
 
-Never overwrite a past day's snapshot. Same-day re-runs may refresh today's files.
+Never overwrite a past day's snapshot. A complete same-day snapshot is left in place; re-runs skip unless `--force` (workflow_dispatch `force`) is set. `--force` moves the previous day to `data/backups/normalized/<date>/<stamp>/` and records the overwrite on the new manifest. Incomplete/partial days may be collected again.
 
 ```
 data/raw/<source>/<YYYY-MM-DD>.json      # or .json.gz when payload ≥ 256 KiB
 data/normalized/<YYYY-MM-DD>/source_rows.ndjson(.gz)
 data/normalized/<YYYY-MM-DD>/apps.ndjson(.gz)
 data/normalized/<YYYY-MM-DD>/manifest.json
+data/backups/normalized/<YYYY-MM-DD>/<stamp>/  # previous complete day kept on --force
 data/state/<source>/last_fetched.json    # rolling weekly refresh
 data/state/<source>/cache.json           # last-known enrichment payload
 data/state/<source>/checkpoint.json      # resume mid-run after rate limits
@@ -53,7 +54,7 @@ npm run report
 
 `--data` wins over `DATA_DIR`, which wins over `./data`.
 
-Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true when GitHub/npm/PyPI reused last week's cache). Merged `apps.ndjson` copies those onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*` freshness fields, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a weekly refresh or a truncated MCP catalog is not treated as a one-day jump.
+Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true only when GitHub/npm/PyPI reused a value fetched on a **previous snapshot day**, not a live fetch earlier the same day). Merged `apps.ndjson` copies those onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*` freshness fields, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a weekly refresh or a truncated MCP catalog is not treated as a one-day jump.
 
 `manifest.json` always records `partial: true|false` and `completedSources: [...]`. Incomplete sources include `stoppedAt: { source, page, cursor, error }` so a mid-pagination MCP 500 can resume from the last cursor instead of page 1.
 
@@ -139,7 +140,7 @@ Rough full-run cost (100 prompts × 3 repeats = 300 calls / provider, web search
 - a source's row count drops **more than 30%** versus the previous snapshot, or
 - a non-skipped source's **coverage** is below **70%** (`fetched / eligible`, where fetched means refreshed within 7 days)
 
-Each source's `eligibleCount`, `fetchedCount`, and `coverage` are stored on that day's `manifest.json`. Catalog sources are typically 100%. GitHub / npm / PyPI use rolling weekly refresh: yesterday's last-known stats are carried forward, and only stale or new keys are fetched. Health and collector-missed alerts open issues in this public repo with the workflow `GITHUB_TOKEN` (`issues: write`). Alerts do not attach snapshot files. Deleted or renamed GitHub repos log a per-app `could not resolve repository` warning and do not fail the run.
+Each source's `eligibleCount`, `freshWithin7dCount` (keys fetched inside the rolling 7-day window), `fetchedThisRunCount` (keys requested from the live API in this collect), and `coverage` (`freshWithin7dCount / eligibleCount`) are stored on that day's `manifest.json`. Catalog sources are typically 100% this run. GitHub / npm / PyPI use rolling weekly refresh: yesterday's last-known stats are carried forward, and only stale or new keys are fetched. Health and collector-missed alerts open issues in this public repo with the workflow `GITHUB_TOKEN` (`issues: write`). Alerts do not attach snapshot files. Deleted or renamed GitHub repos log a per-app `could not resolve repository` warning and do not fail the run.
 
 **Coverage expectations**
 

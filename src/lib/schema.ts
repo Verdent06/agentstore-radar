@@ -93,6 +93,11 @@ export const SourceManifestSchema = z.object({
   rawFile: z.string().optional(),
   collectedAt: z.string(),
   eligibleCount: z.number().int().nonnegative().optional(),
+  /** Keys whose last fetch is within the 7-day rolling window. Not "fetched this run". */
+  freshWithin7dCount: z.number().int().nonnegative().optional(),
+  /** Keys actually requested from the live API during this collect. */
+  fetchedThisRunCount: z.number().int().nonnegative().optional(),
+  /** @deprecated Legacy alias of freshWithin7dCount, kept so older snapshots still parse. */
   fetchedCount: z.number().int().nonnegative().optional(),
   coverage: z.number().min(0).max(1).optional(),
   lastFetchedAt: z.string().optional(),
@@ -115,6 +120,16 @@ export const SnapshotManifestSchema = z.object({
   partial: z.boolean().optional(),
   completedSources: z.array(SourceNameSchema).optional(),
   failedSourceCount: z.number().int().nonnegative().optional(),
+  runId: z.string().optional(),
+  overwrite: z
+    .object({
+      overwrittenAt: z.string(),
+      previousBackupPath: z.string(),
+      previousCollectedAt: z.string().optional(),
+      previousRunId: z.string().optional(),
+      previousGitSha: z.string().optional(),
+    })
+    .optional(),
 });
 
 export type SnapshotManifest = z.infer<typeof SnapshotManifestSchema>;
@@ -154,6 +169,12 @@ export function withObservation(
     fetched_at: fetchedAt ?? null,
     carried_forward: carriedForward,
   };
+}
+
+export function sourceFreshWithin7dCount(
+  source: Pick<SourceManifest, "freshWithin7dCount" | "fetchedCount">,
+): number | undefined {
+  return source.freshWithin7dCount ?? source.fetchedCount;
 }
 
 export function sourceIsIncomplete(source: Pick<SourceManifest, "failed" | "truncated">): boolean {

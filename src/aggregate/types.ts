@@ -96,6 +96,8 @@ export type CoverageRow = {
   source: string;
   coverage?: number;
   eligibleCount?: number;
+  freshWithin7dCount?: number;
+  fetchedThisRunCount?: number;
   fetchedCount?: number;
   skipped: boolean;
   rowCount?: number;

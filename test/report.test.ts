@@ -44,5 +44,24 @@ describe("report", () => {
     });
     expect(text).toContain("Top movers");
     expect(text).toContain("+10");
+    const withCoverage = formatReport({
+      from: "2026-10-14",
+      to: "2026-10-15",
+      movers,
+      leaders,
+      coverage: [
+        {
+          source: "github",
+          coverage: 0.86,
+          eligibleCount: 30746,
+          freshWithin7dCount: 26558,
+          fetchedThisRunCount: 992,
+          skipped: false,
+        },
+      ],
+    });
+    expect(withCoverage).toContain("26558/30746 fresh within 7d");
+    expect(withCoverage).toContain("992 this run");
+    expect(withCoverage).not.toMatch(/26558\/30746 eligible/);
   });
 });
