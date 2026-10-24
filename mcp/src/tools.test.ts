@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import { buildAggregate } from "../../src/aggregate/build.ts";
 import { writeDemoSnapshots } from "../../src/aggregate/demo.ts";
 import { runTool } from "../../src/aggregate/tools.ts";
+import { PublicLimitSchema } from "./server.ts";
 
 const dataDir = mkdtempSync(join(tmpdir(), "radar-mcp-"));
 writeDemoSnapshots(dataDir);
@@ -37,5 +38,13 @@ describe("MCP tool payloads", () => {
     const share = JSON.parse(runTool(agg, "answer_share", { limit: 3 }).content[0]!.text);
     assert.equal(share.available, true);
     assert.ok(share.rows.length > 0);
+  });
+
+  it("rejects limit: 50 on the public tool schema", () => {
+    assert.equal(PublicLimitSchema.safeParse(50).success, false);
+    assert.equal(PublicLimitSchema.safeParse(10).success, true);
+    assert.equal(PublicLimitSchema.safeParse(5).success, true);
+    const capped = JSON.parse(runTool(agg, "top_charts", { chart: "smithery", limit: 50 }).content[0]!.text);
+    assert.ok(capped.rows.length <= 10);
   });
 });

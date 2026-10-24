@@ -1,8 +1,22 @@
+import { addUtcDays } from "../lib/dates.ts";
 import { answerShareForApp } from "./answer-share.ts";
 import { jaccardTokens, tokenize } from "./classify.ts";
 import {
+  COMPETITORS_CAP,
+  MOVERS_PER_SIDE,
+  PUBLIC_DEFAULT_LIMIT,
+  PUBLIC_MAX_LIMIT,
+  PUBLIC_TOP_N,
+  completeSnapshotDates,
+  growthBucket,
+  isPartialDate,
+  roundCount,
+} from "./public.ts";
+import {
   CATEGORY_LABELS,
+  CHART_IDS,
   CHART_META,
+  METRIC_KEYS,
   METRIC_LABELS,
   type Aggregate,
   type AppSummary,
@@ -19,14 +33,11 @@ import {
   type RankedApp,
 } from "./types.ts";
 
-const DEFAULT_LIMIT = 25;
-const MAX_LIMIT = 100;
-
-export function clampLimit(limit: number | undefined, fallback = DEFAULT_LIMIT): number {
+export function clampLimit(limit: number | undefined, fallback = PUBLIC_DEFAULT_LIMIT): number {
   if (limit == null || !Number.isFinite(limit)) {
     return fallback;
   }
-  return Math.max(1, Math.min(MAX_LIMIT, Math.floor(limit)));
+  return Math.max(1, Math.min(PUBLIC_MAX_LIMIT, Math.floor(limit)));
 }
 
 export function findApp(agg: Aggregate, id: string): AppSummary | undefined {
@@ -103,6 +114,58 @@ export function dateIndex(agg: Aggregate, date: string | null | undefined): numb
   return agg.meta.snapshotDates.indexOf(date);
 }
 
+export function growthWindow(
+  agg: Aggregate,
+  window: "1d" | "7d",
+): { from: string; to: string; fromIndex: number; toIndex: number } | null {
+  const latest = agg.meta.latestDate;
+  if (!latest || isPartialDate(agg, latest)) {
+    return null;
+  }
+  const complete = completeSnapshotDates(agg);
+  const to = latest;
+  const from =
+    window === "7d"
+      ? complete.filter((date) => date <= addUtcDays(to, -7)).at(-1)
+      : complete.filter((date) => date < to).at(-1);
+  if (!from || from === to) {
+    return null;
+  }
+  const fromIndex = dateIndex(agg, from);
+  const toIndex = dateIndex(agg, to);
+  if (fromIndex < 0 || toIndex < 0) {
+    return null;
+  }
+  return { from, to, fromIndex, toIndex };
+}
+
+function previousCompleteDate(agg: Aggregate): string | null {
+  const latest = agg.meta.latestDate;
+  if (!latest || isPartialDate(agg, latest)) {
+    return null;
+  }
+  return completeSnapshotDates(agg).filter((date) => date < latest).at(-1) ?? null;
+}
+
+function toMoverRow(
+  app: AppSummary,
+  metric: MetricKey,
+  previous: number,
+  current: number,
+): MoverRow {
+  const delta = current - previous;
+  return {
+    id: app.id,
+    name: app.displayName,
+    category: app.category,
+    metric,
+    previous,
+    current,
+    delta,
+    growth: previous === 0 ? null : growthBucket(delta / previous),
+  };
+}
+
 export function topChart(agg: Aggregate, chart: ChartId, limit?: number): RankedApp[] {
   const { metric } = CHART_META[chart];
   const rows = agg.apps
@@ -110,7 +173,7 @@ export function topChart(agg: Aggregate, chart: ChartId, limit?: number): Ranked
     .filter((row): row is { app: AppSummary; value: number } => row.value != null)
     .sort((a, b) => b.value - a.value || a.app.id.localeCompare(b.app.id));
 
-  const prevDate = agg.meta.previousDate;
+  const prevDate = previousCompleteDate(agg);
   const prevIndex = dateIndex(agg, prevDate);
   const prevRank = new Map<string, number>();
   if (prevIndex >= 0) {
@@ -121,9 +184,8 @@ export function topChart(agg: Aggregate, chart: ChartId, limit?: number): Ranked
     previous.forEach((row, index) => prevRank.set(row.id, index + 1));
   }
 
-  return rows.slice(0, clampLimit(limit)).map((row, index) => {
-    const previousValue =
-      prevIndex >= 0 ? metricFromSeries(agg.series[row.app.id], metric, prevIndex) : null;
+  return rows.slice(0, clampLimit(limit, PUBLIC_TOP_N)).map((row, index) => {
+    const previousValue = prevIndex >= 0 ? metricFromSeries(agg.series[row.app.id], metric, prevIndex) : null;
     return {
       rank: index + 1,
       previousRank: prevRank.get(row.app.id) ?? null,
@@ -136,8 +198,9 @@ export function topChart(agg: Aggregate, chart: ChartId, limit?: number): Ranked
 }
 
 export function homeLeaders(agg: Aggregate, limit?: number): RankedApp[] {
+  const cap = clampLimit(limit, PUBLIC_TOP_N);
   if (agg.meta.snapshotDates.length >= 2) {
-    return movers(agg, { window: "1d", metric: "use_count", limit }).map((row, index) => {
+    return movers(agg, { window: "1d", metric: "use_count", limit: cap }).slice(0, cap).map((row, index) => {
       const app = findApp(agg, row.id);
       if (!app) {
         throw new Error(`Missing app ${row.id}`);
@@ -152,7 +215,7 @@ export function homeLeaders(agg: Aggregate, limit?: number): RankedApp[] {
       };
     });
   }
-  return topChart(agg, "smithery", limit);
+  return topChart(agg, "smithery", cap);
 }
 
 export function movers(
@@ -160,24 +223,20 @@ export function movers(
   options?: { window?: "1d" | "7d"; metric?: MetricKey; limit?: number },
 ): MoverRow[] {
   const window = options?.window ?? "1d";
-  const fromDate = window === "7d" ? agg.meta.weekAgoDate : agg.meta.previousDate;
-  const toDate = agg.meta.latestDate;
-  if (!fromDate || !toDate || fromDate === toDate) {
+  const ends = growthWindow(agg, window);
+  if (!ends) {
     return [];
   }
-  const fromIndex = dateIndex(agg, fromDate);
-  const toIndex = dateIndex(agg, toDate);
-  if (fromIndex < 0 || toIndex < 0) {
-    return [];
-  }
-  const metrics: MetricKey[] = options?.metric ? [options.metric] : ["use_count", "stars", "npm_weekly_downloads", "gemini_stars"];
-  const limit = clampLimit(options?.limit, 10);
+  const metrics: MetricKey[] = options?.metric
+    ? [options.metric]
+    : ["use_count", "stars", "npm_weekly_downloads", "gemini_stars"];
+  const limit = clampLimit(options?.limit, MOVERS_PER_SIDE);
   const out: MoverRow[] = [];
   for (const metric of metrics) {
     const scored: MoverRow[] = [];
     for (const app of agg.apps) {
-      const previous = metricFromSeries(agg.series[app.id], metric, fromIndex);
-      const current = metricFromSeries(agg.series[app.id], metric, toIndex);
+      const previous = metricFromSeries(agg.series[app.id], metric, ends.fromIndex);
+      const current = metricFromSeries(agg.series[app.id], metric, ends.toIndex);
       if (previous == null || current == null) {
         continue;
       }
@@ -185,19 +244,11 @@ export function movers(
       if (delta === 0) {
         continue;
       }
-      scored.push({
-        id: app.id,
-        name: app.displayName,
-        category: app.category,
-        metric,
-        previous,
-        current,
-        delta,
-        pct: previous === 0 ? null : delta / previous,
-      });
+      scored.push(toMoverRow(app, metric, previous, current));
     }
-    scored.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || a.id.localeCompare(b.id));
-    out.push(...scored.slice(0, limit));
+    const up = scored.filter((row) => row.delta > 0).sort((a, b) => b.delta - a.delta || a.id.localeCompare(b.id)).slice(0, limit);
+    const down = scored.filter((row) => row.delta < 0).sort((a, b) => a.delta - b.delta || a.id.localeCompare(b.id)).slice(0, limit);
+    out.push(...up, ...down);
   }
   return out;
 }
@@ -209,7 +260,7 @@ export function searchApps(
 ): AppSummary[] {
   const q = query.trim().toLowerCase();
   const tokens = q.split(/\s+/).filter(Boolean);
-  const limit = clampLimit(options?.limit);
+  const limit = clampLimit(options?.limit, PUBLIC_TOP_N);
   return agg.apps
     .filter((app) => {
       if (options?.category && app.category !== options.category) {
@@ -229,7 +280,7 @@ export function multiStoreApps(agg: Aggregate, limit?: number): AppSummary[] {
   return agg.apps
     .filter((app) => app.stores.length >= 2)
     .sort((a, b) => b.stores.length - a.stores.length || (b.useCount ?? -1) - (a.useCount ?? -1) || a.id.localeCompare(b.id))
-    .slice(0, clampLimit(limit, 50));
+    .slice(0, clampLimit(limit, PUBLIC_TOP_N));
 }
 
 export function newArrivals(agg: Aggregate, limit?: number): AppSummary[] {
@@ -240,7 +291,7 @@ export function newArrivals(agg: Aggregate, limit?: number): AppSummary[] {
   return agg.apps
     .filter((app) => app.firstSeen === latest)
     .sort((a, b) => (b.useCount ?? b.stars ?? 0) - (a.useCount ?? a.stars ?? 0) || a.displayName.localeCompare(b.displayName))
-    .slice(0, clampLimit(limit, 50));
+    .slice(0, clampLimit(limit, PUBLIC_TOP_N));
 }
 
 export function categories(agg: Aggregate): CategorySummary[] {
@@ -268,14 +319,21 @@ export function categories(agg: Aggregate): CategorySummary[] {
       row.newThisSnapshot += 1;
     }
   }
-  return [...map.values()].filter((row) => row.appCount > 0).sort((a, b) => b.appCount - a.appCount || a.slug.localeCompare(b.slug));
+  return [...map.values()]
+    .filter((row) => row.appCount > 0)
+    .map((row) => ({
+      ...row,
+      useCount: roundCount(row.useCount) ?? 0,
+      stars: roundCount(row.stars) ?? 0,
+    }))
+    .sort((a, b) => b.appCount - a.appCount || a.slug.localeCompare(b.slug));
 }
 
 export function appsInCategory(agg: Aggregate, slug: CategorySlug, limit?: number): AppSummary[] {
   return agg.apps
     .filter((app) => app.category === slug)
     .sort((a, b) => (b.useCount ?? -1) - (a.useCount ?? -1) || (b.stars ?? -1) - (a.stars ?? -1) || a.id.localeCompare(b.id))
-    .slice(0, clampLimit(limit, 50));
+    .slice(0, clampLimit(limit, PUBLIC_TOP_N));
 }
 
 export function categoryTrends(agg: Aggregate, slug?: CategorySlug): CategoryTrendPoint[] {
@@ -297,7 +355,7 @@ export function categoryTrends(agg: Aggregate, slug?: CategorySlug): CategoryTre
       useCount += metricFromSeries(series, "use_count", index) ?? 0;
       stars += metricFromSeries(series, "stars", index) ?? 0;
     }
-    return { date, appCount, useCount, stars };
+    return { date, appCount, useCount: roundCount(useCount) ?? 0, stars: roundCount(stars) ?? 0 };
   });
 }
 
@@ -337,7 +395,7 @@ export function competitors(agg: Aggregate, id: string, limit?: number): Array<A
     })
     .filter((row) => row.score > 0.05)
     .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
-  return scored.slice(0, clampLimit(limit, 8));
+  return scored.slice(0, clampLimit(limit, COMPETITORS_CAP));
 }
 
 export function appDetail(agg: Aggregate, id: string) {
@@ -352,7 +410,7 @@ export function appDetail(agg: Aggregate, id: string) {
       use_count: rankHistory(agg, app.id, "use_count"),
       stars: rankHistory(agg, app.id, "stars"),
     },
-    competitors: competitors(agg, app.id, 6),
+    competitors: competitors(agg, app.id, COMPETITORS_CAP),
     answerShare: answerShareForApp(agg.answerShare, app.id),
   };
 }
@@ -369,10 +427,31 @@ export function publicAnswerShare(
   return {
     available: true,
     probe: { probeDate: share.probeDate, promptVersion: share.promptVersion, meanJaccard: share.meanJaccard },
-    rows: rows.slice(0, clampLimit(options?.limit, 25)),
+    rows: rows.slice(0, clampLimit(options?.limit, PUBLIC_TOP_N)),
   };
 }
 
 export function metricLabel(metric: MetricKey): string {
   return METRIC_LABELS[metric];
+}
+
+/** Union of apps that appear in a public top-10 list (charts ∪ movers ∪ home). */
+export function publicAppIds(agg: Aggregate): Set<string> {
+  const ids = new Set<string>();
+  for (const chart of CHART_IDS) {
+    for (const row of topChart(agg, chart, PUBLIC_TOP_N)) {
+      ids.add(row.app.id);
+    }
+  }
+  for (const row of homeLeaders(agg, PUBLIC_TOP_N)) {
+    ids.add(row.app.id);
+  }
+  for (const window of ["1d", "7d"] as const) {
+    for (const metric of METRIC_KEYS) {
+      for (const row of movers(agg, { window, metric, limit: PUBLIC_TOP_N })) {
+        ids.add(row.id);
+      }
+    }
+  }
+  return ids;
 }

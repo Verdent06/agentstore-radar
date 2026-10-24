@@ -5,6 +5,9 @@ import { loadAggregate } from "./load.ts";
 
 const VERSION = "0.1.0";
 
+/** Free-tier MCP limit: default 5, hard max 10. */
+export const PublicLimitSchema = z.number().int().min(1).max(10).optional();
+
 function textTool(name: ToolName, args: Record<string, unknown>) {
   return runTool(loadAggregate(), name, args);
 }
@@ -23,7 +26,7 @@ export function createRadarServer(): McpServer {
       inputSchema: z.object({
         query: z.string().describe("Free-text query"),
         category: z.string().optional().describe("Optional category slug"),
-        limit: z.number().int().min(1).max(100).optional(),
+        limit: PublicLimitSchema,
       }),
     },
     async ({ query, category, limit }) => textTool("search_apps", { query, category, limit }),
@@ -60,7 +63,7 @@ export function createRadarServer(): McpServer {
       description: "Leaderboard for smithery, npm, github, or gemini.",
       inputSchema: z.object({
         chart: z.enum(["smithery", "npm", "github", "gemini"]).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        limit: PublicLimitSchema,
       }),
     },
     async ({ chart, limit }) => textTool("top_charts", { chart, limit }),
@@ -75,7 +78,7 @@ export function createRadarServer(): McpServer {
         metric: z
           .enum(["use_count", "stars", "npm_weekly_downloads", "pypi_last_week_downloads", "gemini_stars"])
           .optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        limit: PublicLimitSchema,
       }),
     },
     async ({ window, metric, limit }) => textTool("movers", { window, metric, limit }),
@@ -87,7 +90,7 @@ export function createRadarServer(): McpServer {
       description: "Similar apps by category and description-token overlap (no embeddings).",
       inputSchema: z.object({
         app_id: z.string(),
-        limit: z.number().int().min(1).max(25).optional(),
+        limit: PublicLimitSchema,
       }),
     },
     async ({ app_id, limit }) => textTool("competitors", { app_id, limit }),
@@ -110,7 +113,7 @@ export function createRadarServer(): McpServer {
       description: "Apps listed on 2+ stores, or set new_arrivals to list first-seen-this-snapshot apps.",
       inputSchema: z.object({
         new_arrivals: z.boolean().optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        limit: PublicLimitSchema,
       }),
     },
     async ({ new_arrivals, limit }) => textTool("multi_store", { new_arrivals, limit }),
@@ -123,7 +126,7 @@ export function createRadarServer(): McpServer {
         "Latest weekly assistant-recommendation shares (overall or one provider). Empty when no probe snapshot is in the aggregate.",
       inputSchema: z.object({
         provider: z.enum(["openai", "anthropic", "gemini", "xai"]).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        limit: PublicLimitSchema,
       }),
     },
     async ({ provider, limit }) => textTool("answer_share", { provider, limit }),

@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { Shell } from "@/components/shell";
 import { Delta } from "@/components/table";
-import { formatDate, formatNumber, formatPct } from "@/lib/format";
-import { movers } from "@/lib/query";
+import { formatCount, formatDate } from "@/lib/format";
+import { MOVERS_PER_SIDE, movers } from "@/lib/query";
 import { appHref, loadAggregate } from "@/lib/store";
 import { METRIC_LABELS, type MetricKey } from "@/lib/types";
 
@@ -16,7 +16,7 @@ function Column({
   rows,
 }: {
   title: string;
-  rows: Array<{ id: string; name: string; delta: number; current: number; previous: number; pct: number | null }>;
+  rows: Array<{ id: string; name: string; delta: number; current: number; previous: number; growth: string | null }>;
 }) {
   return (
     <div className="surface rounded-xl p-5">
@@ -32,9 +32,9 @@ function Column({
             </span>
             <span className="flex items-baseline gap-3 font-mono text-sm">
               <Delta value={row.delta} />
-              <span className="text-xs text-muted">{formatPct(row.pct)}</span>
+              <span className="text-xs text-muted">{row.growth ?? "—"}</span>
               <span className="hidden text-xs text-muted sm:inline">
-                {formatNumber(row.previous)}→{formatNumber(row.current)}
+                {formatCount(row.previous)}→{formatCount(row.current)}
               </span>
             </span>
           </li>
@@ -48,11 +48,11 @@ export default async function MoversPage({ searchParams }: { searchParams: Promi
   const agg = loadAggregate();
   const { shot: shotFlag } = await searchParams;
   const shot = shotFlag === "1";
-  const use = movers(agg, { window: "7d", metric: "use_count", limit: 16 });
-  const stars = movers(agg, { window: "7d", metric: "stars", limit: 16 });
+  const use = movers(agg, { window: "7d", metric: "use_count", limit: MOVERS_PER_SIDE });
+  const stars = movers(agg, { window: "7d", metric: "stars", limit: MOVERS_PER_SIDE });
   const split = (rows: typeof use) => ({
-    up: [...rows].filter((row) => row.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, 8),
-    down: [...rows].filter((row) => row.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, 8),
+    up: [...rows].filter((row) => row.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, MOVERS_PER_SIDE),
+    down: [...rows].filter((row) => row.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, MOVERS_PER_SIDE),
   });
   const useSplit = split(use);
   const starSplit = split(stars);

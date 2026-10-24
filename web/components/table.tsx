@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { formatNumber, formatSigned, rankDelta } from "@/lib/format";
+import { formatCount, formatSigned, rankDelta } from "@/lib/format";
 import { appHref } from "@/lib/store";
 import { STORE_LABELS, type AppSummary, type RankedApp } from "@/lib/types";
 import { Sparkline } from "./sparkline";
@@ -61,7 +61,7 @@ export function LeaderTable({
                   </Link>
                   <div className="max-w-md truncate text-xs text-muted">{row.app.description}</div>
                 </td>
-                <td className="px-3 py-2 text-right font-mono tabular">{formatNumber(row.value)}</td>
+                <td className="px-3 py-2 text-right font-mono tabular">{formatCount(row.value)}</td>
                 <td className="px-3 py-2 text-right">
                   <Delta value={row.delta} />
                 </td>
@@ -110,8 +110,8 @@ export function AppTable({
                 <div className="max-w-xl truncate text-xs text-muted">{app.description}</div>
               </td>
               <td className="px-3 py-2 text-xs text-muted">{app.category}</td>
-              <td className="px-3 py-2 text-right font-mono tabular">{formatNumber(app.useCount)}</td>
-              <td className="px-3 py-2 text-right font-mono tabular">{formatNumber(app.stars)}</td>
+              <td className="px-3 py-2 text-right font-mono tabular">{formatCount(app.useCount)}</td>
+              <td className="px-3 py-2 text-right font-mono tabular">{formatCount(app.stars)}</td>
               <td className="hidden px-3 py-2 md:table-cell">
                 <StorePills stores={app.stores} />
               </td>

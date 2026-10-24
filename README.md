@@ -163,7 +163,7 @@ npm run aggregate          # DATA_DIR, else GitHub token, else bundled demo snap
 npm run dev --workspace=web
 ```
 
-The builder writes compact `web/data/radar.json` (and `radar.sqlite` when `node:sqlite` is available). That file is a summary: latest app cards, short metric series, coverage. It is **not** a dump of private NDJSON.
+The builder writes compact `web/data/radar.json` (and `radar.sqlite` when `node:sqlite` is available). That file is a **free-tier public slice**: top 10 per list, counts rounded to 2 significant figures, growth as percent buckets, last 14 days of history. Partial snapshot days (`manifest.partial: true`) are omitted from growth/movers. Per-app pages exist only for apps that appear in a public top-10 list. It is **not** a dump of private NDJSON. The MCP connector reads the same file.
 
 ### Vercel
 
@@ -212,7 +212,7 @@ npx tsx mcp/src/stdio.ts          # stdio
 npx tsx mcp/src/http.ts           # http://0.0.0.0:8787/mcp  (PORT / HOST)
 ```
 
-Tools: `search_apps`, `app_details`, `rank_history`, `top_charts`, `movers`, `competitors`, `category_trends`, `multi_store`, `answer_share`. All read the same aggregate; payloads are capped and never include snapshot files. `answer_share` returns `{ available: false }` when no probe is present.
+Tools: `search_apps`, `app_details`, `rank_history`, `top_charts`, `movers`, `competitors`, `category_trends`, `multi_store`, `answer_share`. All read the same free-tier aggregate; payloads are capped at 10 (default 5) and never include snapshot files. `answer_share` returns `{ available: false }` when no probe is present.
 
 Listing files:
 

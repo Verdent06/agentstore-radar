@@ -123,7 +123,8 @@ export type MoverRow = {
   previous: number;
   current: number;
   delta: number;
-  pct: number | null;
+  /** Bucketed percent change; never an exact fraction. */
+  growth: string | null;
 };
 
 export type CategorySummary = {
@@ -149,6 +150,8 @@ export type AggregateMeta = {
   latestDate: string | null;
   previousDate: string | null;
   weekAgoDate: string | null;
+  /** Snapshot dates whose manifest set `partial: true`. Absent/empty means none. */
+  partialDates: string[];
   coverage: CoverageRow[];
 };
 

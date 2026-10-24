@@ -2,8 +2,8 @@ import Link from "next/link";
 import { DemoBanner, KpiGrid, formatKpis } from "@/components/kpis";
 import { Shell } from "@/components/shell";
 import { LeaderTable } from "@/components/table";
-import { formatDate } from "@/lib/format";
-import { homeRows, newArrivals, sparkValues, topChart } from "@/lib/query";
+import { formatCount, formatDate } from "@/lib/format";
+import { PUBLIC_TOP_N, homeRows, newArrivals, sparkValues, topChart } from "@/lib/query";
 import { loadAggregate } from "@/lib/store";
 
 export const dynamic = "force-static";
@@ -11,9 +11,9 @@ export const dynamic = "force-static";
 export default function HomePage() {
   const agg = loadAggregate();
   const hasMovers = agg.meta.snapshotDates.length >= 2;
-  const rows = homeRows(agg, 12);
+  const rows = homeRows(agg, PUBLIC_TOP_N);
   const sparks = new Map(rows.map((row) => [row.app.id, sparkValues(agg, row.app.id, "use_count")]));
-  const arrivals = newArrivals(agg).slice(0, 5);
+  const arrivals = newArrivals(agg, 5);
   const charts = [
     { href: "/charts/smithery", label: "Smithery", row: topChart(agg, "smithery", 1)[0] },
     { href: "/charts/npm", label: "npm", row: topChart(agg, "npm", 1)[0] },
@@ -42,7 +42,7 @@ export default function HomePage() {
           <Link key={card.href} href={card.href} className="surface rounded-lg px-4 py-3 hover:border-accent">
             <div className="text-[11px] uppercase tracking-wide text-muted">{card.label}</div>
             <div className="mt-1 truncate font-medium">{card.row?.app.displayName ?? "—"}</div>
-            <div className="font-mono text-xs text-muted">{card.row ? `#1 · ${card.row.value.toLocaleString()}` : "No rows"}</div>
+            <div className="font-mono text-xs text-muted">{card.row ? `#1 · ${formatCount(card.row.value)}` : "No rows"}</div>
           </Link>
         ))}
       </div>

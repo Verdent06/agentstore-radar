@@ -1,4 +1,4 @@
-import { formatCompact, formatNumber } from "@/lib/format";
+import { formatCount, formatNumber } from "@/lib/format";
 
 export function KpiGrid({
   items,
@@ -47,7 +47,7 @@ export function formatKpis(stats: {
   return [
     { label: "Apps tracked", value: formatNumber(stats.appCount), hint: `${stats.snapshotCount} snapshots` },
     { label: "Stores", value: formatNumber(stats.storeCount), hint: stats.latestDate ?? "" },
-    { label: "Smithery connections", value: formatCompact(stats.totalUseCount), hint: "sum of latest use count" },
-    { label: "GitHub stars", value: formatCompact(stats.totalStars), hint: `${stats.multiStoreCount} multi-store · ${stats.newArrivalCount} new` },
+    { label: "Smithery connections", value: formatCount(stats.totalUseCount), hint: "sum of latest use count" },
+    { label: "GitHub stars", value: formatCount(stats.totalStars), hint: `${stats.multiStoreCount} multi-store · ${stats.newArrivalCount} new` },
   ];
 }

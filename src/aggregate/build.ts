@@ -1,8 +1,17 @@
 import { coverageFromManifest } from "../commands/report.ts";
+import { addUtcDays } from "../lib/dates.ts";
 import { listSnapshotDates, readApps, readManifest, readSourceRows } from "../lib/io.ts";
 import type { AppRow, SourceName, SourceRow } from "../lib/schema.ts";
 import { loadPublicAnswerShare } from "./answer-share.ts";
 import { classifyCategory } from "./classify.ts";
+import {
+  HISTORY_CAP_DAYS,
+  historyCutoffDate,
+  roundAppMetrics,
+  roundHeadlineStats,
+  roundSeries,
+} from "./public.ts";
+import { publicAppIds } from "./query.ts";
 import {
   STORE_SOURCES,
   type Aggregate,
@@ -14,8 +23,6 @@ import {
   type HistoryPoint,
   type StoreSource,
 } from "./types.ts";
-
-const HISTORY_CAP_DAYS = 90;
 
 function asNumber(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -47,9 +54,7 @@ function verifiedFromRows(rows: SourceRow[]): boolean | null {
 }
 
 function weekAgoDate(dates: string[], latest: string): string | null {
-  const target = new Date(`${latest}T00:00:00Z`);
-  target.setUTCDate(target.getUTCDate() - 7);
-  const wanted = target.toISOString().slice(0, 10);
+  const wanted = addUtcDays(latest, -7);
   const earlier = dates.filter((date) => date <= wanted);
   return earlier.at(-1) ?? dates[0] ?? null;
 }
@@ -78,10 +83,13 @@ function compact(points: HistoryPoint[], dates: string[]): CompactSeries {
 
 export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir"): Aggregate {
   const allDates = listSnapshotDates(dataDir);
-  const snapshotDates = allDates.slice(-HISTORY_CAP_DAYS);
+  const latestAll = allDates.at(-1) ?? null;
+  const cutoff = latestAll ? historyCutoffDate(latestAll, HISTORY_CAP_DAYS) : null;
+  const snapshotDates = cutoff ? allDates.filter((date) => date >= cutoff) : [];
   const latestDate = snapshotDates.at(-1) ?? null;
   const previousDate = snapshotDates.length >= 2 ? snapshotDates.at(-2) ?? null : null;
   const week = latestDate ? weekAgoDate(snapshotDates, latestDate) : null;
+  const partialDates: string[] = [];
 
   const firstSeen = new Map<string, string>();
   const history = new Map<string, HistoryPoint[]>();
@@ -89,6 +97,10 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
   const latestSourceRows = new Map<string, SourceRow[]>();
 
   for (const date of snapshotDates) {
+    const manifest = readManifest(date, dataDir);
+    if (manifest.partial === true) {
+      partialDates.push(date);
+    }
     const apps = readApps(date, dataDir);
     const sourceRows = readSourceRows(date, dataDir);
     const rowsByApp = new Map<string, SourceRow[]>();
@@ -167,7 +179,7 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
   }
 
   const stats = computeHeadlineStats(apps, snapshotDates, latestDate, previousDate, week);
-  return {
+  const draft: Aggregate = {
     meta: {
       builtAt: new Date().toISOString(),
       origin,
@@ -175,12 +187,32 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
       latestDate,
       previousDate,
       weekAgoDate: week === latestDate ? null : week,
+      partialDates,
       coverage,
     },
     stats,
     apps,
     series,
     answerShare: loadPublicAnswerShare(dataDir),
+  };
+  return applyPublicTier(draft);
+}
+
+function applyPublicTier(agg: Aggregate): Aggregate {
+  const allowed = publicAppIds(agg);
+  const apps = agg.apps.filter((app) => allowed.has(app.id)).map(roundAppMetrics);
+  const series: Record<string, CompactSeries> = {};
+  for (const app of apps) {
+    const packed = agg.series[app.id];
+    if (packed) {
+      series[app.id] = roundSeries(packed);
+    }
+  }
+  return {
+    ...agg,
+    stats: roundHeadlineStats(agg.stats),
+    apps,
+    series,
   };
 }
 

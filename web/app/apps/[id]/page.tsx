@@ -3,10 +3,17 @@ import { notFound } from "next/navigation";
 import { LineChart } from "@/components/sparkline";
 import { Shell } from "@/components/shell";
 import { Delta, StorePills } from "@/components/table";
-import { formatDate, formatNumber, formatPct } from "@/lib/format";
-import { findApp, seriesToPoints } from "@/lib/query";
+import { formatCount, formatDate, formatPct } from "@/lib/format";
+import { COMPETITORS_CAP, appPageParams, findApp, isPartialDay, seriesToPoints } from "@/lib/query";
 import { loadAggregate } from "@/lib/store";
 import { CATEGORY_LABELS } from "@/lib/types";
+
+export const dynamic = "force-static";
+export const dynamicParams = false;
+
+export function generateStaticParams() {
+  return appPageParams(loadAggregate());
+}
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -27,7 +34,7 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
   const similar = agg.apps
     .filter((other) => other.id !== app.id && other.category === app.category)
     .sort((a, b) => (b.useCount ?? -1) - (a.useCount ?? -1))
-    .slice(0, 6);
+    .slice(0, COMPETITORS_CAP);
 
   return (
     <Shell>
@@ -50,7 +57,7 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
         ].map(([label, value]) => (
           <div key={String(label)} className="surface rounded-lg px-3 py-2">
             <div className="text-[11px] uppercase text-muted">{label}</div>
-            <div className="font-mono text-lg tabular">{formatNumber(value as number | null)}</div>
+            <div className="font-mono text-lg tabular">{formatCount(value as number | null)}</div>
           </div>
         ))}
       </div>
@@ -78,15 +85,18 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
           <tbody>
             {history.map((point, index) => {
               const prev = history[index - 1];
+              const skipDelta = isPartialDay(agg, point.date) || (prev ? isPartialDay(agg, prev.date) : false);
+              const delta =
+                skipDelta || !prev || point.useCount == null || prev.useCount == null ? null : point.useCount - prev.useCount;
               return (
                 <tr key={point.date} className="border-t border-line">
                   <td className="py-1">{formatDate(point.date)}</td>
                   <td className="py-1 text-right font-mono">
-                    {formatNumber(point.useCount)} <Delta value={prev && point.useCount != null && prev.useCount != null ? point.useCount - prev.useCount : null} />
+                    {formatCount(point.useCount)} <Delta value={delta} />
                   </td>
-                  <td className="py-1 text-right font-mono">{formatNumber(point.stars)}</td>
-                  <td className="py-1 text-right font-mono">{formatNumber(point.npmWeeklyDownloads)}</td>
-                  <td className="py-1 text-right font-mono">{formatNumber(point.geminiStars)}</td>
+                  <td className="py-1 text-right font-mono">{formatCount(point.stars)}</td>
+                  <td className="py-1 text-right font-mono">{formatCount(point.npmWeeklyDownloads)}</td>
+                  <td className="py-1 text-right font-mono">{formatCount(point.geminiStars)}</td>
                 </tr>
               );
             })}
@@ -138,7 +148,7 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
             const row = agg.answerShare.overall.find((item) => item.appId === app.id);
             return row ? (
               <p className="text-sm text-muted">
-                {formatPct(row.answerShare)} of mentions in the {formatDate(agg.answerShare.probeDate)} probe ({row.mentionCount} mentions).{" "}
+                {formatPct(row.answerShare)} of mentions in the {formatDate(agg.answerShare.probeDate)} probe ({formatCount(row.mentionCount)} mentions).{" "}
                 <Link href="/answer-share" className="text-accent hover:underline">
                   All shares
                 </Link>

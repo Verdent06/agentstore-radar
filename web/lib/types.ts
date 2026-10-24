@@ -119,6 +119,7 @@ export type Aggregate = {
     latestDate: string | null;
     previousDate: string | null;
     weekAgoDate: string | null;
+    partialDates?: string[];
     coverage: CoverageRow[];
   };
   stats: HeadlineStats;
@@ -144,7 +145,7 @@ export type MoverRow = {
   previous: number;
   current: number;
   delta: number;
-  pct: number | null;
+  growth: string | null;
 };
 
 export const CHART_META: Record<ChartId, { title: string; metric: MetricKey; unit: string; blurb: string }> = {
