@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { PYPI_MIN_INTERVAL_MS, PYPISTATS_BASE } from "../lib/config.ts";
+import { PYPI_MIN_INTERVAL_MS, PYPISTATS_BASE, SMITHERY_FROZEN_DAYS, SOURCE_FREEZE_RATIO } from "../lib/config.ts";
 import { computeCoverage } from "../lib/coverage.ts";
+import { evaluateSourceFreeze, isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../lib/frozen.ts";
 import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import {
@@ -45,6 +46,14 @@ export function pypiRecentUrl(name: string): string {
   return `${PYPISTATS_BASE}/${encodeURIComponent(name)}/recent`;
 }
 
+/** pypistats last_month cannot be below last_week; that payload is unusable. */
+export function pypiMonthlyInconsistent(
+  week: number | null | undefined,
+  month: number | null | undefined,
+): boolean {
+  return typeof week === "number" && typeof month === "number" && month < week;
+}
+
 export function normalizePypiRecent(snapshotDate: string, name: string, item: unknown): SourceRow | null {
   const parsed = RecentSchema.safeParse(item);
   if (!parsed.success) {
@@ -78,20 +87,58 @@ function recordsFromCache(
   cache: Record<string, unknown>,
   lastFetched: Record<string, string>,
   collectedAt: string,
+  monthHistory: ReturnType<typeof loadPreviousMetricHistory>,
+  weekHistory: ReturnType<typeof loadPreviousMetricHistory>,
+  frozenDays: number,
 ): SourceRow[] {
-  const records: SourceRow[] = [];
+  const pending: Array<{
+    row: SourceRow;
+    fetchedAt: string | null;
+    fetchedCarried: boolean;
+    monthUnchanged: boolean;
+    weekMoved: boolean;
+    inconsistent: boolean;
+  }> = [];
   for (const name of keys) {
     const item = cache[name];
     if (item == null) {
       continue;
     }
     const row = normalizePypiRecent(snapshotDate, name, item);
-    if (row) {
-      const fetchedAt = lastFetched[name] ?? null;
-      records.push(withObservation(row, fetchedAt, isCarriedForward(fetchedAt, snapshotDate, collectedAt)));
+    if (!row) {
+      continue;
     }
+    const fetchedAt = lastFetched[name] ?? null;
+    const monthUnchanged = isUnchangedForDays(
+      row.pypi_last_month_downloads,
+      monthHistory.byId.get(name) ?? [],
+      monthHistory.dates,
+      frozenDays,
+    );
+    const previousWeek = weekHistory.byId.get(name)?.at(-1)?.value;
+    const weekMoved =
+      typeof row.pypi_last_week_downloads === "number" &&
+      typeof previousWeek === "number" &&
+      row.pypi_last_week_downloads !== previousWeek;
+    pending.push({
+      row,
+      fetchedAt,
+      fetchedCarried: isCarriedForward(fetchedAt, snapshotDate, collectedAt),
+      monthUnchanged,
+      weekMoved,
+      inconsistent: pypiMonthlyInconsistent(row.pypi_last_week_downloads, row.pypi_last_month_downloads),
+    });
   }
-  return records;
+  const freeze = evaluateSourceFreeze(
+    pending.map((item) => item.monthUnchanged),
+    SOURCE_FREEZE_RATIO,
+  );
+  return pending.map((item, index) => {
+    const monthlyStale = item.monthUnchanged && (freeze.sourceFrozen || item.weekMoved);
+    const frozen = item.inconsistent || monthlyStale || freeze.freezeRow[index] === true;
+    const carried = item.fetchedCarried || item.inconsistent;
+    return withObservation(item.row, item.fetchedAt, carried, frozen);
+  });
 }
 
 export const pypiAdapter: SourceAdapter = {
@@ -106,6 +153,21 @@ export const pypiAdapter: SourceAdapter = {
     const dueKeys = prioritizeKeys(unorderedDue, (key) => cachedWeekDownloads(cache[key]));
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
+    const frozenDays = smitheryFrozenDays(ctx.env, SMITHERY_FROZEN_DAYS);
+    const monthHistory = loadPreviousMetricHistory(
+      ctx.dataDir,
+      ctx.snapshotDate,
+      "pypi",
+      "pypi_last_month_downloads",
+      frozenDays,
+    );
+    const weekHistory = loadPreviousMetricHistory(
+      ctx.dataDir,
+      ctx.snapshotDate,
+      "pypi",
+      "pypi_last_week_downloads",
+      frozenDays,
+    );
 
     const finish = (input: {
       truncated: boolean;
@@ -113,7 +175,16 @@ export const pypiAdapter: SourceAdapter = {
       processed?: number;
       stoppedAt?: SourceResult["stoppedAt"];
     }): SourceResult => {
-      const records = recordsFromCache(ctx.snapshotDate, allKeys, cache, lastFetched, fetchedAt);
+      const records = recordsFromCache(
+        ctx.snapshotDate,
+        allKeys,
+        cache,
+        lastFetched,
+        fetchedAt,
+        monthHistory,
+        weekHistory,
+        frozenDays,
+      );
       const freshTodayCount = countFreshToday(allKeys, lastFetched, ctx.snapshotDate);
       const freshWithin7dCount = countFresh(allKeys, lastFetched, ctx.now);
       const { coverage } = computeCoverage(allKeys.length, freshTodayCount);

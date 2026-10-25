@@ -73,4 +73,26 @@ describe("mergeApps", () => {
       stars_carried_forward: false,
     });
   });
+
+  it("copies PyPI monthly frozen onto pypi_last_month_downloads_carried_forward without freezing weekly", () => {
+    const apps = mergeApps("2026-10-25", [
+      emptySourceRow({
+        snapshot_date: "2026-10-25",
+        app_id: "github:54yyyu/zotero-mcp",
+        source: "pypi",
+        source_id: "zotero-mcp",
+        name: "zotero-mcp",
+        pypi_package: "zotero-mcp",
+        pypi_last_week_downloads: 1400,
+        pypi_last_month_downloads: 20314,
+        fetched_at: "2026-10-25T12:00:00Z",
+        carried_forward: false,
+        frozen: true,
+      }),
+    ]);
+    expect(apps[0]).toMatchObject({
+      pypi_last_week_downloads_carried_forward: false,
+      pypi_last_month_downloads_carried_forward: true,
+    });
+  });
 });

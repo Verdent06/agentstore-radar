@@ -1,14 +1,17 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { githubAdapter, githubStatsToken, buildGithubGraphqlQuery } from "../src/adapters/github.ts";
 import { npmAdapter, npmBulkUrl, isScopedNpmPackage } from "../src/adapters/npm.ts";
-import { pypiAdapter, pypiRecentUrl } from "../src/adapters/pypi.ts";
+import { pypiAdapter, pypiMonthlyInconsistent, pypiRecentUrl } from "../src/adapters/pypi.ts";
 import { createDiscoveredRefs, type CollectContext } from "../src/adapters/types.ts";
 import { GITHUB_GRAPHQL_BATCH, NPM_BULK_LIMIT } from "../src/lib/config.ts";
 import { createHttpClient } from "../src/lib/http.ts";
+import { writeNormalized } from "../src/lib/io.ts";
+import { mergeApps } from "../src/lib/merge.ts";
 import { persistEntityCache, persistLastFetched } from "../src/lib/rolling.ts";
+import { emptySourceRow, type SnapshotManifest, type SourceRow } from "../src/lib/schema.ts";
 import { chunk } from "../src/lib/util.ts";
 import { fixtureFetch, loadFixture } from "./helpers.ts";
 
@@ -439,5 +442,123 @@ describe("pypi growth adapter", () => {
     );
     expect(result.rowCount).toBe(1);
     expect(result.coverage).toBe(1);
+    expect(result.records[0]).toMatchObject({
+      pypi_last_week_downloads: 80,
+      pypi_last_month_downloads: 300,
+      carried_forward: false,
+      frozen: false,
+    });
+  });
+
+  it("treats last_month < last_week as an invalid PyPI row, not fresh", async () => {
+    expect(pypiMonthlyInconsistent(100, 0)).toBe(true);
+    expect(pypiMonthlyInconsistent(80, 300)).toBe(false);
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-pypi-inconsistent-"));
+    const discovered = createDiscoveredRefs();
+    discovered.pypiPackages.add("zotero-mcp");
+    const result = await pypiAdapter.collect(
+      ctx({
+        snapshotDate: "2026-10-25",
+        collectedAt: "2026-10-25T12:00:00Z",
+        now: new Date("2026-10-25T12:00:00Z"),
+        dataDir,
+        http: createHttpClient({
+          fetchImpl: fixtureFetch([
+            {
+              match: "pypistats.org/api/packages/zotero-mcp/recent",
+              body: {
+                data: { last_day: 20, last_week: 100, last_month: 0 },
+                package: "zotero-mcp",
+                type: "recent_downloads",
+              },
+            },
+          ]),
+          maxRetries: 0,
+        }),
+        discovered,
+      }),
+    );
+    expect(result.records[0]).toMatchObject({
+      pypi_last_week_downloads: 100,
+      pypi_last_month_downloads: 0,
+      carried_forward: true,
+      frozen: true,
+    });
+    const apps = mergeApps("2026-10-25", result.records);
+    expect(apps[0]).toMatchObject({
+      pypi_last_week_downloads_carried_forward: true,
+      pypi_last_month_downloads_carried_forward: true,
+    });
+  });
+
+  it("does not stamp a frozen PyPI last_month as fresh when weekly moved (zotero-mcp = 20314)", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-pypi-month-"));
+    const writeDay = (date: string, week: number, month: number) => {
+      const rows: SourceRow[] = [
+        emptySourceRow({
+          snapshot_date: date,
+          source: "pypi",
+          source_id: "zotero-mcp",
+          name: "zotero-mcp",
+          pypi_package: "zotero-mcp",
+          pypi_last_week_downloads: week,
+          pypi_last_month_downloads: month,
+          app_id: "pypi:zotero-mcp",
+          fetched_at: `${date}T12:00:00Z`,
+        }),
+      ];
+      const manifest: SnapshotManifest = {
+        snapshotDate: date,
+        collectedAt: `${date}T12:00:00Z`,
+        appCount: 1,
+        sourceRowCount: 1,
+        partial: false,
+        completedSources: ["pypi"],
+        sources: [{ source: "pypi", rowCount: 1, skipped: false, collectedAt: `${date}T12:00:00Z` }],
+      };
+      writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
+    };
+    writeDay("2026-10-18", 900, 20314);
+    writeDay("2026-10-22", 1100, 20314);
+    writeDay("2026-10-24", 1300, 20314);
+    expect(existsSync(join(dataDir, "normalized", "2026-10-23"))).toBe(false);
+    const discovered = createDiscoveredRefs();
+    discovered.pypiPackages.add("zotero-mcp");
+    const result = await pypiAdapter.collect(
+      ctx({
+        snapshotDate: "2026-10-25",
+        collectedAt: "2026-10-25T12:00:00Z",
+        now: new Date("2026-10-25T12:00:00Z"),
+        dataDir,
+        http: createHttpClient({
+          fetchImpl: fixtureFetch([
+            {
+              match: "pypistats.org/api/packages/zotero-mcp/recent",
+              body: {
+                data: { last_day: 50, last_week: 1400, last_month: 20314 },
+                package: "zotero-mcp",
+                type: "recent_downloads",
+              },
+            },
+          ]),
+          maxRetries: 0,
+        }),
+        discovered,
+      }),
+    );
+    expect(existsSync(join(dataDir, "normalized", "2026-10-23"))).toBe(false);
+    expect(result.records[0]).toMatchObject({
+      pypi_last_week_downloads: 1400,
+      pypi_last_month_downloads: 20314,
+      carried_forward: false,
+      frozen: true,
+    });
+    const apps = mergeApps("2026-10-25", result.records);
+    expect(apps[0]).toMatchObject({
+      pypi_last_week_downloads: 1400,
+      pypi_last_week_downloads_carried_forward: false,
+      pypi_last_month_downloads: 20314,
+      pypi_last_month_downloads_carried_forward: true,
+    });
   });
 });

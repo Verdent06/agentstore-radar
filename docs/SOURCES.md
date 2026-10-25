@@ -56,10 +56,12 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 
 - Docs: [PyPI Stats API](https://pypistats.org/api/)
 - `GET https://pypistats.org/api/packages/{package}/recent`
-- Returns `last_day`, `last_week`, `last_month`
+- Returns `last_day`, `last_week`, `last_month`. We map **`data.last_month`** onto `pypi_last_month_downloads` (not a wrong key). The same JSON also has `last_week`; data is updated once daily.
 - Do **not** use `pypi.org/pypi/{package}/json` `downloads` — it is always `-1`
 - Throttle `pypistats.org`; back off on 429; **daily** coverage + checkpoint under `data/state/pypi/`. Due keys ordered by last-known weekly downloads.
-- Cached weekly/monthly counts are stamped `carried_forward` like GitHub/npm.
+- Cached **weekly** counts are stamped `carried_forward` like GitHub/npm when the row was not fetched this UTC day.
+- **`last_month` can stay identical while `last_week` moves.** Observed `zotero-mcp` monthly **20314** on 2026-10-18 and 2026-10-25 (Oct 23 stays a gap) even though weekly changed. A live `/recent` fetch is not evidence that monthly is fresh. Monthly is flagged `frozen` (and `pypi_last_month_downloads_carried_forward` on the merged app) when it is unchanged for N snapshot days **and** weekly moved, or when ≥95% of monthly values are stuck (`isUnchangedForDays` / source freeze). Weekly can still be fresh on the same row.
+- **Consistency:** `last_month < last_week` is invalid (e.g. monthly **0** with weekly ~100). That row is `carried_forward`, not fresh. We keep the numbers; we do not invent a monthly total.
 
 ## Gemini CLI extensions gallery
 

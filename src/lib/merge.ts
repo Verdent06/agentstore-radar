@@ -36,7 +36,11 @@ const FRESHNESS_FIELDS: Record<FreshnessKey, { at: keyof AppRow; carried: keyof 
 function applyFreshness(app: AppRow, key: FreshnessKey, row: SourceRow): void {
   const fields = FRESHNESS_FIELDS[key];
   (app[fields.at] as string | null) = row.fetched_at ?? null;
-  (app[fields.carried] as boolean) = row.carried_forward === true;
+  const carried =
+    key === "pypi_last_month_downloads"
+      ? row.carried_forward === true || row.frozen === true
+      : row.carried_forward === true;
+  (app[fields.carried] as boolean) = carried;
 }
 
 function preferNumber(
