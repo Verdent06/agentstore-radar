@@ -93,6 +93,8 @@ export const SourceManifestSchema = z.object({
   rawFile: z.string().optional(),
   collectedAt: z.string(),
   eligibleCount: z.number().int().nonnegative().optional(),
+  /** Keys whose last fetch is on this UTC snapshot date. Used for daily coverage. */
+  freshTodayCount: z.number().int().nonnegative().optional(),
   /** Keys whose last fetch is within the 7-day rolling window. Not "fetched this run". */
   freshWithin7dCount: z.number().int().nonnegative().optional(),
   /** Keys actually requested from the live API during this collect. */

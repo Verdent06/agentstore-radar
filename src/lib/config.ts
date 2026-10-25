@@ -16,10 +16,10 @@ export const COLLECTOR_MISSED_LABEL = "collector-missed";
 
 export const HOST_MIN_INTERVAL_MS: Record<string, number> = {
   "registry.modelcontextprotocol.io": 150,
-  "api.smithery.ai": 150,
-  "api.github.com": 250,
-  "api.npmjs.org": 400,
-  "pypistats.org": 500,
+  "api.smithery.ai": 120,
+  "api.github.com": 200,
+  "api.npmjs.org": 1000,
+  "pypistats.org": 400,
   "geminicli.com": 200,
   "api.openai.com": 250,
   "api.anthropic.com": 250,
@@ -37,6 +37,11 @@ export const PYPISTATS_BASE = "https://pypistats.org/api/packages";
 export const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 
 export const NPM_BULK_LIMIT = 128;
+export const NPM_SCOPED_MIN_INTERVAL_MS = 1200;
+export const NPM_BULK_MIN_INTERVAL_MS = 500;
+export const PYPI_MIN_INTERVAL_MS = 400;
+export const SMITHERY_USECOUNT_PAGE_SIZE = 10;
+export const RATE_LIMIT_MIN_WAIT_MS = 15_000;
 export const GITHUB_GRAPHQL_BATCH = 50;
 
 export const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";

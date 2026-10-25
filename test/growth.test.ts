@@ -60,18 +60,29 @@ describe("github growth adapter", () => {
     expect(result.truncated).toBe(false);
   });
 
-  it("skips repos fresher than 7 days and still emits cached rows", async () => {
+  it("refetches repos last seen on a previous UTC day", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-gh-"));
     persistLastFetched(dataDir, "github", { "example/weather": "2026-10-14T00:00:00Z" });
     persistEntityCache(dataDir, "github", {
-      "example/weather": loadFixture<{ data: { r0: unknown } }>("github-graphql.json").data.r0,
+      "example/weather": {
+        nameWithOwner: "example/weather",
+        url: "https://github.com/example/weather",
+        stargazerCount: 1,
+        forkCount: 0,
+        pushedAt: "2026-10-01T00:00:00Z",
+        isArchived: false,
+        issues: { totalCount: 0 },
+      },
     });
     const discovered = createDiscoveredRefs();
     discovered.githubRepos.set("example/weather", { owner: "example", repo: "weather" });
     let calls = 0;
     const fetchImpl = async () => {
       calls += 1;
-      throw new Error("should not fetch fresh repos");
+      return new Response(JSON.stringify(loadFixture("github-graphql.json")), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
     };
     const result = await githubAdapter.collect(
       ctx({
@@ -81,13 +92,44 @@ describe("github growth adapter", () => {
         discovered,
       }),
     );
+    expect(calls).toBe(1);
+    expect(result.fetchedThisRunCount).toBe(1);
+    expect(result.freshTodayCount).toBe(1);
+    expect(result.records[0]).toMatchObject({
+      stars: 42,
+      carried_forward: false,
+      fetched_at: "2026-10-15T12:00:00Z",
+    });
+  });
+
+  it("skips repos already fetched today and still emits cached rows", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-gh-today-"));
+    persistLastFetched(dataDir, "github", { "example/weather": "2026-10-15T06:00:00Z" });
+    persistEntityCache(dataDir, "github", {
+      "example/weather": loadFixture<{ data: { r0: unknown } }>("github-graphql.json").data.r0,
+    });
+    const discovered = createDiscoveredRefs();
+    discovered.githubRepos.set("example/weather", { owner: "example", repo: "weather" });
+    let calls = 0;
+    const result = await githubAdapter.collect(
+      ctx({
+        dataDir,
+        http: createHttpClient({
+          fetchImpl: async () => {
+            calls += 1;
+            throw new Error("should not fetch same-day live values");
+          },
+          maxRetries: 0,
+        }),
+        env: { GITHUB_TOKEN: "test-token" },
+        discovered,
+      }),
+    );
     expect(calls).toBe(0);
-    expect(result.rowCount).toBe(1);
-    expect(result.coverage).toBe(1);
-    expect(result.freshWithin7dCount).toBe(1);
     expect(result.fetchedThisRunCount).toBe(0);
-    expect(result.records[0]?.carried_forward).toBe(true);
-    expect(result.records[0]?.fetched_at).toBe("2026-10-14T00:00:00Z");
+    expect(result.freshTodayCount).toBe(1);
+    expect(result.records[0]?.carried_forward).toBe(false);
+    expect(result.records[0]?.fetched_at).toBe("2026-10-15T06:00:00Z");
   });
 
   it("keeps a partial snapshot after a mid-run rate limit", async () => {
@@ -123,6 +165,7 @@ describe("github growth adapter", () => {
     expect(result.truncated).toBe(true);
     expect(result.rowCount).toBe(1);
     expect(result.eligibleCount).toBe(51);
+    expect(result.freshTodayCount).toBe(1);
     expect(result.coverage).toBeCloseTo(1 / 51);
   });
 
@@ -270,8 +313,9 @@ describe("npm growth adapter", () => {
     const result = await npmAdapter.collect(
       ctx({
         dataDir,
-        http: createHttpClient({ fetchImpl, maxRetries: 0 }),
+        http: createHttpClient({ fetchImpl, maxRetries: 0, sleep: async () => {} }),
         discovered,
+        sleep: async () => {},
       }),
     );
     expect(calls).toBeGreaterThan(1);
@@ -279,6 +323,40 @@ describe("npm growth adapter", () => {
     expect(result.rowCount).toBe(1);
     expect(result.eligibleCount).toBe(2);
     expect(result.coverage).toBe(0.5);
+  });
+
+  it("retries a scoped 429 and still finishes without truncating", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-npm-retry-"));
+    const discovered = createDiscoveredRefs();
+    discovered.npmPackages.add("left-pad");
+    discovered.npmPackages.add("@scope/pkg");
+    let calls = 0;
+    const fetchImpl = async (input: string | URL) => {
+      calls += 1;
+      const url = String(input);
+      if (url.includes("left-pad")) {
+        return new Response(JSON.stringify({ downloads: 9, package: "left-pad" }), { status: 200 });
+      }
+      if (calls < 3) {
+        return new Response("error code: 1015", {
+          status: 429,
+          headers: { "retry-after": "0", "cf-mitigated": "challenge" },
+        });
+      }
+      return new Response(JSON.stringify({ downloads: 4, package: "@scope/pkg" }), { status: 200 });
+    };
+    const result = await npmAdapter.collect(
+      ctx({
+        dataDir,
+        http: createHttpClient({ fetchImpl, maxRetries: 0, sleep: async () => {} }),
+        discovered,
+        sleep: async () => {},
+      }),
+    );
+    expect(calls).toBeGreaterThanOrEqual(3);
+    expect(result.truncated).toBe(false);
+    expect(result.rowCount).toBe(2);
+    expect(result.coverage).toBe(1);
   });
 });
 

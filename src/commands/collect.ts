@@ -79,6 +79,7 @@ function failedResult(source: SourceName, collectedAt: string, error: unknown): 
     raw: { failed: true, error: stoppedAt.error, stoppedAt },
     records: [],
     eligibleCount: 0,
+    freshTodayCount: 0,
     freshWithin7dCount: 0,
     fetchedThisRunCount: 0,
   };
@@ -167,6 +168,7 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     log,
     discovered: createDiscoveredRefs(),
     maxPages: options.maxPages,
+    sleep,
   };
 
   const results: SourceResult[] = [];
@@ -284,9 +286,10 @@ function envRunId(env?: NodeJS.ProcessEnv): string | undefined {
 
 function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifest {
   const eligible = result.eligibleCount ?? (result.skipped ? 0 : result.rowCount);
-  const freshWithin7d = result.freshWithin7dCount ?? (result.skipped ? 0 : result.rowCount);
+  const freshToday = result.freshTodayCount ?? (result.skipped ? 0 : result.rowCount);
+  const freshWithin7d = result.freshWithin7dCount ?? freshToday;
   const fetchedThisRun = result.fetchedThisRunCount ?? (result.skipped || result.failed ? 0 : result.rowCount);
-  const { coverage } = computeCoverage(eligible, freshWithin7d);
+  const { coverage } = computeCoverage(eligible, freshToday);
   return {
     source: result.source,
     rowCount: result.rowCount,
@@ -295,6 +298,7 @@ function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifes
     rawFile,
     collectedAt: result.collectedAt,
     eligibleCount: eligible,
+    freshTodayCount: freshToday,
     freshWithin7dCount: freshWithin7d,
     fetchedThisRunCount: fetchedThisRun,
     coverage: result.skipped && eligible === 0 ? undefined : result.coverage ?? coverage,

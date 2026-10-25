@@ -20,11 +20,12 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - Docs: [List all servers](https://smithery.ai/docs/api-reference/servers/list-all-servers)
 - List: `GET https://api.smithery.ai/servers?page=&pageSize=100`
 - Public reads worked without a key on 2026-10-15. `SMITHERY_API_KEY` is optional (`Authorization: Bearer`); 401/403 without a key skips the source instead of failing the run
-- `useCount` is on the list payload (total connections). The per-server detail endpoint does **not** include `useCount`.
-- Search-index windows are capped at `topK` 500. **Pass a stable `seed`** (we use `1`) for deterministic deep pagination of the full catalog (~20k servers, 204 pages of 100)
-- Seeded and unseeded list responses return the **same** `useCount` for overlapping servers. Live check 2026-10-24: Brave Search is still `87579`, identical to the 2026-10-15 fixture. Smithery's published `useCount` is a slowly-updated (or frozen) registry statistic, not a collector cache. We re-fetch the full catalog every day and stamp `fetched_at` / `carried_forward=false` on those rows.
+- `useCount` is documented as total connections. The per-server detail endpoint does **not** include `useCount`.
+- Search-index windows are capped at `topK` 500. **Pass a stable `seed`** (we use `1`) for deterministic deep pagination of the full catalog (~20k servers, ~208 pages of 100)
+- The seeded/unseeded **browse list** serves a stale search-index `useCount`. Live check 2026-10-25: browse `brave` is still `87579` (unchanged since 2026-10-15) while `GET /servers?q=brave` returns `119026`. About half of the top 25 servers differ between browse and search. There is no `updatedAt` for the counter.
+- After listing the catalog we refresh `useCount` with `GET /servers?q={qualifiedName}&pageSize=10` and keep the exact `qualifiedName` match. Search misses keep the last live search value from `data/state/smithery/` (flagged `carried_forward`) or, if we have never searched that server, the browse-index value flagged `carried_forward`. We never invent a count.
 - List rows do not include `repositoryUrl`; we match GitHub only when `homepage` is a GitHub URL
-- We do not fan out 20k per-server detail calls
+- We do not fan out 20k per-server **detail** calls; the extra search is list-shaped and is what actually moves `useCount`
 
 ## GitHub repo stats
 
@@ -34,12 +35,12 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - Batches of 50 aliased `repository(owner, name)` nodes plus `rateLimit { remaining resetAt cost }`
 - Fields: `stargazerCount`, `forkCount`, `issues(states: OPEN) { totalCount }`, `pushedAt`, `updatedAt`
 - Respect `X-RateLimit-Remaining` / `X-RateLimit-Reset`, secondary-limit `Retry-After`, and GraphQL remaining; wait through a reset when it is within ~70 minutes
-- Checkpoint + resume under `data/state/github/`; `last_fetched` skips repos fresher than 7 days so every repo refreshes at least weekly
-- Cached rows are still written into that day's snapshot so rankings have last-known stars. `carried_forward` is true only when `fetched_at` is from a previous UTC day — a same-day re-run that reuses this morning's live fetch is **not** carried forward. Movers ignore carried-forward points so a weekly refresh is not mistaken for a one-day jump.
+- Checkpoint + resume under `data/state/github/`; `last_fetched` skips only keys already fetched on this UTC snapshot date so stars refresh daily. Due keys are ordered by cached `stargazerCount` so a truncated run still refreshes the most-starred repos first
+- Cached rows are still written into that day's snapshot so rankings have last-known stars. `carried_forward` is true only when `fetched_at` is from a previous UTC day — a same-day re-run that reuses this morning's live fetch is **not** carried forward. Movers ignore carried-forward points so a late refresh is not mistaken for a one-day jump.
 - GraphQL results are stored under the **requested** `owner/repo` key (not only `nameWithOwner`) so transfers/renames still attach to the discovered app.
 - `Could not resolve to a Repository` / `NOT_FOUND` (deleted or renamed repos) is logged per-app and never fails the GitHub source or the workflow. Those aliases are skipped; cached rows from earlier fetches are still emitted when present.
-- After 2026-10-24 the rolling window is working as designed: keys fresher than 7 days are carried forward with `carried_forward=true`, and due keys are refetched. The 2026-10-15..22 freeze then 10-24 jump for many repos was that weekly refresh landing after several failed MCP runs, not a parser bug. `morluto/rea` is a real repository; its 268,700 → 375,620 jump was a **`stars_source` switch**, not carry-forward plus a parser freeze: through Oct 22 the merged app had ~268,700 stars and **no** `stars_source` (Gemini gallery / catalog value), then Oct 24 wrote 375,620 with `stars_source=github` once live GraphQL won. Movers ignore carried-forward GitHub points; a source switch still needs `stars_source` to be interpreted correctly.
-- Target: all discovered GitHub URLs in one 6h Actions run when budget allows; otherwise rolling coverage across days
+- The 2026-10-15..22 freeze then 10-24 jump for many repos was the previous weekly refresh landing after several failed MCP runs, not a parser bug. `morluto/rea` is a real repository; its 268,700 → 375,620 jump was a **`stars_source` switch**, not carry-forward plus a parser freeze: through Oct 22 the merged app had ~268,700 stars and **no** `stars_source` (Gemini gallery / catalog value), then Oct 24 wrote 375,620 with `stars_source=github` once live GraphQL won. Movers ignore carried-forward GitHub points; a source switch still needs `stars_source` to be interpreted correctly.
+- Target: all discovered GitHub URLs every day. 2026-10-25 fetched 4,655 due repos (7-day window) in ~21s; a full ~30k daily refresh is the same GraphQL path and fits the 6h job. Unresolved `NOT_FOUND` aliases are stamped `last_fetched` without a cache row so they do not look like missing coverage, and missing stars stay missing.
 - Repos are discovered from MCP `repository.url` / `io.github.*` names, Smithery GitHub homepages, and the Gemini gallery
 
 ## npm weekly downloads
@@ -47,8 +48,8 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - Docs: [npm download counts](https://github.com/npm/registry/blob/main/docs/download-counts.md)
 - `GET https://api.npmjs.org/downloads/point/last-week/{package}`
 - Bulk: comma-separated, max **128**, **unscoped only**. Scoped packages (`@scope/name`) are fetched one-by-one with `%2F`
-- Throttle `api.npmjs.org`; back off on HTTP 429 and Cloudflare error 1015 (`Retry-After` + exponential)
-- Checkpoint + weekly `last_fetched` under `data/state/npm/`. Same `fetched_at` / `carried_forward` stamping as GitHub.
+- Throttle `api.npmjs.org` (~500ms bulk, ~1.2s scoped). Back off on HTTP 429 and Cloudflare error 1015. `Retry-After: 0` is ignored (it caused an immediate retry storm on 2026-10-25); waits floor at 15s and continue the same package until the 70-minute budget is exhausted
+- Checkpoint + **daily** `last_fetched` under `data/state/npm/`. Scoped packages (the 2026-10-25 429, `@abhishekjkrsna/swapi-mcp`) are the slow path; unscoped bulk of 128 still runs first. Due keys are ordered by last-known weekly downloads. Same `fetched_at` / `carried_forward` stamping as GitHub.
 
 ## PyPI / pypistats
 
@@ -56,7 +57,7 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - `GET https://pypistats.org/api/packages/{package}/recent`
 - Returns `last_day`, `last_week`, `last_month`
 - Do **not** use `pypi.org/pypi/{package}/json` `downloads` — it is always `-1`
-- Throttle `pypistats.org`; back off on 429; rolling weekly coverage + checkpoint under `data/state/pypi/`
+- Throttle `pypistats.org`; back off on 429; **daily** coverage + checkpoint under `data/state/pypi/`. Due keys ordered by last-known weekly downloads.
 - Cached weekly/monthly counts are stamped `carried_forward` like GitHub/npm.
 
 ## Gemini CLI extensions gallery

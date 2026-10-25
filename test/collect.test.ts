@@ -77,6 +77,7 @@ describe("collect", () => {
     expect(manifest?.sources.find((source) => source.source === "npm")?.rowCount).toBe(1);
     expect(manifest?.sources.find((source) => source.source === "pypi")?.rowCount).toBe(1);
     expect(manifest?.sources.find((source) => source.source === "github")?.coverage).toBe(1);
+    expect(manifest?.sources.find((source) => source.source === "github")?.freshTodayCount).toBe(3);
     expect(manifest?.sources.find((source) => source.source === "github")?.freshWithin7dCount).toBe(3);
     expect(manifest?.sources.find((source) => source.source === "github")?.fetchedThisRunCount).toBe(3);
     expect(manifest?.sources.find((source) => source.source === "github")?.fetchedCount).toBeUndefined();

@@ -115,7 +115,7 @@ describe("metric freshness", () => {
     });
   });
 
-  it("marks cached GitHub rows as carried_forward with the original fetched_at", async () => {
+  it("marks cached GitHub rows as carried_forward with the original fetched_at when this run did not refresh them", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-fresh-"));
     persistLastFetched(dataDir, "github", { "example/weather": "2026-10-15T12:00:00Z" });
     persistEntityCache(dataDir, "github", {
@@ -128,13 +128,17 @@ describe("metric freshness", () => {
         dataDir,
         discovered,
         http: createHttpClient({
-          fetchImpl: async () => {
-            throw new Error("should not fetch");
-          },
+          fetchImpl: async () =>
+            new Response(JSON.stringify({ message: "You have exceeded a secondary rate limit" }), {
+              status: 403,
+              headers: { "retry-after": "0" },
+            }),
           maxRetries: 0,
         }),
       }),
     );
+    expect(result.truncated).toBe(true);
+    expect(result.fetchedThisRunCount).toBe(0);
     expect(result.records[0]).toMatchObject({
       carried_forward: true,
       fetched_at: "2026-10-15T12:00:00Z",

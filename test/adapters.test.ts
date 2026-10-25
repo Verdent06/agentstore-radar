@@ -1,11 +1,17 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { normalizeGeminiExtension } from "../src/adapters/gemini.ts";
 import { normalizeGithubRepo } from "../src/adapters/github.ts";
 import { normalizeMcpServer } from "../src/adapters/mcp-registry.ts";
 import { normalizeNpmPoint } from "../src/adapters/npm.ts";
 import { normalizePypiRecent } from "../src/adapters/pypi.ts";
-import { normalizeSmitheryServer } from "../src/adapters/smithery.ts";
-import { loadFixture } from "./helpers.ts";
+import { smitheryAdapter, smitheryUseCountSearchUrl, normalizeSmitheryServer } from "../src/adapters/smithery.ts";
+import { createDiscoveredRefs } from "../src/adapters/types.ts";
+import { createHttpClient } from "../src/lib/http.ts";
+import { persistEntityCache, persistLastFetched } from "../src/lib/rolling.ts";
+import { fixtureFetch, loadFixture } from "./helpers.ts";
 
 describe("source normalizers", () => {
   it("maps official MCP registry rows onto a github app_id and packages", () => {
@@ -59,5 +65,72 @@ describe("source normalizers", () => {
   it("drops invalid rows instead of throwing", () => {
     expect(normalizeMcpServer("2026-10-15", { nope: true })).toBeNull();
     expect(normalizeSmitheryServer("2026-10-15", {})).toBeNull();
+  });
+
+  it("overlays live Smithery search useCount instead of the stale browse-index value", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-smithery-"));
+    const list = loadFixture<{ servers: unknown[]; pagination: unknown }>("smithery-page.json");
+    const brave = list.servers[0] as { qualifiedName: string; useCount: number };
+    expect(brave.useCount).toBe(87579);
+    expect(smitheryUseCountSearchUrl("brave")).toContain("q=brave");
+    const result = await smitheryAdapter.collect({
+      snapshotDate: "2026-10-25",
+      collectedAt: "2026-10-25T12:00:00Z",
+      now: new Date("2026-10-25T12:00:00Z"),
+      dataDir,
+      env: {},
+      log: { info() {}, warn() {}, error() {} },
+      discovered: createDiscoveredRefs(),
+      http: createHttpClient({
+        fetchImpl: fixtureFetch([
+          {
+            match: /[?&]q=brave/,
+            body: {
+              servers: [{ ...brave, useCount: 119026 }],
+              pagination: { currentPage: 1, pageSize: 10, totalPages: 1, totalCount: 1 },
+            },
+          },
+          { match: "api.smithery.ai/servers", body: list },
+        ]),
+        maxRetries: 0,
+      }),
+    });
+    expect(result.records[0]).toMatchObject({
+      use_count: 119026,
+      carried_forward: false,
+      fetched_at: "2026-10-25T12:00:00Z",
+    });
+    expect((result.raw as { useCountRefresh?: { updated: number } }).useCountRefresh?.updated).toBe(1);
+  });
+
+  it("flags browse-index Smithery useCount as carried_forward when search does not refresh it", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-smithery-stale-"));
+    persistLastFetched(dataDir, "smithery", { brave: "2026-10-24T12:00:00Z" });
+    persistEntityCache(dataDir, "smithery", { brave: { useCount: 119026 } });
+    const list = loadFixture<{ servers: unknown[] }>("smithery-page.json");
+    const result = await smitheryAdapter.collect({
+      snapshotDate: "2026-10-25",
+      collectedAt: "2026-10-25T12:00:00Z",
+      now: new Date("2026-10-25T12:00:00Z"),
+      dataDir,
+      env: {},
+      log: { info() {}, warn() {}, error() {} },
+      discovered: createDiscoveredRefs(),
+      http: createHttpClient({
+        fetchImpl: fixtureFetch([
+          {
+            match: /[?&]q=/,
+            body: { servers: [], pagination: { currentPage: 1, pageSize: 10, totalPages: 1, totalCount: 0 } },
+          },
+          { match: "api.smithery.ai/servers", body: list },
+        ]),
+        maxRetries: 0,
+      }),
+    });
+    expect(result.records[0]).toMatchObject({
+      use_count: 119026,
+      carried_forward: true,
+      fetched_at: "2026-10-24T12:00:00Z",
+    });
   });
 });

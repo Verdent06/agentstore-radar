@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   createHttpClient,
   denyNetworkFetch,
+  fetchJsonWithRateLimitWait,
   HttpError,
   isCloudflareBlock,
   parseRateLimitHeaders,
   parseRetryAfterMs,
+  retryWaitMs,
 } from "../src/lib/http.ts";
 
 describe("http client", () => {
@@ -21,7 +23,7 @@ describe("http client", () => {
       }
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     };
-    const http = createHttpClient({ fetchImpl, maxRetries: 2 });
+    const http = createHttpClient({ fetchImpl, maxRetries: 2, sleep: async () => {} });
     await expect(http.fetchJson<{ ok: boolean }>("https://api.github.com/graphql")).resolves.toEqual({ ok: true });
     expect(calls).toBe(2);
   });
@@ -53,7 +55,7 @@ describe("http client", () => {
       }
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     };
-    const http = createHttpClient({ fetchImpl, maxRetries: 2 });
+    const http = createHttpClient({ fetchImpl, maxRetries: 2, sleep: async () => {} });
     await expect(http.fetchJson<{ ok: boolean }>("https://example.com/x")).resolves.toEqual({ ok: true });
     expect(calls).toBe(2);
   });
@@ -101,7 +103,7 @@ describe("http client", () => {
       }
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     };
-    const http = createHttpClient({ fetchImpl, maxRetries: 2 });
+    const http = createHttpClient({ fetchImpl, maxRetries: 2, sleep: async () => {} });
     await expect(http.fetchJson<{ ok: boolean }>("https://api.npmjs.org/downloads/point/last-week/left-pad")).resolves.toEqual({
       ok: true,
     });
@@ -122,5 +124,46 @@ describe("http client", () => {
       retryAfterMs: 12_000,
       remaining: 0,
     });
+  });
+
+  it("ignores Retry-After 0 for Cloudflare 429s and waits at least 15s", () => {
+    expect(
+      retryWaitMs({
+        attempt: 0,
+        retryAfterMs: 0,
+        rateLimited: true,
+        cloudflare: true,
+      }),
+    ).toBeGreaterThanOrEqual(15_000);
+    expect(
+      retryWaitMs({
+        attempt: 0,
+        retryAfterMs: 0,
+        rateLimited: true,
+        cloudflare: false,
+      }),
+    ).toBeGreaterThanOrEqual(15_000);
+  });
+
+  it("keeps retrying a 429 until the wait budget is spent, then throws", async () => {
+    let calls = 0;
+    const http = createHttpClient({
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response("error code: 1015", {
+          status: 429,
+          headers: { "retry-after": "0", "cf-mitigated": "challenge" },
+        });
+      },
+      maxRetries: 0,
+      sleep: async () => {},
+    });
+    await expect(
+      fetchJsonWithRateLimitWait(http, "https://api.npmjs.org/downloads/point/last-week/@scope%2Fpkg", {
+        sleep: async () => {},
+        maxWaitMs: 45_000,
+      }),
+    ).rejects.toMatchObject({ status: 429 });
+    expect(calls).toBeGreaterThan(1);
   });
 });

@@ -1,11 +1,12 @@
 import { z } from "zod";
-import { PYPISTATS_BASE } from "../lib/config.ts";
+import { PYPI_MIN_INTERVAL_MS, PYPISTATS_BASE } from "../lib/config.ts";
 import { computeCoverage } from "../lib/coverage.ts";
-import { HttpError } from "../lib/http.ts";
+import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import {
   clearCheckpoint,
   countFresh,
+  countFreshToday,
   isCarriedForward,
   loadCheckpoint,
   loadEntityCache,
@@ -13,9 +14,11 @@ import {
   persistCheckpoint,
   persistEntityCache,
   persistLastFetched,
-  resumeDueKeys,
+  prioritizeKeys,
+  resumeDailyDueKeys,
 } from "../lib/rolling.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
+import { sleep as defaultSleep } from "../lib/util.ts";
 import { sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "./types.ts";
 
 const RecentSchema = z.object({
@@ -64,6 +67,11 @@ export function normalizePypiRecent(snapshotDate: string, name: string, item: un
   });
 }
 
+function cachedWeekDownloads(item: unknown): number {
+  const parsed = RecentSchema.safeParse(item);
+  return parsed.success ? (parsed.data.data.last_week ?? 0) : 0;
+}
+
 function recordsFromCache(
   snapshotDate: string,
   keys: string[],
@@ -94,24 +102,28 @@ export const pypiAdapter: SourceAdapter = {
     const lastFetched = loadLastFetched(ctx.dataDir, "pypi");
     const cache = loadEntityCache(ctx.dataDir, "pypi");
     const checkpoint = loadCheckpoint(ctx.dataDir, "pypi");
-    const { dueKeys, resumed } = resumeDueKeys(allKeys, lastFetched, ctx.now, ctx.snapshotDate, checkpoint);
+    const { dueKeys: unorderedDue, resumed } = resumeDailyDueKeys(allKeys, lastFetched, ctx.snapshotDate, checkpoint);
+    const dueKeys = prioritizeKeys(unorderedDue, (key) => cachedWeekDownloads(cache[key]));
     const fetchedAt = ctx.collectedAt;
+    const sleepFn = ctx.sleep ?? defaultSleep;
 
     const finish = (input: {
       truncated: boolean;
       fetchedThisRun: number;
+      processed?: number;
       stoppedAt?: SourceResult["stoppedAt"];
     }): SourceResult => {
       const records = recordsFromCache(ctx.snapshotDate, allKeys, cache, lastFetched, fetchedAt);
+      const freshTodayCount = countFreshToday(allKeys, lastFetched, ctx.snapshotDate);
       const freshWithin7dCount = countFresh(allKeys, lastFetched, ctx.now);
-      const { coverage } = computeCoverage(allKeys.length, freshWithin7dCount);
+      const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
       persistLastFetched(ctx.dataDir, "pypi", lastFetched);
       persistEntityCache(ctx.dataDir, "pypi", cache);
       if (input.truncated) {
         persistCheckpoint(ctx.dataDir, "pypi", {
           snapshotDate: ctx.snapshotDate,
           dueKeys,
-          nextIndex: Math.min(dueKeys.length, input.fetchedThisRun),
+          nextIndex: Math.min(dueKeys.length, input.processed ?? input.fetchedThisRun),
           startedAt: checkpoint?.startedAt ?? fetchedAt,
         });
       } else {
@@ -124,6 +136,7 @@ export const pypiAdapter: SourceAdapter = {
         skipped: false,
         truncated: input.truncated,
         eligibleCount: allKeys.length,
+        freshTodayCount,
         freshWithin7dCount,
         fetchedThisRunCount: input.fetchedThisRun,
         coverage,
@@ -154,6 +167,7 @@ export const pypiAdapter: SourceAdapter = {
     });
 
     let fetchedThisRun = 0;
+    let processed = 0;
     let truncated = false;
     let stoppedAt: SourceResult["stoppedAt"];
 
@@ -166,7 +180,18 @@ export const pypiAdapter: SourceAdapter = {
           startedAt: checkpoint?.startedAt ?? fetchedAt,
         });
         try {
-          const payload = await ctx.http.fetchJson<unknown>(pypiRecentUrl(name));
+          const payload = await fetchJsonWithRateLimitWait<unknown>(ctx.http, pypiRecentUrl(name), {
+            sleep: sleepFn,
+            init: { minIntervalMs: PYPI_MIN_INTERVAL_MS },
+            onWait(waitMs, attempt, error) {
+              ctx.log.warn("pypi waiting out rate limit", {
+                waitMs,
+                attempt,
+                status: error.status,
+                name,
+              });
+            },
+          });
           if (RecentSchema.safeParse(payload).success) {
             cache[name] = payload;
             lastFetched[name] = fetchedAt;
@@ -175,6 +200,8 @@ export const pypiAdapter: SourceAdapter = {
         } catch (error) {
           if (error instanceof HttpError && error.status === 404) {
             lastFetched[name] = fetchedAt;
+            persistLastFetched(ctx.dataDir, "pypi", lastFetched);
+            processed = index + 1;
             continue;
           }
           if (error instanceof HttpError && (error.status === 429 || error.status === 403 || error.cloudflare)) {
@@ -182,6 +209,7 @@ export const pypiAdapter: SourceAdapter = {
           }
           ctx.log.warn("pypi package fetch failed", { name, error: String(error) });
         }
+        processed = index + 1;
         persistLastFetched(ctx.dataDir, "pypi", lastFetched);
         persistEntityCache(ctx.dataDir, "pypi", cache);
         if ((index + 1) % 50 === 0 || index + 1 === dueKeys.length) {
@@ -208,6 +236,6 @@ export const pypiAdapter: SourceAdapter = {
     }
 
     ctx.log.info("pypi collected", { requested: allKeys.length, due: dueKeys.length, fetchedThisRun, truncated });
-    return finish({ truncated, fetchedThisRun, stoppedAt });
+    return finish({ truncated, fetchedThisRun, processed, stoppedAt });
   },
 };

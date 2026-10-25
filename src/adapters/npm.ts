@@ -1,11 +1,12 @@
 import { z } from "zod";
-import { NPM_BULK_LIMIT, NPM_DOWNLOADS_BASE } from "../lib/config.ts";
+import { NPM_BULK_LIMIT, NPM_BULK_MIN_INTERVAL_MS, NPM_DOWNLOADS_BASE, NPM_SCOPED_MIN_INTERVAL_MS } from "../lib/config.ts";
 import { computeCoverage } from "../lib/coverage.ts";
-import { HttpError } from "../lib/http.ts";
+import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import {
   clearCheckpoint,
   countFresh,
+  countFreshToday,
   isCarriedForward,
   loadCheckpoint,
   loadEntityCache,
@@ -13,10 +14,11 @@ import {
   persistCheckpoint,
   persistEntityCache,
   persistLastFetched,
-  resumeDueKeys,
+  prioritizeKeys,
+  resumeDailyDueKeys,
 } from "../lib/rolling.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
-import { chunk } from "../lib/util.ts";
+import { chunk, sleep as defaultSleep } from "../lib/util.ts";
 import { sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "./types.ts";
 
 const PointSchema = z.object({
@@ -69,6 +71,11 @@ export function normalizeNpmPoint(snapshotDate: string, name: string, item: unkn
   });
 }
 
+function cachedDownloads(item: unknown): number {
+  const parsed = PointSchema.safeParse(item);
+  return parsed.success ? parsed.data.downloads : 0;
+}
+
 function rememberPoint(
   cache: Record<string, unknown>,
   lastFetched: Record<string, string>,
@@ -114,24 +121,28 @@ export const npmAdapter: SourceAdapter = {
     const lastFetched = loadLastFetched(ctx.dataDir, "npm");
     const cache = loadEntityCache(ctx.dataDir, "npm");
     const checkpoint = loadCheckpoint(ctx.dataDir, "npm");
-    const { dueKeys, resumed } = resumeDueKeys(allKeys, lastFetched, ctx.now, ctx.snapshotDate, checkpoint);
+    const { dueKeys: unorderedDue, resumed } = resumeDailyDueKeys(allKeys, lastFetched, ctx.snapshotDate, checkpoint);
+    const dueKeys = prioritizeKeys(unorderedDue, (key) => cachedDownloads(cache[key]));
     const fetchedAt = ctx.collectedAt;
+    const sleepFn = ctx.sleep ?? defaultSleep;
 
     const finish = (input: {
       truncated: boolean;
       fetchedThisRun: number;
+      processed?: number;
       stoppedAt?: SourceResult["stoppedAt"];
     }): SourceResult => {
       const records = recordsFromCache(ctx.snapshotDate, allKeys, cache, lastFetched, fetchedAt);
+      const freshTodayCount = countFreshToday(allKeys, lastFetched, ctx.snapshotDate);
       const freshWithin7dCount = countFresh(allKeys, lastFetched, ctx.now);
-      const { coverage } = computeCoverage(allKeys.length, freshWithin7dCount);
+      const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
       persistLastFetched(ctx.dataDir, "npm", lastFetched);
       persistEntityCache(ctx.dataDir, "npm", cache);
       if (input.truncated) {
         persistCheckpoint(ctx.dataDir, "npm", {
           snapshotDate: ctx.snapshotDate,
           dueKeys,
-          nextIndex: Math.min(dueKeys.length, input.fetchedThisRun),
+          nextIndex: Math.min(dueKeys.length, input.processed ?? input.fetchedThisRun),
           startedAt: checkpoint?.startedAt ?? fetchedAt,
         });
       } else {
@@ -144,6 +155,7 @@ export const npmAdapter: SourceAdapter = {
         skipped: false,
         truncated: input.truncated,
         eligibleCount: allKeys.length,
+        freshTodayCount,
         freshWithin7dCount,
         fetchedThisRunCount: input.fetchedThisRun,
         coverage,
@@ -183,6 +195,20 @@ export const npmAdapter: SourceAdapter = {
     let processed = 0;
     let stoppedAt: SourceResult["stoppedAt"];
 
+    const fetchNpm = async (url: string, minIntervalMs: number): Promise<unknown> =>
+      fetchJsonWithRateLimitWait<unknown>(ctx.http, url, {
+        sleep: sleepFn,
+        init: { minIntervalMs },
+        onWait(waitMs, attempt, error) {
+          ctx.log.warn("npm waiting out rate limit", {
+            waitMs,
+            attempt,
+            status: error.status,
+            cloudflare: error.cloudflare,
+          });
+        },
+      });
+
     try {
       const batches = chunk(unscoped, NPM_BULK_LIMIT);
       for (const [index, batch] of batches.entries()) {
@@ -192,7 +218,7 @@ export const npmAdapter: SourceAdapter = {
           nextIndex: processed,
           startedAt: checkpoint?.startedAt ?? fetchedAt,
         });
-        const payload = await ctx.http.fetchJson<unknown>(npmBulkUrl(batch));
+        const payload = await fetchNpm(npmBulkUrl(batch), NPM_BULK_MIN_INTERVAL_MS);
         if (batch.length === 1) {
           if (rememberPoint(cache, lastFetched, batch[0]!, payload, fetchedAt)) {
             fetchedThisRun += 1;
@@ -227,12 +253,12 @@ export const npmAdapter: SourceAdapter = {
           startedAt: checkpoint?.startedAt ?? fetchedAt,
         });
         try {
-          const payload = await ctx.http.fetchJson<unknown>(npmScopedUrl(name));
+          const payload = await fetchNpm(npmScopedUrl(name), NPM_SCOPED_MIN_INTERVAL_MS);
           if (rememberPoint(cache, lastFetched, name, payload, fetchedAt)) {
             fetchedThisRun += 1;
           }
         } catch (error) {
-          if (error instanceof HttpError && (error.status === 429 || error.cloudflare)) {
+          if (error instanceof HttpError && (error.status === 429 || error.status === 403 || error.cloudflare)) {
             throw error;
           }
           ctx.log.warn("npm scoped package fetch failed", { name, error: String(error) });
@@ -251,6 +277,7 @@ export const npmAdapter: SourceAdapter = {
         stoppedAt = sourceStoppedAt("npm", error, { page: Math.floor(processed / Math.max(NPM_BULK_LIMIT, 1)) + 1 });
         ctx.log.warn("npm stopped early after rate limit; keeping partial snapshot", {
           fetchedThisRun,
+          processed,
           requested: allKeys.length,
           due: dueKeys.length,
           error: stoppedAt.error,
@@ -261,6 +288,6 @@ export const npmAdapter: SourceAdapter = {
     }
 
     ctx.log.info("npm collected", { requested: allKeys.length, due: dueKeys.length, fetchedThisRun, truncated });
-    return finish({ truncated, fetchedThisRun, stoppedAt });
+    return finish({ truncated, fetchedThisRun, processed, stoppedAt });
   },
 };

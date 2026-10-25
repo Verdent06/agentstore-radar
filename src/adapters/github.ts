@@ -3,9 +3,11 @@ import { GITHUB_GRAPHQL_BATCH, GITHUB_GRAPHQL_URL, MAX_RATE_LIMIT_WAIT_MS } from
 import { computeCoverage } from "../lib/coverage.ts";
 import { HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, type GithubRepoRef } from "../lib/matching.ts";
+import type { SleepFn } from "../lib/retry.ts";
 import {
   clearCheckpoint,
   countFresh,
+  countFreshToday,
   isCarriedForward,
   loadCheckpoint,
   loadEntityCache,
@@ -13,10 +15,11 @@ import {
   persistCheckpoint,
   persistEntityCache,
   persistLastFetched,
-  resumeDueKeys,
+  prioritizeKeys,
+  resumeDailyDueKeys,
 } from "../lib/rolling.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
-import { chunk, sleep } from "../lib/util.ts";
+import { chunk, sleep as defaultSleep } from "../lib/util.ts";
 import { sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "./types.ts";
 
 const RepoNodeSchema = z
@@ -148,6 +151,7 @@ function isGraphqlRateLimit(errors: Array<{ message: string }> | undefined): boo
 async function waitForGraphqlBudget(
   rateLimit: z.infer<typeof RateLimitSchema> | undefined,
   log: CollectContext["log"],
+  sleepFn: SleepFn,
 ): Promise<void> {
   if (!rateLimit || rateLimit.remaining >= GITHUB_GRAPHQL_BATCH) {
     return;
@@ -171,7 +175,14 @@ async function waitForGraphqlBudget(
     resetAt: rateLimit.resetAt,
     waitMs,
   });
-  await sleep(waitMs);
+  await sleepFn(waitMs);
+}
+
+function cachedStars(item: unknown): number {
+  if (item && typeof item === "object" && "stargazerCount" in item && typeof item.stargazerCount === "number") {
+    return item.stargazerCount;
+  }
+  return 0;
 }
 
 function refFromKey(key: string): GithubRepoRef | undefined {
@@ -214,20 +225,24 @@ export const githubAdapter: SourceAdapter = {
     const lastFetched = loadLastFetched(ctx.dataDir, "github");
     const cache = loadEntityCache(ctx.dataDir, "github");
     const checkpoint = loadCheckpoint(ctx.dataDir, "github");
-    const { dueKeys, resumed } = resumeDueKeys(allKeys, lastFetched, ctx.now, ctx.snapshotDate, checkpoint);
+    const { dueKeys: unorderedDue, resumed } = resumeDailyDueKeys(allKeys, lastFetched, ctx.snapshotDate, checkpoint);
+    const dueKeys = prioritizeKeys(unorderedDue, (key) => cachedStars(cache[key]));
     const fetchedAt = ctx.collectedAt;
+    const sleepFn = ctx.sleep ?? defaultSleep;
 
     const finish = (input: {
       skipped: boolean;
       skipReason?: string;
       truncated: boolean;
       fetchedThisRun: number;
+      processed?: number;
       rawExtra?: Record<string, unknown>;
       stoppedAt?: SourceResult["stoppedAt"];
     }): SourceResult => {
       const records = recordsFromCache(ctx.snapshotDate, allKeys, cache, lastFetched, fetchedAt);
+      const freshTodayCount = countFreshToday(allKeys, lastFetched, ctx.snapshotDate);
       const freshWithin7dCount = countFresh(allKeys, lastFetched, ctx.now);
-      const { coverage } = computeCoverage(allKeys.length, freshWithin7dCount);
+      const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
       const lastFetchedAt = Object.values(lastFetched).sort().at(-1);
       persistLastFetched(ctx.dataDir, "github", lastFetched);
       persistEntityCache(ctx.dataDir, "github", cache);
@@ -235,7 +250,7 @@ export const githubAdapter: SourceAdapter = {
         persistCheckpoint(ctx.dataDir, "github", {
           snapshotDate: ctx.snapshotDate,
           dueKeys,
-          nextIndex: Math.min(dueKeys.length, input.fetchedThisRun),
+          nextIndex: Math.min(dueKeys.length, input.processed ?? input.fetchedThisRun),
           startedAt: checkpoint?.startedAt ?? fetchedAt,
         });
       } else {
@@ -249,6 +264,7 @@ export const githubAdapter: SourceAdapter = {
         skipReason: input.skipReason,
         truncated: input.truncated,
         eligibleCount: allKeys.length,
+        freshTodayCount,
         freshWithin7dCount,
         fetchedThisRunCount: input.fetchedThisRun,
         coverage,
@@ -279,6 +295,7 @@ export const githubAdapter: SourceAdapter = {
           skipped: true,
           skipReason: "GITHUB_TOKEN not set",
           eligibleCount: allKeys.length,
+          freshTodayCount: 0,
           freshWithin7dCount: 0,
           fetchedThisRunCount: 0,
           coverage: allKeys.length === 0 ? 1 : 0,
@@ -300,6 +317,7 @@ export const githubAdapter: SourceAdapter = {
     });
 
     let fetchedThisRun = 0;
+    let processed = 0;
     let truncated = false;
     let stoppedAt: SourceResult["stoppedAt"];
     const unresolvedRepos: string[] = [];
@@ -313,7 +331,7 @@ export const githubAdapter: SourceAdapter = {
         persistCheckpoint(ctx.dataDir, "github", {
           snapshotDate: ctx.snapshotDate,
           dueKeys,
-          nextIndex: index * GITHUB_GRAPHQL_BATCH,
+          nextIndex: processed,
           startedAt: checkpoint?.startedAt ?? fetchedAt,
         });
         const payload = GraphqlResponseSchema.parse(
@@ -332,6 +350,11 @@ export const githubAdapter: SourceAdapter = {
         for (const error of unresolved) {
           const repo = repoNameFromGraphqlError(error, batch) ?? error.message;
           unresolvedRepos.push(repo);
+          const alias = typeof error.path?.[0] === "string" ? error.path[0] : undefined;
+          const aliasIndex = alias && /^r\d+$/.test(alias) ? Number(alias.slice(1)) : Number.NaN;
+          const requested = Number.isInteger(aliasIndex) ? batch[aliasIndex] : undefined;
+          const key = requested ? `${requested.owner}/${requested.repo}`.toLowerCase() : repo.toLowerCase();
+          lastFetched[key] = fetchedAt;
           ctx.log.warn("github could not resolve repository", { repo, error: error.message });
         }
         if (isGraphqlRateLimit(otherErrors) && !payload.data) {
@@ -347,34 +370,34 @@ export const githubAdapter: SourceAdapter = {
             sample: otherErrors[0]?.message,
           });
         }
-        if (!payload.data) {
-          continue;
-        }
         let rateLimit: z.infer<typeof RateLimitSchema> | undefined;
-        for (const [alias, node] of Object.entries(payload.data)) {
-          if (alias === "rateLimit") {
-            const parsed = RateLimitSchema.safeParse(node);
-            if (parsed.success) {
-              rateLimit = parsed.data;
+        if (payload.data) {
+          for (const [alias, node] of Object.entries(payload.data)) {
+            if (alias === "rateLimit") {
+              const parsed = RateLimitSchema.safeParse(node);
+              if (parsed.success) {
+                rateLimit = parsed.data;
+              }
+              continue;
             }
-            continue;
+            if (!node || typeof node !== "object") {
+              continue;
+            }
+            const parsed = RepoNodeSchema.safeParse(node);
+            if (!parsed.success) {
+              continue;
+            }
+            const aliasIndex = Number(alias.slice(1));
+            const requested = Number.isInteger(aliasIndex) ? batch[aliasIndex] : undefined;
+            const key = requested
+              ? `${requested.owner}/${requested.repo}`.toLowerCase()
+              : parsed.data.nameWithOwner.toLowerCase();
+            cache[key] = parsed.data;
+            lastFetched[key] = fetchedAt;
+            fetchedThisRun += 1;
           }
-          if (!node || typeof node !== "object") {
-            continue;
-          }
-          const parsed = RepoNodeSchema.safeParse(node);
-          if (!parsed.success) {
-            continue;
-          }
-          const aliasIndex = Number(alias.slice(1));
-          const requested = Number.isInteger(aliasIndex) ? batch[aliasIndex] : undefined;
-          const key = requested
-            ? `${requested.owner}/${requested.repo}`.toLowerCase()
-            : parsed.data.nameWithOwner.toLowerCase();
-          cache[key] = parsed.data;
-          lastFetched[key] = fetchedAt;
-          fetchedThisRun += 1;
         }
+        processed += batch.length;
         persistLastFetched(ctx.dataDir, "github", lastFetched);
         persistEntityCache(ctx.dataDir, "github", cache);
         if ((index + 1) % 20 === 0 || index + 1 === batches.length) {
@@ -382,10 +405,10 @@ export const githubAdapter: SourceAdapter = {
             batch: index + 1,
             batches: batches.length,
             fetchedThisRun,
-            fresh: countFresh(allKeys, lastFetched, ctx.now),
+            freshToday: countFreshToday(allKeys, lastFetched, ctx.snapshotDate),
           });
         }
-        await waitForGraphqlBudget(rateLimit, ctx.log);
+        await waitForGraphqlBudget(rateLimit, ctx.log, sleepFn);
       }
     } catch (error) {
       if (error instanceof HttpError && error.status === 401 && fetchedThisRun === 0 && Object.keys(cache).length === 0) {
@@ -397,6 +420,7 @@ export const githubAdapter: SourceAdapter = {
           skipped: true,
           skipReason: "GITHUB_TOKEN rejected (HTTP 401)",
           eligibleCount: allKeys.length,
+          freshTodayCount: 0,
           freshWithin7dCount: 0,
           fetchedThisRunCount: 0,
           coverage: allKeys.length === 0 ? 1 : 0,
@@ -410,9 +434,10 @@ export const githubAdapter: SourceAdapter = {
         (fetchedThisRun > 0 || Object.keys(cache).length > 0)
       ) {
         truncated = true;
-        stoppedAt = sourceStoppedAt("github", error, { page: Math.floor(fetchedThisRun / GITHUB_GRAPHQL_BATCH) + 1 });
+        stoppedAt = sourceStoppedAt("github", error, { page: Math.floor(processed / GITHUB_GRAPHQL_BATCH) + 1 });
         ctx.log.warn("github stopped early after rate limit; keeping partial snapshot", {
           fetchedThisRun,
+          processed,
           requested: allKeys.length,
           due: dueKeys.length,
           error: stoppedAt.error,
@@ -433,6 +458,7 @@ export const githubAdapter: SourceAdapter = {
       skipped: false,
       truncated,
       fetchedThisRun,
+      processed,
       stoppedAt,
       rawExtra: unresolvedRepos.length > 0 ? { unresolvedRepos } : undefined,
     });

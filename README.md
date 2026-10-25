@@ -16,9 +16,9 @@ v1 uses **only sanctioned public APIs**. We do **not** scrape ChatGPT or claude.
 | Official MCP Registry | `GET /v0.1/servers` (cursor + `version=latest`) | catalog, packages, repo |
 | Smithery | `GET /servers` (`useCount`, stable `seed` pagination) | connections |
 | Gemini CLI gallery | `https://geminicli.com/extensions.json` | stars, lastUpdated |
-| GitHub GraphQL | batches of 50 `repository` nodes via `GH_STATS_TOKEN` or Actions `GITHUB_TOKEN` | stars, forks, open issues, `pushed_at` |
-| npm | bulk `downloads/point/last-week` (128 unscoped; scoped one-by-one) | weekly downloads |
-| PyPI | `pypistats.org/api/packages/{pkg}/recent` (throttled, rolling) | weekly / monthly downloads |
+| GitHub GraphQL | batches of 50 `repository` nodes via `GH_STATS_TOKEN` or Actions `GITHUB_TOKEN` | stars, forks, open issues, `pushed_at` (daily) |
+| npm | bulk `downloads/point/last-week` (128 unscoped; scoped one-by-one with 429 patience) | weekly downloads (daily) |
+| PyPI | `pypistats.org/api/packages/{pkg}/recent` (throttled, daily) | weekly / monthly downloads |
 
 Research notes, rate-limit behavior, and skipped ideas: [docs/SOURCES.md](docs/SOURCES.md).
 
@@ -40,7 +40,7 @@ data/normalized/<YYYY-MM-DD>/source_rows.ndjson(.gz)
 data/normalized/<YYYY-MM-DD>/apps.ndjson(.gz)
 data/normalized/<YYYY-MM-DD>/manifest.json
 data/backups/normalized/<YYYY-MM-DD>/<stamp>/  # previous complete day kept on --force
-data/state/<source>/last_fetched.json    # rolling weekly refresh
+data/state/<source>/last_fetched.json    # skip keys already fetched this UTC day
 data/state/<source>/cache.json           # last-known enrichment payload
 data/state/<source>/checkpoint.json      # resume mid-run after rate limits
 ```
@@ -54,7 +54,7 @@ npm run report
 
 `--data` wins over `DATA_DIR`, which wins over `./data`.
 
-Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true only when GitHub/npm/PyPI reused a value fetched on a **previous snapshot day**, not a live fetch earlier the same day). Merged `apps.ndjson` copies those onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*` freshness fields, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a weekly refresh or a truncated MCP catalog is not treated as a one-day jump.
+Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true only when GitHub/npm/PyPI/Smithery `useCount` reused a value fetched on a **previous snapshot day**, not a live fetch earlier the same day). Smithery browse-list `useCount` is a stale search index; live counts come from `GET /servers?q={qualifiedName}`. Merged `apps.ndjson` copies those onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*` freshness fields, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a truncated MCP catalog is not treated as a one-day jump.
 
 `manifest.json` always records `partial: true|false` and `completedSources: [...]`. Incomplete sources include `stoppedAt: { source, page, cursor, error }` so a mid-pagination MCP 500 can resume from the last cursor instead of page 1.
 
@@ -104,7 +104,7 @@ Optional env:
 
 ## Automation
 
-- [`.github/workflows/collect.yml`](.github/workflows/collect.yml) — primary cron `17 6 * * *` (UTC) plus a same-day **backstop** at `17 18 * * *` that only collects if today's snapshot is missing or incomplete (`--if-incomplete`). `workflow_dispatch` always collects unless `if_incomplete` is set. Job `timeout-minutes: 360` (GitHub-hosted max) so GitHub/npm/PyPI can wait through rate-limit resets; the collect step itself is capped at 330 minutes so commit/alert still run. Checks out the private data repo over SSH (`DATA_REPO_DEPLOY_KEY`), **once** copies `data/` from this repo’s git history if the data repo has no snapshots yet (writes `data/.migrated-from-public`), then collects into `DATA_DIR` and pushes **only** to the data repo (pull `--rebase` + retries). After that first success it never reads public history again. `seed_only` skips collect and just does that one-time copy.
+- [`.github/workflows/collect.yml`](.github/workflows/collect.yml) — primary cron `17 6 * * *` (UTC) plus a same-day **backstop** at `17 18 * * *` that only collects if today's snapshot is missing or incomplete (`--if-incomplete`). `workflow_dispatch` always collects unless `if_incomplete` is set. `skip_push` collects without committing to the private data repo (branch verification; does not overwrite today's published snapshot). Job `timeout-minutes: 360` (GitHub-hosted max) so GitHub/npm/PyPI can wait through rate-limit resets; the collect step itself is capped at 330 minutes so commit/alert still run. Checks out the private data repo over SSH (`DATA_REPO_DEPLOY_KEY`), **once** copies `data/` from this repo’s git history if the data repo has no snapshots yet (writes `data/.migrated-from-public`), then collects into `DATA_DIR` and pushes **only** to the data repo (pull `--rebase` + retries). After that first success it never reads public history again. `seed_only` skips collect and just does that one-time copy. Complete same-day snapshots are not overwritten unless `force` is set.
 - Sources are collected independently with retries. One source failing still writes the others and records the failure on that day's `manifest.json`. Health coverage alerts `continue-on-error` so a low npm fetch rate does not mark a landed snapshot as a failed workflow.
 - If a run fails to write a usable snapshot, or the backstop still does not have today's snapshot, the job opens or comments on a public issue titled `Collector missed YYYY-MM-DD` in `Verdent06/agentstore-radar` (`issues: write`). No email/Slack.
 - [`.github/workflows/answer-share.yml`](.github/workflows/answer-share.yml) — weekly cron (Mondays `17 7 * * 1`) plus `workflow_dispatch`. Same private-repo deploy key. Asks each configured assistant which apps/tools/MCP servers it would recommend (`N=3` for variance). Missing provider keys are skipped. `MAX_CALLS` is a hard cost cap (workflow default `1200`).
@@ -138,18 +138,19 @@ Rough full-run cost (100 prompts × 3 repeats = 300 calls / provider, web search
 `npm run health` exits non-zero when:
 
 - a source's row count drops **more than 30%** versus the previous snapshot, or
-- a non-skipped source's **coverage** is below **70%** (`fetched / eligible`, where fetched means refreshed within 7 days)
+- a non-skipped source's **coverage** is below **70%** (`fresh today / eligible`)
 
-Each source's `eligibleCount`, `freshWithin7dCount` (keys fetched inside the rolling 7-day window), `fetchedThisRunCount` (keys requested from the live API in this collect), and `coverage` (`freshWithin7dCount / eligibleCount`) are stored on that day's `manifest.json`. Catalog sources are typically 100% this run. GitHub / npm / PyPI use rolling weekly refresh: yesterday's last-known stats are carried forward, and only stale or new keys are fetched. Health and collector-missed alerts open issues in this public repo with the workflow `GITHUB_TOKEN` (`issues: write`). Alerts do not attach snapshot files. Deleted or renamed GitHub repos log a per-app `could not resolve repository` warning and do not fail the run.
+Each source's `eligibleCount`, `freshTodayCount` (keys fetched on this UTC date), `freshWithin7dCount` (keys fetched inside a 7-day window), `fetchedThisRunCount` (keys requested from the live API in this collect), and `coverage` (`freshTodayCount / eligibleCount`) are stored on that day's `manifest.json`. Catalog sources are typically 100% this run. GitHub / npm / PyPI refresh every key not already fetched today; last-known stats are carried forward only when a live call did not finish. Health and collector-missed alerts open issues in this public repo with the workflow `GITHUB_TOKEN` (`issues: write`). Alerts do not attach snapshot files. Deleted or renamed GitHub repos log a per-app `could not resolve repository` warning and do not fail the run.
 
 **Coverage expectations**
 
 | Source | Eligible set | One-run target | Fallback |
 | --- | --- | --- | --- |
-| GitHub | every discovered repo with a GitHub URL | all due repos via 50-wide GraphQL (Actions token ~5k points/hour; a 6h run can cover tens of thousands if it waits for resets) | rolling: skip keys fresher than 7 days so every repo refreshes at least weekly |
-| npm | every discovered npm package | unscoped in batches of 128; scoped one-by-one | same weekly rolling + resume after Cloudflare 1015 / 429 |
-| PyPI | every discovered PyPI package | throttled `pypistats` recent | weekly rolling + resume after 429 |
-| MCP / Smithery / Gemini | catalog page rows | full catalog in the run | n/a (no rolling) |
+| GitHub | every discovered repo with a GitHub URL | all repos via 50-wide GraphQL (most-starred first). ~30k fits a 6h run | carry forward last-known stars; resume from checkpoint |
+| npm | every discovered npm package | unscoped in batches of 128; scoped one-by-one with 1.2s pacing and 429 patience | checkpoint + resume after Cloudflare 1015 / 429 |
+| PyPI | every discovered PyPI package | throttled `pypistats` recent for every package | checkpoint + resume after 429 |
+| MCP / Gemini | catalog page rows | full catalog in the run | n/a |
+| Smithery | catalog page rows + live `useCount` via `?q=` | full catalog plus a search refresh per server | search miss keeps last live search count (`carried_forward`) |
 
 ## Development
 

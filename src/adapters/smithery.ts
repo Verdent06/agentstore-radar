@@ -1,8 +1,21 @@
 import { z } from "zod";
-import { SMITHERY_SERVERS_URL, SMITHERY_STABLE_SEED } from "../lib/config.ts";
-import { HttpError } from "../lib/http.ts";
+import { SMITHERY_SERVERS_URL, SMITHERY_STABLE_SEED, SMITHERY_USECOUNT_PAGE_SIZE } from "../lib/config.ts";
+import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, githubRepoUrl, parseGithubRepo } from "../lib/matching.ts";
+import {
+  clearCheckpoint,
+  isCarriedForward,
+  loadCheckpoint,
+  loadEntityCache,
+  loadLastFetched,
+  persistCheckpoint,
+  persistEntityCache,
+  persistLastFetched,
+  prioritizeKeys,
+  resumeDailyDueKeys,
+} from "../lib/rolling.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
+import { errorMessage, sleep as defaultSleep } from "../lib/util.ts";
 import { CollectSourceError, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "./types.ts";
 
 const ServerSchema = z
@@ -44,7 +57,52 @@ export type SmitheryRawSnapshot = {
   pages: number;
   totalCount?: number;
   servers: unknown[];
+  useCountRefresh?: {
+    endpoint: string;
+    attempted: number;
+    updated: number;
+    unchanged: number;
+    missed: number;
+    truncated: boolean;
+  };
 };
+
+export type SmitheryUseCountCache = {
+  useCount: number | null;
+};
+
+export function smitheryUseCountSearchUrl(qualifiedName: string): string {
+  const url = new URL(SMITHERY_SERVERS_URL);
+  url.searchParams.set("q", qualifiedName);
+  url.searchParams.set("pageSize", String(SMITHERY_USECOUNT_PAGE_SIZE));
+  return url.toString();
+}
+
+function listUseCount(item: unknown): number {
+  const parsed = ServerSchema.safeParse(item);
+  return parsed.success && typeof parsed.data.useCount === "number" ? parsed.data.useCount : 0;
+}
+
+function overlayUseCount(item: unknown, useCount: number | null): unknown {
+  if (!item || typeof item !== "object") {
+    return item;
+  }
+  return { ...item, useCount };
+}
+
+function searchUseCount(payload: unknown, qualifiedName: string): number | null | undefined {
+  const parsed = ListResponseSchema.safeParse(payload);
+  if (!parsed.success) {
+    return undefined;
+  }
+  const match = parsed.data.servers
+    .map((item) => ServerSchema.safeParse(item))
+    .find((item) => item.success && item.data.qualifiedName === qualifiedName);
+  if (!match?.success) {
+    return undefined;
+  }
+  return match.data.useCount ?? null;
+}
 
 export function normalizeSmitheryServer(snapshotDate: string, item: unknown): SourceRow | null {
   const parsed = ServerSchema.safeParse(item);
@@ -138,15 +196,149 @@ export const smitheryAdapter: SourceAdapter = {
       });
     }
 
+    const lastFetched = loadLastFetched(ctx.dataDir, "smithery");
+    const cache = loadEntityCache<SmitheryUseCountCache>(ctx.dataDir, "smithery");
+    const checkpoint = loadCheckpoint(ctx.dataDir, "smithery");
+    const sleepFn = ctx.sleep ?? defaultSleep;
+    const fetchedAt = ctx.collectedAt;
+
+    const parsedServers = servers.map((item, index) => ({ item, index, parsed: ServerSchema.safeParse(item) }));
+    const indexesByName = new Map<string, number[]>();
+    const listCountByName = new Map<string, number>();
+    const allKeys: string[] = [];
+    for (const row of parsedServers) {
+      if (!row.parsed.success) {
+        continue;
+      }
+      const name = row.parsed.data.qualifiedName;
+      if (!indexesByName.has(name)) {
+        allKeys.push(name);
+        listCountByName.set(name, listUseCount(row.item));
+      }
+      const indexes = indexesByName.get(name) ?? [];
+      indexes.push(row.index);
+      indexesByName.set(name, indexes);
+    }
+    const { dueKeys: unorderedDue, resumed } = resumeDailyDueKeys(allKeys, lastFetched, ctx.snapshotDate, checkpoint);
+    const dueKeys = prioritizeKeys(unorderedDue, (key) => {
+      const cached = cache[key]?.useCount;
+      if (typeof cached === "number") {
+        return cached;
+      }
+      return listCountByName.get(key) ?? 0;
+    });
+
+    let useCountAttempted = 0;
+    let useCountUpdated = 0;
+    let useCountUnchanged = 0;
+    let useCountMissed = 0;
+    let useCountTruncated = false;
+    let processed = 0;
+
+    ctx.log.info("smithery refreshing useCount via search", {
+      catalog: allKeys.length,
+      due: dueKeys.length,
+      resumed,
+    });
+
+    try {
+      for (const [index, name] of dueKeys.entries()) {
+        persistCheckpoint(ctx.dataDir, "smithery", {
+          snapshotDate: ctx.snapshotDate,
+          dueKeys,
+          nextIndex: index,
+          startedAt: checkpoint?.startedAt ?? fetchedAt,
+        });
+        useCountAttempted += 1;
+        try {
+          const payload = await fetchJsonWithRateLimitWait<unknown>(ctx.http, smitheryUseCountSearchUrl(name), {
+            sleep: sleepFn,
+            init: { headers },
+            onWait(waitMs, attempt, error) {
+              ctx.log.warn("smithery waiting out rate limit", { waitMs, attempt, status: error.status, name });
+            },
+          });
+          const live = searchUseCount(payload, name);
+          if (live === undefined) {
+            useCountMissed += 1;
+          } else {
+            const previous = cache[name]?.useCount;
+            cache[name] = { useCount: live };
+            lastFetched[name] = fetchedAt;
+            if (previous === live) {
+              useCountUnchanged += 1;
+            } else {
+              useCountUpdated += 1;
+            }
+            for (const serverIndex of indexesByName.get(name) ?? []) {
+              servers[serverIndex] = overlayUseCount(servers[serverIndex], live);
+            }
+          }
+        } catch (error) {
+          if (error instanceof HttpError && (error.status === 429 || error.status === 403 || error.cloudflare)) {
+            throw error;
+          }
+          useCountMissed += 1;
+          ctx.log.warn("smithery useCount search failed", { name, error: String(error) });
+        }
+        processed = index + 1;
+        persistLastFetched(ctx.dataDir, "smithery", lastFetched);
+        persistEntityCache(ctx.dataDir, "smithery", cache);
+        if ((index + 1) % 500 === 0 || index + 1 === dueKeys.length) {
+          ctx.log.info("smithery useCount progress", {
+            done: index + 1,
+            total: dueKeys.length,
+            updated: useCountUpdated,
+            missed: useCountMissed,
+          });
+        }
+      }
+      clearCheckpoint(ctx.dataDir, "smithery");
+    } catch (error) {
+      if (error instanceof HttpError && (error.status === 429 || error.status === 403 || error.cloudflare) && processed > 0) {
+        useCountTruncated = true;
+        persistCheckpoint(ctx.dataDir, "smithery", {
+          snapshotDate: ctx.snapshotDate,
+          dueKeys,
+          nextIndex: processed,
+          startedAt: checkpoint?.startedAt ?? fetchedAt,
+        });
+        ctx.log.warn("smithery useCount refresh stopped after rate limit; keeping search hits and list fallback", {
+          attempted: useCountAttempted,
+          updated: useCountUpdated,
+          error: errorMessage(error),
+        });
+      } else if (processed > 0) {
+        useCountTruncated = true;
+        ctx.log.warn("smithery useCount refresh stopped; keeping search hits and list fallback", {
+          attempted: useCountAttempted,
+          error: String(error),
+        });
+      } else {
+        ctx.log.warn("smithery useCount refresh failed; stamping list useCount as not live", { error: String(error) });
+      }
+    }
+
     const records: SourceRow[] = [];
     let invalid = 0;
     for (const item of servers) {
-      const row = normalizeSmitheryServer(ctx.snapshotDate, item);
+      const parsed = ServerSchema.safeParse(item);
+      if (!parsed.success) {
+        invalid += 1;
+        continue;
+      }
+      const name = parsed.data.qualifiedName;
+      const cached = cache[name];
+      const fetched = lastFetched[name];
+      const liveToday = Boolean(fetched && !isCarriedForward(fetched, ctx.snapshotDate, fetchedAt) && cached);
+      const useCount = liveToday ? cached?.useCount ?? parsed.data.useCount ?? null : (cached?.useCount ?? parsed.data.useCount ?? null);
+      const row = normalizeSmitheryServer(ctx.snapshotDate, overlayUseCount(item, useCount));
       if (!row) {
         invalid += 1;
         continue;
       }
-      records.push(withObservation(row, ctx.collectedAt, false));
+      const observationAt = liveToday ? fetchedAt : (fetched ?? null);
+      records.push(withObservation(row, observationAt, !liveToday));
       if (row.repo_url) {
         const ref = parseGithubRepo(row.repo_url);
         if (ref) {
@@ -161,7 +353,15 @@ export const smitheryAdapter: SourceAdapter = {
       throw new Error(`smithery validation failed for ${invalid}/${servers.length} rows`);
     }
 
-    ctx.log.info("smithery collected", { pages, rows: records.length, totalCount, truncated });
+    ctx.log.info("smithery collected", {
+      pages,
+      rows: records.length,
+      totalCount,
+      truncated,
+      useCountAttempted,
+      useCountUpdated,
+      useCountTruncated,
+    });
     const raw: SmitheryRawSnapshot = {
       endpoint: SMITHERY_SERVERS_URL,
       fetchedAt: ctx.collectedAt,
@@ -169,6 +369,14 @@ export const smitheryAdapter: SourceAdapter = {
       pages,
       totalCount,
       servers,
+      useCountRefresh: {
+        endpoint: `${SMITHERY_SERVERS_URL}?q=`,
+        attempted: useCountAttempted,
+        updated: useCountUpdated,
+        unchanged: useCountUnchanged,
+        missed: useCountMissed,
+        truncated: useCountTruncated,
+      },
     };
     return {
       source: "smithery",
@@ -179,6 +387,8 @@ export const smitheryAdapter: SourceAdapter = {
       failed: false,
       error: stoppedAt?.error,
       stoppedAt,
+      fetchedThisRunCount: records.length,
+      freshTodayCount: records.filter((row) => row.carried_forward !== true).length,
       raw,
       records,
     };
