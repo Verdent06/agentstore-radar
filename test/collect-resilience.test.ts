@@ -34,6 +34,11 @@ const silent = createLogger({
 const catalogs = [
   { match: "api.smithery.ai/servers", body: loadFixture("smithery-page.json") },
   { match: "geminicli.com/extensions.json", body: loadFixture("gemini.json") },
+  {
+    match: "api.npmjs.org/downloads/point/last-week/@example%2Fweather-mcp",
+    body: loadFixture<Record<string, unknown>>("npm-point.json")["@example/weather-mcp"],
+  },
+  { match: "pypistats.org/api/packages/example-files-mcp/recent", body: loadFixture("pypi-recent.json") },
 ];
 
 describe("collect resilience", () => {

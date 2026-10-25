@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { NPM_BULK_LIMIT, NPM_BULK_MIN_INTERVAL_MS, NPM_DOWNLOADS_BASE, NPM_SCOPED_MIN_INTERVAL_MS } from "../lib/config.ts";
+import { NPM_BULK_LIMIT, NPM_BULK_MIN_INTERVAL_MS, NPM_DOWNLOADS_BASE, NPM_PARTIAL_FAILURE_RATIO, NPM_SCOPED_MIN_INTERVAL_MS } from "../lib/config.ts";
 import { computeCoverage } from "../lib/coverage.ts";
 import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
@@ -138,11 +138,12 @@ export const npmAdapter: SourceAdapter = {
       const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
       persistLastFetched(ctx.dataDir, "npm", lastFetched);
       persistEntityCache(ctx.dataDir, "npm", cache);
-      if (input.truncated) {
+      const processed = input.processed ?? input.fetchedThisRun;
+      if (input.truncated && processed < dueKeys.length) {
         persistCheckpoint(ctx.dataDir, "npm", {
           snapshotDate: ctx.snapshotDate,
           dueKeys,
-          nextIndex: Math.min(dueKeys.length, input.processed ?? input.fetchedThisRun),
+          nextIndex: Math.min(dueKeys.length, processed),
           startedAt: checkpoint?.startedAt ?? fetchedAt,
         });
       } else {
@@ -284,6 +285,26 @@ export const npmAdapter: SourceAdapter = {
         });
       } else {
         throw error;
+      }
+    }
+
+    if (!truncated && dueKeys.length > 0) {
+      const failedDue = dueKeys.length - fetchedThisRun;
+      const failRatio = failedDue / dueKeys.length;
+      if (failRatio > NPM_PARTIAL_FAILURE_RATIO) {
+        truncated = true;
+        stoppedAt = sourceStoppedAt(
+          "npm",
+          new Error(
+            `npm failed ${failedDue}/${dueKeys.length} due keys (${(failRatio * 100).toFixed(1)}% > ${NPM_PARTIAL_FAILURE_RATIO * 100}%)`,
+          ),
+        );
+        ctx.log.warn("npm marking source partial; too many rows failed", {
+          fetchedThisRun,
+          due: dueKeys.length,
+          failedDue,
+          failRatio,
+        });
       }
     }
 

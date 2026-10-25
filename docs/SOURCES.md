@@ -20,12 +20,13 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - Docs: [List all servers](https://smithery.ai/docs/api-reference/servers/list-all-servers)
 - List: `GET https://api.smithery.ai/servers?page=&pageSize=100`
 - Public reads worked without a key on 2026-10-15. `SMITHERY_API_KEY` is optional (`Authorization: Bearer`); 401/403 without a key skips the source instead of failing the run
-- `useCount` is documented as total connections. The per-server detail endpoint does **not** include `useCount`.
+- `useCount` is documented as total connections. The per-server **detail** endpoint returns `useCount: null` — it is not a live counter.
 - Search-index windows are capped at `topK` 500. **Pass a stable `seed`** (we use `1`) for deterministic deep pagination of the full catalog (~20k servers, ~208 pages of 100)
-- The seeded/unseeded **browse list** serves a stale search-index `useCount`. Live check 2026-10-25: browse `brave` is still `87579` (unchanged since 2026-10-15) while `GET /servers?q=brave` returns `119026`. About half of the top 25 servers differ between browse and search. There is no `updatedAt` for the counter.
-- After listing the catalog we refresh `useCount` with `GET /servers?q={qualifiedName}&pageSize=10` and keep the exact `qualifiedName` match. Search misses keep the last live search value from `data/state/smithery/` (flagged `carried_forward`) or, if we have never searched that server, the browse-index value flagged `carried_forward`. We never invent a count.
+- **Upstream `useCount` is frozen.** As of 2026-10-25 every ~20.8k server has an identical value on 2026-10-21, 22, 24, and 25 (2026-10-23 is a missing snapshot, not a backfill). `pipeworx/gateway` stayed at **419019** on browse and on `GET /servers?q=pipeworx/gateway`. `?q=` search is the same frozen index as the seeded list, not a live overlay. There is no `updatedAt` for the counter.
+- After listing the catalog we still request `GET /servers?q={qualifiedName}&pageSize=10` so a future thaw is recorded, but a search hit is **not** stamped fresh. If a value is unchanged across **N snapshot days** (default 3, override `SMITHERY_FROZEN_DAYS`; missing days such as Oct 23 are skipped, never invented), the row is flagged `frozen` and `carried_forward`. Search misses keep the last stored value from `data/state/smithery/` (also `carried_forward`). We never invent a count.
+- Until Smithery actually updates a source, treat `use_count` as a frozen catalog field. `fetchedThisRunCount` is the number of search responses this run; `freshTodayCount` excludes frozen rows.
 - List rows do not include `repositoryUrl`; we match GitHub only when `homepage` is a GitHub URL
-- We do not fan out 20k per-server **detail** calls; the extra search is list-shaped and is what actually moves `useCount`
+- We do not fan out 20k per-server **detail** calls; detail has no `useCount` anyway. A 429 that cuts the search refresh short marks the source `truncated` / the snapshot `partial`.
 
 ## GitHub repo stats
 

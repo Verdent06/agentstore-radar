@@ -1,5 +1,7 @@
 import { z } from "zod";
-import { SMITHERY_SERVERS_URL, SMITHERY_STABLE_SEED, SMITHERY_USECOUNT_PAGE_SIZE } from "../lib/config.ts";
+import { SMITHERY_FROZEN_DAYS, SMITHERY_SERVERS_URL, SMITHERY_STABLE_SEED, SMITHERY_USECOUNT_PAGE_SIZE } from "../lib/config.ts";
+import { computeCoverage } from "../lib/coverage.ts";
+import { isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../lib/frozen.ts";
 import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, githubRepoUrl, parseGithubRepo } from "../lib/matching.ts";
 import {
@@ -63,7 +65,9 @@ export type SmitheryRawSnapshot = {
     updated: number;
     unchanged: number;
     missed: number;
+    frozen: number;
     truncated: boolean;
+    frozenDays: number;
   };
 };
 
@@ -201,6 +205,8 @@ export const smitheryAdapter: SourceAdapter = {
     const checkpoint = loadCheckpoint(ctx.dataDir, "smithery");
     const sleepFn = ctx.sleep ?? defaultSleep;
     const fetchedAt = ctx.collectedAt;
+    const frozenDays = smitheryFrozenDays(ctx.env, SMITHERY_FROZEN_DAYS);
+    const previous = loadPreviousMetricHistory(ctx.dataDir, ctx.snapshotDate, "smithery", "use_count", frozenDays);
 
     const parsedServers = servers.map((item, index) => ({ item, index, parsed: ServerSchema.safeParse(item) }));
     const indexesByName = new Map<string, number[]>();
@@ -262,10 +268,16 @@ export const smitheryAdapter: SourceAdapter = {
           if (live === undefined) {
             useCountMissed += 1;
           } else {
-            const previous = cache[name]?.useCount;
+            const previousValue = cache[name]?.useCount;
             cache[name] = { useCount: live };
-            lastFetched[name] = fetchedAt;
-            if (previous === live) {
+            const frozen = isUnchangedForDays(live, previous.byId.get(name) ?? [], previous.dates, frozenDays);
+            // Search is not evidence of a live counter. Only stamp last_fetched
+            // when the value actually moved, or it has not yet been unchanged
+            // for N snapshot days.
+            if (!frozen) {
+              lastFetched[name] = fetchedAt;
+            }
+            if (previousValue === live) {
               useCountUnchanged += 1;
             } else {
               useCountUpdated += 1;
@@ -295,7 +307,9 @@ export const smitheryAdapter: SourceAdapter = {
       }
       clearCheckpoint(ctx.dataDir, "smithery");
     } catch (error) {
-      if (error instanceof HttpError && (error.status === 429 || error.status === 403 || error.cloudflare) && processed > 0) {
+      const rateLimited =
+        error instanceof HttpError && (error.status === 429 || error.status === 403 || error.cloudflare);
+      if (rateLimited || useCountAttempted > 0) {
         useCountTruncated = true;
         persistCheckpoint(ctx.dataDir, "smithery", {
           snapshotDate: ctx.snapshotDate,
@@ -303,17 +317,16 @@ export const smitheryAdapter: SourceAdapter = {
           nextIndex: processed,
           startedAt: checkpoint?.startedAt ?? fetchedAt,
         });
-        ctx.log.warn("smithery useCount refresh stopped after rate limit; keeping search hits and list fallback", {
-          attempted: useCountAttempted,
-          updated: useCountUpdated,
-          error: errorMessage(error),
-        });
-      } else if (processed > 0) {
-        useCountTruncated = true;
-        ctx.log.warn("smithery useCount refresh stopped; keeping search hits and list fallback", {
-          attempted: useCountAttempted,
-          error: String(error),
-        });
+        ctx.log.warn(
+          rateLimited
+            ? "smithery useCount refresh stopped after rate limit; keeping search hits and list fallback"
+            : "smithery useCount refresh stopped; keeping search hits and list fallback",
+          {
+            attempted: useCountAttempted,
+            updated: useCountUpdated,
+            error: rateLimited ? errorMessage(error) : String(error),
+          },
+        );
       } else {
         ctx.log.warn("smithery useCount refresh failed; stamping list useCount as not live", { error: String(error) });
       }
@@ -321,6 +334,7 @@ export const smitheryAdapter: SourceAdapter = {
 
     const records: SourceRow[] = [];
     let invalid = 0;
+    let frozenCount = 0;
     for (const item of servers) {
       const parsed = ServerSchema.safeParse(item);
       if (!parsed.success) {
@@ -330,15 +344,22 @@ export const smitheryAdapter: SourceAdapter = {
       const name = parsed.data.qualifiedName;
       const cached = cache[name];
       const fetched = lastFetched[name];
-      const liveToday = Boolean(fetched && !isCarriedForward(fetched, ctx.snapshotDate, fetchedAt) && cached);
-      const useCount = liveToday ? cached?.useCount ?? parsed.data.useCount ?? null : (cached?.useCount ?? parsed.data.useCount ?? null);
+      const useCount = cached?.useCount ?? parsed.data.useCount ?? null;
+      const frozen = isUnchangedForDays(useCount, previous.byId.get(name) ?? [], previous.dates, frozenDays);
+      // A search hit today is not "fresh" when upstream has served the same
+      // number for N snapshot days (browse, ?q=, and detail are all frozen).
+      const liveToday =
+        Boolean(fetched && !isCarriedForward(fetched, ctx.snapshotDate, fetchedAt) && cached) && !frozen;
       const row = normalizeSmitheryServer(ctx.snapshotDate, overlayUseCount(item, useCount));
       if (!row) {
         invalid += 1;
         continue;
       }
       const observationAt = liveToday ? fetchedAt : (fetched ?? null);
-      records.push(withObservation(row, observationAt, !liveToday));
+      if (frozen) {
+        frozenCount += 1;
+      }
+      records.push(withObservation(row, observationAt, !liveToday, frozen));
       if (row.repo_url) {
         const ref = parseGithubRepo(row.repo_url);
         if (ref) {
@@ -353,13 +374,26 @@ export const smitheryAdapter: SourceAdapter = {
       throw new Error(`smithery validation failed for ${invalid}/${servers.length} rows`);
     }
 
+    const fetchedThisRunCount = useCountUpdated + useCountUnchanged;
+    const freshTodayCount = records.filter((row) => row.carried_forward !== true).length;
+    const { coverage } = computeCoverage(records.length, freshTodayCount);
+    if (frozenCount > 0) {
+      ctx.log.warn("smithery useCount unchanged for N snapshot days; stamping frozen/carried_forward, not fresh", {
+        frozen: frozenCount,
+        rows: records.length,
+        frozenDays,
+      });
+    }
     ctx.log.info("smithery collected", {
       pages,
       rows: records.length,
       totalCount,
-      truncated,
+      truncated: truncated || useCountTruncated,
       useCountAttempted,
       useCountUpdated,
+      useCountUnchanged,
+      fetchedThisRunCount,
+      frozenCount,
       useCountTruncated,
     });
     const raw: SmitheryRawSnapshot = {
@@ -375,7 +409,9 @@ export const smitheryAdapter: SourceAdapter = {
         updated: useCountUpdated,
         unchanged: useCountUnchanged,
         missed: useCountMissed,
+        frozen: frozenCount,
         truncated: useCountTruncated,
+        frozenDays,
       },
     };
     return {
@@ -383,12 +419,14 @@ export const smitheryAdapter: SourceAdapter = {
       collectedAt: ctx.collectedAt,
       rowCount: records.length,
       skipped: false,
-      truncated,
+      truncated: truncated || useCountTruncated,
       failed: false,
       error: stoppedAt?.error,
       stoppedAt,
-      fetchedThisRunCount: records.length,
-      freshTodayCount: records.filter((row) => row.carried_forward !== true).length,
+      eligibleCount: records.length,
+      fetchedThisRunCount,
+      freshTodayCount,
+      coverage,
       raw,
       records,
     };

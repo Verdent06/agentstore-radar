@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -10,8 +10,14 @@ import { normalizePypiRecent } from "../src/adapters/pypi.ts";
 import { smitheryAdapter, smitheryUseCountSearchUrl, normalizeSmitheryServer } from "../src/adapters/smithery.ts";
 import { createDiscoveredRefs } from "../src/adapters/types.ts";
 import { createHttpClient } from "../src/lib/http.ts";
+import { writeNormalized } from "../src/lib/io.ts";
+import { mergeApps } from "../src/lib/merge.ts";
 import { persistEntityCache, persistLastFetched } from "../src/lib/rolling.ts";
+import { emptySourceRow, type SnapshotManifest, type SourceRow } from "../src/lib/schema.ts";
 import { fixtureFetch, loadFixture } from "./helpers.ts";
+
+const PIPEWORX_GATEWAY = "pipeworx/gateway";
+const PIPEWORX_USE_COUNT = 419019;
 
 describe("source normalizers", () => {
   it("maps official MCP registry rows onto a github app_id and packages", () => {
@@ -131,6 +137,141 @@ describe("source normalizers", () => {
       use_count: 119026,
       carried_forward: true,
       fetched_at: "2026-10-24T12:00:00Z",
+    });
+  });
+
+  it("does not stamp a real unchanged Smithery useCount as fresh (pipeworx/gateway = 419019)", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-smithery-frozen-"));
+    const pipeworx = {
+      qualifiedName: PIPEWORX_GATEWAY,
+      displayName: "Pipeworx Gateway",
+      useCount: PIPEWORX_USE_COUNT,
+    };
+    const list = {
+      servers: [pipeworx],
+      pagination: { currentPage: 1, pageSize: 100, totalPages: 1, totalCount: 1 },
+    };
+    const writeDay = (date: string) => {
+      const rows: SourceRow[] = [
+        emptySourceRow({
+          snapshot_date: date,
+          source: "smithery",
+          source_id: PIPEWORX_GATEWAY,
+          name: PIPEWORX_GATEWAY,
+          use_count: PIPEWORX_USE_COUNT,
+          app_id: `smithery:${PIPEWORX_GATEWAY}`,
+          fetched_at: `${date}T12:00:00Z`,
+        }),
+      ];
+      const manifest: SnapshotManifest = {
+        snapshotDate: date,
+        collectedAt: `${date}T12:00:00Z`,
+        appCount: 1,
+        sourceRowCount: 1,
+        partial: false,
+        completedSources: ["smithery"],
+        sources: [{ source: "smithery", rowCount: 1, skipped: false, collectedAt: `${date}T12:00:00Z` }],
+      };
+      writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
+    };
+    writeDay("2026-10-21");
+    writeDay("2026-10-22");
+    writeDay("2026-10-24");
+    persistLastFetched(dataDir, "smithery", { [PIPEWORX_GATEWAY]: "2026-10-24T12:00:00Z" });
+    persistEntityCache(dataDir, "smithery", { [PIPEWORX_GATEWAY]: { useCount: PIPEWORX_USE_COUNT } });
+    expect(existsSync(join(dataDir, "normalized", "2026-10-23"))).toBe(false);
+
+    const result = await smitheryAdapter.collect({
+      snapshotDate: "2026-10-25",
+      collectedAt: "2026-10-25T12:00:00Z",
+      now: new Date("2026-10-25T12:00:00Z"),
+      dataDir,
+      env: {},
+      log: { info() {}, warn() {}, error() {} },
+      discovered: createDiscoveredRefs(),
+      http: createHttpClient({
+        fetchImpl: fixtureFetch([
+          {
+            match: /[?&]q=pipeworx%2Fgateway/,
+            body: {
+              servers: [pipeworx],
+              pagination: { currentPage: 1, pageSize: 10, totalPages: 1, totalCount: 1 },
+            },
+          },
+          { match: "api.smithery.ai/servers", body: list },
+        ]),
+        maxRetries: 0,
+      }),
+    });
+
+    expect(existsSync(join(dataDir, "normalized", "2026-10-23"))).toBe(false);
+    expect(result.records[0]).toMatchObject({
+      source_id: PIPEWORX_GATEWAY,
+      use_count: PIPEWORX_USE_COUNT,
+      carried_forward: true,
+      frozen: true,
+    });
+    expect(result.freshTodayCount).toBe(0);
+    expect(result.fetchedThisRunCount).toBe(1);
+    expect((result.raw as { useCountRefresh?: { unchanged: number; frozen: number } }).useCountRefresh).toMatchObject({
+      unchanged: 1,
+      frozen: 1,
+    });
+  });
+
+  it("counts fetchedThisRun as search hits this run and marks a 429-truncated search partial", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-smithery-429-"));
+    const brave = loadFixture<{ servers: Array<{ qualifiedName: string; useCount: number }> }>("smithery-page.json").servers[0]!;
+    const extra = {
+      qualifiedName: "example/weather",
+      displayName: "Weather",
+      useCount: 12,
+    };
+    const list = {
+      servers: [extra, brave],
+      pagination: { currentPage: 1, pageSize: 100, totalPages: 1, totalCount: 2 },
+    };
+    let searchCalls = 0;
+    const result = await smitheryAdapter.collect({
+      snapshotDate: "2026-10-25",
+      collectedAt: "2026-10-25T12:00:00Z",
+      now: new Date("2026-10-25T12:00:00Z"),
+      dataDir,
+      env: {},
+      log: { info() {}, warn() {}, error() {} },
+      discovered: createDiscoveredRefs(),
+      http: createHttpClient({
+        fetchImpl: async (input) => {
+          const url = String(input);
+          if (/[?&]q=/.test(url)) {
+            searchCalls += 1;
+            if (searchCalls === 1) {
+              const name = new URL(url).searchParams.get("q") ?? extra.qualifiedName;
+              const hit = name === brave.qualifiedName ? brave : extra;
+              return new Response(
+                JSON.stringify({
+                  servers: [hit],
+                  pagination: { currentPage: 1, pageSize: 10, totalPages: 1, totalCount: 1 },
+                }),
+                { status: 200, headers: { "content-type": "application/json" } },
+              );
+            }
+            return new Response("rate limited", { status: 429, headers: { "retry-after": "0" } });
+          }
+          return new Response(JSON.stringify(list), { status: 200, headers: { "content-type": "application/json" } });
+        },
+        maxRetries: 0,
+        sleep: async () => {},
+      }),
+      sleep: async () => {},
+    });
+    expect(result.records).toHaveLength(2);
+    expect(result.fetchedThisRunCount).toBe(1);
+    expect(result.fetchedThisRunCount).not.toBe(result.records.length);
+    expect(result.truncated).toBe(true);
+    expect((result.raw as { useCountRefresh?: { truncated: boolean; attempted: number } }).useCountRefresh).toMatchObject({
+      truncated: true,
+      attempted: 2,
     });
   });
 });

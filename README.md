@@ -54,7 +54,7 @@ npm run report
 
 `--data` wins over `DATA_DIR`, which wins over `./data`.
 
-Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true only when GitHub/npm/PyPI/Smithery `useCount` reused a value fetched on a **previous snapshot day**, not a live fetch earlier the same day). Smithery browse-list `useCount` is a stale search index; live counts come from `GET /servers?q={qualifiedName}`. Merged `apps.ndjson` copies those onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*` freshness fields, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a truncated MCP catalog is not treated as a one-day jump.
+Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true when GitHub/npm/PyPI reused a value fetched on a **previous snapshot day**, or when Smithery `useCount` is frozen upstream). Smithery browse-list **and** `GET /servers?q=` return the same frozen `useCount` (e.g. `pipeworx/gateway` = 419019 on Oct 21, 22, 24, and 25; the detail endpoint is `null`; Oct 23 stays a gap). A search hit is not stamped fresh. If a value is unchanged for N snapshot days (default 3, `SMITHERY_FROZEN_DAYS`) it is flagged `frozen` and `carried_forward`. Merged `apps.ndjson` copies freshness onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*`, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a truncated MCP catalog is not treated as a one-day jump.
 
 `manifest.json` always records `partial: true|false` and `completedSources: [...]`. Incomplete sources include `stoppedAt: { source, page, cursor, error }` so a mid-pagination MCP 500 can resume from the last cursor instead of page 1.
 
@@ -95,6 +95,7 @@ Optional env:
 - `GH_STATS_TOKEN` — optional PAT used first for GraphQL repo stats (higher budget than the default Actions token)
 - `GITHUB_TOKEN` / `GH_TOKEN` — GitHub GraphQL fallback **and** issue alerts. The collect workflow uses the built-in Actions token with `permissions: issues: write`. No `HEALTH_ISSUE_TOKEN` secret is required.
 - `SMITHERY_API_KEY` — only if Smithery starts requiring auth for public list
+- `SMITHERY_FROZEN_DAYS` — snapshot days of identical Smithery `useCount` (including today) before the value is marked frozen/`carried_forward` (default `3`)
 - `HEALTH_ISSUE_REPO` — optional override for source-health issues (defaults to `GITHUB_REPOSITORY` / this public repo)
 - `COLLECTOR_ISSUE_REPO` — public repo for `Collector missed YYYY-MM-DD` issues (defaults to this repo)
 - `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `XAI_API_KEY` — optional; each missing key skips that answer-share provider
@@ -140,7 +141,7 @@ Rough full-run cost (100 prompts × 3 repeats = 300 calls / provider, web search
 - a source's row count drops **more than 30%** versus the previous snapshot, or
 - a non-skipped source's **coverage** is below **70%** (`fresh today / eligible`)
 
-Each source's `eligibleCount`, `freshTodayCount` (keys fetched on this UTC date), `freshWithin7dCount` (keys fetched inside a 7-day window), `fetchedThisRunCount` (keys requested from the live API in this collect), and `coverage` (`freshTodayCount / eligibleCount`) are stored on that day's `manifest.json`. Catalog sources are typically 100% this run. GitHub / npm / PyPI refresh every key not already fetched today; last-known stats are carried forward only when a live call did not finish. Health and collector-missed alerts open issues in this public repo with the workflow `GITHUB_TOKEN` (`issues: write`). Alerts do not attach snapshot files. Deleted or renamed GitHub repos log a per-app `could not resolve repository` warning and do not fail the run.
+Each source's `eligibleCount`, `freshTodayCount` (keys fetched on this UTC date and not frozen), `freshWithin7dCount` (keys fetched inside a 7-day window), `fetchedThisRunCount` (keys requested from the live API in this collect — not the catalog size), and `coverage` (`freshTodayCount / eligibleCount`) are stored on that day's `manifest.json`. GitHub / npm / PyPI refresh every key not already fetched today; last-known stats are carried forward only when a live call did not finish. npm is marked `truncated`/`partial` if a 429 cuts the run short **or** more than 20% of due keys fail. Health and collector-missed alerts open issues in this public repo with the workflow `GITHUB_TOKEN` (`issues: write`). Alerts do not attach snapshot files. Deleted or renamed GitHub repos log a per-app `could not resolve repository` warning and do not fail the run.
 
 **Coverage expectations**
 
@@ -150,7 +151,7 @@ Each source's `eligibleCount`, `freshTodayCount` (keys fetched on this UTC date)
 | npm | every discovered npm package | unscoped in batches of 128; scoped one-by-one with 1.2s pacing and 429 patience | checkpoint + resume after Cloudflare 1015 / 429 |
 | PyPI | every discovered PyPI package | throttled `pypistats` recent for every package | checkpoint + resume after 429 |
 | MCP / Gemini | catalog page rows | full catalog in the run | n/a |
-| Smithery | catalog page rows + live `useCount` via `?q=` | full catalog plus a search refresh per server | search miss keeps last live search count (`carried_forward`) |
+| Smithery | catalog page rows | full catalog; `?q=` overlay is recorded but **not** stamped fresh | frozen `useCount` (unchanged for `SMITHERY_FROZEN_DAYS`, default 3) is `carried_forward`; 429 during search marks `truncated` |
 
 ## Development
 

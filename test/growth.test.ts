@@ -358,6 +358,67 @@ describe("npm growth adapter", () => {
     expect(result.rowCount).toBe(2);
     expect(result.coverage).toBe(1);
   });
+
+  it("marks npm partial when more than 20% of due keys fail", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-npm-failshare-"));
+    const discovered = createDiscoveredRefs();
+    for (const name of ["ok-1", "ok-2", "ok-3", "fail-1", "fail-2"]) {
+      discovered.npmPackages.add(name);
+    }
+    const result = await npmAdapter.collect(
+      ctx({
+        dataDir,
+        http: createHttpClient({
+          fetchImpl: fixtureFetch([
+            {
+              match: "api.npmjs.org/downloads/point/last-week/",
+              body: {
+                "ok-1": { downloads: 1, package: "ok-1" },
+                "ok-2": { downloads: 2, package: "ok-2" },
+                "ok-3": { downloads: 3, package: "ok-3" },
+              },
+            },
+          ]),
+          maxRetries: 0,
+        }),
+        discovered,
+      }),
+    );
+    expect(result.fetchedThisRunCount).toBe(3);
+    expect(result.eligibleCount).toBe(5);
+    expect(result.truncated).toBe(true);
+    expect(result.stoppedAt?.error).toMatch(/failed 2\/5/);
+  });
+
+  it("does not mark npm partial when 20% or fewer due keys fail", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-npm-okshare-"));
+    const discovered = createDiscoveredRefs();
+    for (const name of ["ok-1", "ok-2", "ok-3", "ok-4", "fail-1"]) {
+      discovered.npmPackages.add(name);
+    }
+    const result = await npmAdapter.collect(
+      ctx({
+        dataDir,
+        http: createHttpClient({
+          fetchImpl: fixtureFetch([
+            {
+              match: "api.npmjs.org/downloads/point/last-week/",
+              body: {
+                "ok-1": { downloads: 1, package: "ok-1" },
+                "ok-2": { downloads: 2, package: "ok-2" },
+                "ok-3": { downloads: 3, package: "ok-3" },
+                "ok-4": { downloads: 4, package: "ok-4" },
+              },
+            },
+          ]),
+          maxRetries: 0,
+        }),
+        discovered,
+      }),
+    );
+    expect(result.fetchedThisRunCount).toBe(4);
+    expect(result.truncated).toBe(false);
+  });
 });
 
 describe("pypi growth adapter", () => {

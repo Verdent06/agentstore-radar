@@ -38,6 +38,8 @@ export const SourceRowSchema = z.object({
   verified: z.boolean().nullable(),
   fetched_at: z.string().nullable().optional().default(null),
   carried_forward: z.boolean().optional().default(false),
+  /** True when the live upstream value has not moved for N snapshot days. */
+  frozen: z.boolean().optional().default(false),
 });
 
 export type SourceRow = z.infer<typeof SourceRowSchema>;
@@ -157,6 +159,7 @@ export function emptySourceRow(partial: Partial<SourceRow> & Pick<SourceRow, "sn
     verified: null,
     fetched_at: null,
     carried_forward: false,
+    frozen: false,
     ...partial,
   };
 }
@@ -165,11 +168,13 @@ export function withObservation(
   row: SourceRow,
   fetchedAt: string | null | undefined,
   carriedForward: boolean,
+  frozen = false,
 ): SourceRow {
   return {
     ...row,
     fetched_at: fetchedAt ?? null,
     carried_forward: carriedForward,
+    frozen,
   };
 }
 
