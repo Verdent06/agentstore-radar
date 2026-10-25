@@ -18,8 +18,16 @@ export function KpiGrid({
   );
 }
 
-export function DemoBanner({ origin, latestDate }: { origin: string; latestDate: string | null }) {
-  if (origin !== "fixture") {
+export function DemoBanner({
+  origin,
+  source,
+  latestDate,
+}: {
+  origin: string;
+  source?: string;
+  latestDate: string | null;
+}) {
+  if (source !== "fixture" && origin !== "fixture") {
     return (
       <p className="text-xs text-muted">
         Snapshot {latestDate ?? "—"} · sourced from private history via build-time aggregate
@@ -39,15 +47,13 @@ export function formatKpis(stats: {
   storeCount: number;
   totalNpmWeekly: number;
   totalStars: number;
-  multiStoreCount: number;
-  newArrivalCount: number;
   snapshotCount: number;
   latestDate: string | null;
 }) {
   return [
     { label: "Apps tracked", value: formatNumber(stats.appCount), hint: `${stats.snapshotCount} snapshots` },
     { label: "Stores", value: formatNumber(stats.storeCount), hint: stats.latestDate ?? "" },
-    { label: "npm / week", value: formatCount(stats.totalNpmWeekly), hint: "sum of latest weekly downloads" },
-    { label: "GitHub stars", value: formatCount(stats.totalStars), hint: `${stats.multiStoreCount} multi-store · ${stats.newArrivalCount} new` },
+    { label: "npm / week", value: formatCount(stats.totalNpmWeekly), hint: "fresh today" },
+    { label: "GitHub stars", value: formatCount(stats.totalStars), hint: "fresh today" },
   ];
 }

@@ -2,5 +2,5 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
   "installCommand": "cd .. && npm ci",
-  "buildCommand": "npx tsx ../scripts/build-aggregate.ts --out data && next build"
+  "buildCommand": "npx tsx ../scripts/build-aggregate.ts --out data --require-private && next build"
 }

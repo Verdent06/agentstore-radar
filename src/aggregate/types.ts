@@ -38,6 +38,12 @@ export const STORE_SOURCES = ["mcp-registry", "smithery", "gemini-cli", "npm", "
 export type StoreSource = (typeof STORE_SOURCES)[number];
 
 export type DataOrigin = "data_dir" | "github" | "fixture";
+/** Coarse origin recorded on radar.json: live private data vs bundled demo fixtures. */
+export type DataSource = "private" | "fixture";
+
+export function sourceFromOrigin(origin: DataOrigin): DataSource {
+  return origin === "fixture" ? "fixture" : "private";
+}
 
 export type AppSummary = {
   id: string;
@@ -117,7 +123,6 @@ export type HeadlineStats = {
   latestDate: string | null;
   previousDate: string | null;
   weekAgoDate: string | null;
-  totalUseCount: number;
   totalStars: number;
   totalNpmWeekly: number;
   multiStoreCount: number;
@@ -165,6 +170,7 @@ export type CategoryTrendPoint = {
 export type AggregateMeta = {
   builtAt: string;
   origin: DataOrigin;
+  source: DataSource;
   snapshotDates: string[];
   latestDate: string | null;
   previousDate: string | null;

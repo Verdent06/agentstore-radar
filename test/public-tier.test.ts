@@ -592,5 +592,13 @@ describe("hidden smithery chart and public use_count", () => {
     expect(page).not.toMatch(/Use count/);
     const kpis = readFileSync(join(repoRoot, "web/components/kpis.tsx"), "utf8");
     expect(kpis).not.toMatch(/use_count|useCount|totalUseCount/);
+    expect(kpis).toContain("fresh today");
+  });
+
+  it("movers page keeps the complete-day window and layers the fixture source check", () => {
+    const page = readFileSync(join(repoRoot, "web/app/movers/page.tsx"), "utf8");
+    expect(page).toContain("agg.meta.latestCompleteDate ?? agg.meta.latestDate");
+    expect(page).toContain('agg.meta.source === "fixture" || agg.meta.origin === "fixture"');
+    expect(page).not.toMatch(/formatDate\(agg\.meta\.weekAgoDate\)\} → \{formatDate\(agg\.meta\.latestDate\)\}/);
   });
 });

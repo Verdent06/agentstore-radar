@@ -23,8 +23,10 @@
     "test:watch": "vitest",
     "smoke:growth": "tsx scripts/smoke-growth.ts",
     "aggregate": "tsx scripts/build-aggregate.ts",
+    "aggregate:fixture": "tsx scripts/build-aggregate.ts --allow-fixture",
     "build": "tsc --noEmit",
-    "site:build": "tsx scripts/build-aggregate.ts && npm run build --workspace=web",
+    "site:build": "tsx scripts/build-aggregate.ts --require-private && npm run build --workspace=web",
+    "site:build:fixture": "tsx scripts/build-aggregate.ts --allow-fixture && npm run build --workspace=web",
     "mcp:start": "npm run start --workspace=mcp"
   },
   "repository": {

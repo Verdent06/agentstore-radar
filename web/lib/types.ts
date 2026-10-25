@@ -94,7 +94,6 @@ export type HeadlineStats = {
   latestDate: string | null;
   previousDate: string | null;
   weekAgoDate: string | null;
-  totalUseCount: number;
   totalStars: number;
   totalNpmWeekly: number;
   multiStoreCount: number;
@@ -132,6 +131,7 @@ export type Aggregate = {
   meta: {
     builtAt: string;
     origin: "data_dir" | "github" | "fixture";
+    source: "private" | "fixture";
     snapshotDates: string[];
     latestDate: string | null;
     previousDate: string | null;

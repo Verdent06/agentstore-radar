@@ -16,7 +16,7 @@ export function loadAggregate(): Aggregate {
   const path = CANDIDATES.find((candidate) => existsSync(candidate));
   if (!path) {
     throw new Error(
-      "Missing web/data/radar.json. Run `npm run aggregate` from the repo root (uses DATA_DIR, a GitHub token, or demo fixtures).",
+      "Missing web/data/radar.json. Run `npm run aggregate` from the repo root (DATA_DIR or DATA_GITHUB_TOKEN), or `npm run aggregate:fixture` for local/CI demo data.",
     );
   }
   cached = JSON.parse(readFileSync(path, "utf8")) as Aggregate;
