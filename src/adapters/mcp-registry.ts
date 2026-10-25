@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { MCP_REGISTRY_BASE, MCP_SERVERS_PATH } from "../lib/config.ts";
-import { emptySourceRow, type SourceRow } from "../lib/schema.ts";
+import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
 import {
   appIdFromIdentity,
   githubRepoFromMcpName,
@@ -8,7 +8,7 @@ import {
   normalizePackageName,
   parseGithubRepo,
 } from "../lib/matching.ts";
-import type { CollectContext, SourceAdapter, SourceResult } from "./types.ts";
+import { CollectSourceError, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "./types.ts";
 
 const PackageSchema = z
   .object({
@@ -151,23 +151,45 @@ export const mcpRegistryAdapter: SourceAdapter = {
     const servers: unknown[] = [];
     let cursor: string | undefined;
     let pages = 0;
+    let truncated = false;
+    let stoppedAt: SourceResult["stoppedAt"];
     const maxPages = ctx.maxPages ?? Number.POSITIVE_INFINITY;
 
-    while (pages < maxPages) {
-      const url = new URL(endpoint);
-      url.searchParams.set("limit", "100");
-      url.searchParams.set("version", "latest");
-      if (cursor) {
-        url.searchParams.set("cursor", cursor);
+    try {
+      while (pages < maxPages) {
+        const url = new URL(endpoint);
+        url.searchParams.set("limit", "100");
+        url.searchParams.set("version", "latest");
+        if (cursor) {
+          url.searchParams.set("cursor", cursor);
+        }
+        // fetchJson retries 5xx on this same URL (including cursor), so a 500
+        // resumes the current page instead of restarting the catalog at page 1.
+        const page = ListResponseSchema.parse(await ctx.http.fetchJson<unknown>(url.toString()));
+        pages += 1;
+        servers.push(...page.servers);
+        const next = page.metadata?.nextCursor;
+        if (!next) {
+          break;
+        }
+        cursor = next;
       }
-      const page = ListResponseSchema.parse(await ctx.http.fetchJson<unknown>(url.toString()));
-      pages += 1;
-      servers.push(...page.servers);
-      const next = page.metadata?.nextCursor;
-      if (!next) {
-        break;
+    } catch (error) {
+      stoppedAt = sourceStoppedAt("mcp-registry", error, {
+        page: pages + 1,
+        cursor,
+      });
+      if (servers.length === 0) {
+        throw new CollectSourceError(stoppedAt);
       }
-      cursor = next;
+      truncated = true;
+      ctx.log.warn("mcp-registry stopped early; keeping partial catalog", {
+        pages,
+        rows: servers.length,
+        page: stoppedAt.page,
+        cursor: stoppedAt.cursor,
+        error: stoppedAt.error,
+      });
     }
 
     const records: SourceRow[] = [];
@@ -178,7 +200,7 @@ export const mcpRegistryAdapter: SourceAdapter = {
         invalid += 1;
         continue;
       }
-      records.push(normalized.row);
+      records.push(withObservation(normalized.row, ctx.collectedAt, false));
       if (normalized.explicitGithub && normalized.row.repo_url) {
         const ref = parseGithubRepo(normalized.row.repo_url);
         if (ref) {
@@ -207,12 +229,16 @@ export const mcpRegistryAdapter: SourceAdapter = {
       servers,
     };
 
-    ctx.log.info("mcp-registry collected", { pages, rows: records.length });
+    ctx.log.info("mcp-registry collected", { pages, rows: records.length, truncated });
     return {
       source: "mcp-registry",
       collectedAt: ctx.collectedAt,
       rowCount: records.length,
       skipped: false,
+      truncated,
+      failed: false,
+      error: stoppedAt?.error,
+      stoppedAt,
       raw,
       records,
     };

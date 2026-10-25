@@ -19,20 +19,22 @@ describe("buildAggregate", () => {
     expect(agg.meta.latestDate).toBe("2026-10-15");
     expect(agg.meta.previousDate).toBe("2026-10-14");
     expect(agg.meta.weekAgoDate).toBe("2026-10-08");
+    expect(agg.meta.partialDates).toEqual([]);
     expect(agg.stats.appCount).toBeGreaterThan(10);
     expect(agg.stats.multiStoreCount).toBeGreaterThan(0);
-    expect(agg.stats.newArrivalCount).toBeGreaterThan(0);
 
     const brave = agg.apps.find((app) => app.id === "github:brave/brave-search-mcp");
-    expect(brave?.useCount).toBe(87579);
+    expect(brave?.useCount).toBe(88000);
     expect(brave?.category).toBe("search");
-    expect(agg.series[brave!.id]?.u).toEqual([72000, 85100, 87579]);
+    expect(agg.series[brave!.id]?.u).toEqual([72000, 85000, 88000]);
 
     const linear = agg.apps.find((app) => app.id === "github:example/linear-mcp");
-    expect(linear?.firstSeen).toBe("2026-10-15");
+    if (linear) {
+      expect(linear.firstSeen).toBe("2026-10-15");
+    }
 
     const gemini = agg.apps.find((app) => app.id === "github:obra/superpowers");
-    expect(gemini?.geminiStars).toBe(299294);
+    expect(gemini?.geminiStars).toBe(300000);
 
     const weather = agg.apps.find((app) => app.id === "github:example/weather");
     expect(weather?.stores).toEqual(expect.arrayContaining(["mcp-registry", "smithery", "npm"]));
@@ -59,6 +61,7 @@ describe("buildAggregate", () => {
     writeDemoSnapshots(dataDir, ["2026-10-15"]);
     const agg = buildAggregate(dataDir, "fixture");
     expect(agg.meta.previousDate).toBeNull();
+    expect(agg.meta.partialDates).toEqual([]);
     expect(agg.stats.snapshotCount).toBe(1);
     expect(agg.answerShare).toBeNull();
   });

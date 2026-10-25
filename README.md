@@ -32,13 +32,14 @@ User-Agent: agentstore-radar/0.1 (+https://github.com/Verdent06/agentstore-radar
 
 ## Data layout (private repo)
 
-Never overwrite a past day's snapshot. Same-day re-runs may refresh today's files.
+Never overwrite a past day's snapshot. A complete same-day snapshot is left in place; re-runs skip unless `--force` (workflow_dispatch `force`) is set. `--force` moves the previous day to `data/backups/normalized/<date>/<stamp>/` and records the overwrite on the new manifest. Incomplete/partial days may be collected again.
 
 ```
 data/raw/<source>/<YYYY-MM-DD>.json      # or .json.gz when payload ≥ 256 KiB
 data/normalized/<YYYY-MM-DD>/source_rows.ndjson(.gz)
 data/normalized/<YYYY-MM-DD>/apps.ndjson(.gz)
 data/normalized/<YYYY-MM-DD>/manifest.json
+data/backups/normalized/<YYYY-MM-DD>/<stamp>/  # previous complete day kept on --force
 data/state/<source>/last_fetched.json    # rolling weekly refresh
 data/state/<source>/cache.json           # last-known enrichment payload
 data/state/<source>/checkpoint.json      # resume mid-run after rate limits
@@ -52,6 +53,10 @@ npm run report
 ```
 
 `--data` wins over `DATA_DIR`, which wins over `./data`.
+
+Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true only when GitHub/npm/PyPI reused a value fetched on a **previous snapshot day**, not a live fetch earlier the same day). Merged `apps.ndjson` copies those onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*` freshness fields, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a weekly refresh or a truncated MCP catalog is not treated as a one-day jump. Default movers (homepage and MCP) rank fresh npm weekly downloads only — not Smithery `use_count` (static at the source) and not GitHub stars until that series passes data audit. Stars remain available as an explicit metric; a change in `stars_source` between two days is a series break (no growth computed across it). The Smithery leaderboard is hidden from the public site and MCP `top_charts` until that series passes audit.
+
+`manifest.json` always records `partial: true|false` and `completedSources: [...]`. Incomplete sources include `stoppedAt: { source, page, cursor, error }` so a mid-pagination MCP 500 can resume from the last cursor instead of page 1.
 
 ### Entity matching
 
@@ -89,10 +94,10 @@ Optional env:
 - `DATA_DIR` — snapshot root (see above)
 - `DATA_GITHUB_TOKEN` — PAT used by the public aggregate builder to read the private data repo (the only data-token env var to set on Vercel)
 - `GH_STATS_TOKEN` — optional PAT used first for GraphQL repo stats (higher budget than the default Actions token)
-- `GITHUB_TOKEN` / `GH_TOKEN` — GitHub GraphQL fallback (Actions provides `GITHUB_TOKEN` automatically); also accepted as a local fallback when cloning private snapshots if `DATA_GITHUB_TOKEN` is unset
+- `GITHUB_TOKEN` / `GH_TOKEN` — GitHub GraphQL fallback **and** issue alerts. The collect workflow uses the built-in Actions token with `permissions: issues: write`. No `HEALTH_ISSUE_TOKEN` secret is required. Also accepted as a local fallback when cloning private snapshots if `DATA_GITHUB_TOKEN` is unset.
 - `SMITHERY_API_KEY` — only if Smithery starts requiring auth for public list
-- `HEALTH_ISSUE_REPO` — `owner/name` for health issues (defaults to unset; we do not open issues on the public repo)
-- `HEALTH_ISSUE_TOKEN` — optional token that can write issues on the data repo
+- `HEALTH_ISSUE_REPO` — optional override for source-health issues (defaults to `GITHUB_REPOSITORY` / this public repo)
+- `COLLECTOR_ISSUE_REPO` — public repo for `Collector missed YYYY-MM-DD` issues (defaults to this repo)
 - `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `XAI_API_KEY` — optional; each missing key skips that answer-share provider
 - `MAX_CALLS` — hard cap on answer-share API calls (unset = uncapped)
 - `ANSWER_SHARE_N` — repeats per prompt per provider (default `3`)
@@ -100,7 +105,9 @@ Optional env:
 
 ## Automation
 
-- [`.github/workflows/collect.yml`](.github/workflows/collect.yml) — daily cron (`17 6 * * *`) plus `workflow_dispatch`. `timeout-minutes: 360` so GitHub/npm/PyPI can wait through rate-limit resets. Checks out the private data repo over SSH (`DATA_REPO_DEPLOY_KEY`), **once** copies `data/` from this repo’s git history if the data repo has no snapshots yet (writes `data/.migrated-from-public`), then collects into `DATA_DIR` and pushes **only** to the data repo. After that first success it never reads public history again. `seed_only` skips collect and just does that one-time copy.
+- [`.github/workflows/collect.yml`](.github/workflows/collect.yml) — primary cron `17 6 * * *` (UTC) plus a same-day **backstop** at `17 18 * * *` that only collects if today's snapshot is missing or incomplete (`--if-incomplete`). `workflow_dispatch` always collects unless `if_incomplete` is set. Job `timeout-minutes: 360` (GitHub-hosted max) so GitHub/npm/PyPI can wait through rate-limit resets; the collect step itself is capped at 330 minutes so commit/alert still run. Checks out the private data repo over SSH (`DATA_REPO_DEPLOY_KEY`), **once** copies `data/` from this repo’s git history if the data repo has no snapshots yet (writes `data/.migrated-from-public`), then collects into `DATA_DIR` and pushes **only** to the data repo (pull `--rebase` + retries). After that first success it never reads public history again. `seed_only` skips collect and just does that one-time copy.
+- Sources are collected independently with retries. One source failing still writes the others and records the failure on that day's `manifest.json`. Health coverage alerts `continue-on-error` so a low npm fetch rate does not mark a landed snapshot as a failed workflow.
+- If a run fails to write a usable snapshot, or the backstop still does not have today's snapshot, the job opens or comments on a public issue titled `Collector missed YYYY-MM-DD` in `Verdent06/agentstore-radar` (`issues: write`). No email/Slack.
 - [`.github/workflows/answer-share.yml`](.github/workflows/answer-share.yml) — weekly cron (Mondays `17 7 * * 1`) plus `workflow_dispatch`. Same private-repo deploy key. Asks each configured assistant which apps/tools/MCP servers it would recommend (`N=3` for variance). Missing provider keys are skipped. `MAX_CALLS` is a hard cost cap (workflow default `1200`).
 - [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — lint, typecheck, collector tests, aggregate build (explicit `--allow-fixture` unless a data token/`DATA_DIR` is set), Next.js build, MCP tests.
 
@@ -134,7 +141,7 @@ Rough full-run cost (100 prompts × 3 repeats = 300 calls / provider, web search
 - a source's row count drops **more than 30%** versus the previous snapshot, or
 - a non-skipped source's **coverage** is below **70%** (`fetched / eligible`, where fetched means refreshed within 7 days)
 
-Each source's `eligibleCount`, `fetchedCount`, and `coverage` are stored on that day's `manifest.json`. Catalog sources are typically 100%. GitHub / npm / PyPI use rolling weekly refresh: yesterday's last-known stats are carried forward, and only stale or new keys are fetched. Issues are opened on `HEALTH_ISSUE_REPO` (the private data repo) when a token can write there. The public repo is never used as a fallback, and alerts do not attach snapshot files.
+Each source's `eligibleCount`, `freshWithin7dCount` (keys fetched inside the rolling 7-day window), `fetchedThisRunCount` (keys requested from the live API in this collect), and `coverage` (`freshWithin7dCount / eligibleCount`) are stored on that day's `manifest.json`. Catalog sources are typically 100% this run. GitHub / npm / PyPI use rolling weekly refresh: yesterday's last-known stats are carried forward, and only stale or new keys are fetched. Health and collector-missed alerts open issues in this public repo with the workflow `GITHUB_TOKEN` (`issues: write`). Alerts do not attach snapshot files. Deleted or renamed GitHub repos log a per-app `could not resolve repository` warning and do not fail the run.
 
 **Coverage expectations**
 
@@ -167,9 +174,9 @@ npm run site:build:fixture        # local/CI site build from fixtures
 npm run dev --workspace=web
 ```
 
-The builder writes compact `web/data/radar.json` (and `radar.sqlite` when `node:sqlite` is available). That file is a summary: latest app cards, short metric series, coverage. It is **not** a dump of private NDJSON. `meta.source` is `"private"` or `"fixture"` so a production bundle cannot silently look like live data.
+The builder writes compact `web/data/radar.json` (and `radar.sqlite` when `node:sqlite` is available). That file is a **free-tier public slice**: top 10 per list, counts rounded to 2 significant figures, growth as percent buckets, last 14 days of history. Partial snapshot days (`manifest.partial: true`) are omitted from growth/movers. Per-app pages exist only for apps that appear in a public top-10 list. It is **not** a dump of private NDJSON. The MCP connector reads the same file. `meta.source` is `"private"` or `"fixture"` so a production bundle cannot silently look like live data.
 
-Locally, with neither `CI` nor `VERCEL` set, `npm run aggregate` may still use fixtures if no token/`DATA_DIR` is present. **Vercel and CI never do that** unless you pass `--allow-fixture` or set `ALLOW_FIXTURE=1`. `npm run site:build` always passes `--require-private`.
+Locally, with neither `CI` nor `VERCEL` set, `npm run aggregate` may still use fixtures if no token/`DATA_DIR` is present. **Vercel never falls back to fixtures**, even with `ALLOW_FIXTURE=1`. CI never does that unless you pass `--allow-fixture` or set `ALLOW_FIXTURE=1`. `npm run site:build` always passes `--require-private`.
 
 ### Vercel
 
@@ -195,7 +202,7 @@ Refresh live charts by redeploying (a Deploy Hook from the data repo, or a manua
 | `DATA_REPO` | no | Defaults to `Verdent06/agentstore-radar-data`. |
 | `NEXT_PUBLIC_SITE_URL` | recommended | Canonical site URL for Open Graph (`https://your-project.vercel.app`). |
 | `AGGREGATE_PATH` | no | Override path to `radar.json` (site + MCP). |
-| `ALLOW_FIXTURE` | no | Explicit fixture opt-in for local/CI. Ignored when `--require-private` is set (Vercel always sets that). |
+| `ALLOW_FIXTURE` | no | Explicit fixture opt-in for local/CI. Ignored when `--require-private` is set **or** `VERCEL` is set (Vercel never ships fixtures). |
 
 A Vercel build **fails** if it cannot load the private data repo. It will not ship demo fixtures. The build log should show `token from DATA_GITHUB_TOKEN` and `source=private`.
 
@@ -211,7 +218,7 @@ npx tsx mcp/src/stdio.ts          # stdio
 npx tsx mcp/src/http.ts           # http://0.0.0.0:8787/mcp  (PORT / HOST)
 ```
 
-Tools: `search_apps`, `app_details`, `rank_history`, `top_charts`, `movers`, `competitors`, `category_trends`, `multi_store`, `answer_share`. All read the same aggregate; payloads are capped and never include snapshot files. `answer_share` returns `{ available: false }` when no probe is present.
+Tools: `search_apps`, `app_details`, `rank_history`, `top_charts`, `movers`, `competitors`, `category_trends`, `multi_store`, `answer_share`. All read the same free-tier aggregate; payloads are capped at 10 (default 5) and never include snapshot files. `answer_share` returns `{ available: false }` when no probe is present.
 
 Listing files:
 

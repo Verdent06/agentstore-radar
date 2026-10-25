@@ -54,12 +54,13 @@ results.push(await pypiAdapter.collect(ctx));
 let failed = false;
 for (const result of results) {
   const coverage = result.coverage ?? 0;
-  const ok = !result.skipped && (result.fetchedCount ?? 0) > 0 && coverage >= 1;
+  const ok = !result.skipped && (result.fetchedThisRunCount ?? result.freshWithin7dCount ?? 0) > 0 && coverage >= 1;
   log.info(`smoke ${result.source}`, {
     skipped: result.skipped,
     rows: result.rowCount,
     eligible: result.eligibleCount,
-    fetched: result.fetchedCount,
+    freshWithin7d: result.freshWithin7dCount,
+    fetchedThisRun: result.fetchedThisRunCount,
     coverage,
     ok,
   });

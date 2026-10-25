@@ -6,6 +6,7 @@ import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import {
   clearCheckpoint,
   countFresh,
+  isCarriedForward,
   loadCheckpoint,
   loadEntityCache,
   loadLastFetched,
@@ -14,8 +15,8 @@ import {
   persistLastFetched,
   resumeDueKeys,
 } from "../lib/rolling.ts";
-import { emptySourceRow, type SourceRow } from "../lib/schema.ts";
-import type { CollectContext, SourceAdapter, SourceResult } from "./types.ts";
+import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
+import { sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "./types.ts";
 
 const RecentSchema = z.object({
   data: z.object({
@@ -63,7 +64,13 @@ export function normalizePypiRecent(snapshotDate: string, name: string, item: un
   });
 }
 
-function recordsFromCache(snapshotDate: string, keys: string[], cache: Record<string, unknown>): SourceRow[] {
+function recordsFromCache(
+  snapshotDate: string,
+  keys: string[],
+  cache: Record<string, unknown>,
+  lastFetched: Record<string, string>,
+  collectedAt: string,
+): SourceRow[] {
   const records: SourceRow[] = [];
   for (const name of keys) {
     const item = cache[name];
@@ -72,7 +79,8 @@ function recordsFromCache(snapshotDate: string, keys: string[], cache: Record<st
     }
     const row = normalizePypiRecent(snapshotDate, name, item);
     if (row) {
-      records.push(row);
+      const fetchedAt = lastFetched[name] ?? null;
+      records.push(withObservation(row, fetchedAt, isCarriedForward(fetchedAt, snapshotDate, collectedAt)));
     }
   }
   return records;
@@ -89,10 +97,14 @@ export const pypiAdapter: SourceAdapter = {
     const { dueKeys, resumed } = resumeDueKeys(allKeys, lastFetched, ctx.now, ctx.snapshotDate, checkpoint);
     const fetchedAt = ctx.collectedAt;
 
-    const finish = (input: { truncated: boolean; fetchedThisRun: number }): SourceResult => {
-      const records = recordsFromCache(ctx.snapshotDate, allKeys, cache);
-      const fetchedCount = countFresh(allKeys, lastFetched, ctx.now);
-      const { coverage } = computeCoverage(allKeys.length, fetchedCount);
+    const finish = (input: {
+      truncated: boolean;
+      fetchedThisRun: number;
+      stoppedAt?: SourceResult["stoppedAt"];
+    }): SourceResult => {
+      const records = recordsFromCache(ctx.snapshotDate, allKeys, cache, lastFetched, fetchedAt);
+      const freshWithin7dCount = countFresh(allKeys, lastFetched, ctx.now);
+      const { coverage } = computeCoverage(allKeys.length, freshWithin7dCount);
       persistLastFetched(ctx.dataDir, "pypi", lastFetched);
       persistEntityCache(ctx.dataDir, "pypi", cache);
       if (input.truncated) {
@@ -112,9 +124,12 @@ export const pypiAdapter: SourceAdapter = {
         skipped: false,
         truncated: input.truncated,
         eligibleCount: allKeys.length,
-        fetchedCount,
+        freshWithin7dCount,
+        fetchedThisRunCount: input.fetchedThisRun,
         coverage,
         lastFetchedAt: Object.values(lastFetched).sort().at(-1),
+        stoppedAt: input.stoppedAt,
+        error: input.stoppedAt?.error,
         raw: {
           endpoint: PYPISTATS_BASE,
           fetchedAt,
@@ -140,6 +155,7 @@ export const pypiAdapter: SourceAdapter = {
 
     let fetchedThisRun = 0;
     let truncated = false;
+    let stoppedAt: SourceResult["stoppedAt"];
 
     try {
       for (const [index, name] of dueKeys.entries()) {
@@ -179,10 +195,12 @@ export const pypiAdapter: SourceAdapter = {
         (fetchedThisRun > 0 || Object.keys(cache).length > 0)
       ) {
         truncated = true;
+        stoppedAt = sourceStoppedAt("pypi", error, { page: fetchedThisRun + 1 });
         ctx.log.warn("pypi stopped early after rate limit; keeping partial snapshot", {
           fetchedThisRun,
           requested: allKeys.length,
           due: dueKeys.length,
+          error: stoppedAt.error,
         });
       } else {
         throw error;
@@ -190,6 +208,6 @@ export const pypiAdapter: SourceAdapter = {
     }
 
     ctx.log.info("pypi collected", { requested: allKeys.length, due: dueKeys.length, fetchedThisRun, truncated });
-    return finish({ truncated, fetchedThisRun });
+    return finish({ truncated, fetchedThisRun, stoppedAt });
   },
 };

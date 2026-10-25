@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { Shell } from "@/components/shell";
 import { LeaderTable } from "@/components/table";
 import { CHART_IDS, CHART_META } from "@/lib/types";
-import { isChartId, sparkValues, topChart } from "@/lib/query";
+import { PUBLIC_TOP_N, isChartId, sparkValues, topChart } from "@/lib/query";
 import { loadAggregate } from "@/lib/store";
 
 export function generateStaticParams() {
@@ -25,7 +25,7 @@ export default async function ChartPage({ params }: { params: Promise<{ chart: s
   if (!isChartId(chart)) notFound();
   const agg = loadAggregate();
   const spec = CHART_META[chart];
-  const rows = topChart(agg, chart, 50);
+  const rows = topChart(agg, chart, PUBLIC_TOP_N);
   const sparks = new Map(rows.map((row) => [row.app.id, sparkValues(agg, row.app.id, spec.metric)]));
 
   return (

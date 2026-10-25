@@ -7,6 +7,11 @@
   "bin": {
     "agentstore-radar-mcp": "./dist/stdio.js"
   },
+  "files": [
+    "src",
+    "Dockerfile",
+    "tsconfig.json"
+  ],
   "scripts": {
     "build": "tsc --noEmit -p tsconfig.json",
     "start": "tsx src/http.ts",

@@ -54,7 +54,8 @@ describe("github growth adapter", () => {
     expect(result.skipped).toBe(false);
     expect(result.rowCount).toBe(1);
     expect(result.eligibleCount).toBe(1);
-    expect(result.fetchedCount).toBe(1);
+    expect(result.freshWithin7dCount).toBe(1);
+    expect(result.fetchedThisRunCount).toBe(1);
     expect(result.coverage).toBe(1);
     expect(result.truncated).toBe(false);
   });
@@ -83,7 +84,10 @@ describe("github growth adapter", () => {
     expect(calls).toBe(0);
     expect(result.rowCount).toBe(1);
     expect(result.coverage).toBe(1);
-    expect(result.fetchedCount).toBe(1);
+    expect(result.freshWithin7dCount).toBe(1);
+    expect(result.fetchedThisRunCount).toBe(0);
+    expect(result.records[0]?.carried_forward).toBe(true);
+    expect(result.records[0]?.fetched_at).toBe("2026-10-14T00:00:00Z");
   });
 
   it("keeps a partial snapshot after a mid-run rate limit", async () => {
@@ -120,6 +124,81 @@ describe("github growth adapter", () => {
     expect(result.rowCount).toBe(1);
     expect(result.eligibleCount).toBe(51);
     expect(result.coverage).toBeCloseTo(1 / 51);
+  });
+
+  it("logs deleted/renamed repos per-app and does not fail the GitHub source", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-gh-missing-"));
+    const discovered = createDiscoveredRefs();
+    discovered.githubRepos.set("example/weather", { owner: "example", repo: "weather" });
+    discovered.githubRepos.set("deleted/gone", { owner: "deleted", repo: "gone" });
+    const warnings: Array<{ message?: string; repo?: string }> = [];
+    const fetchImpl = async () =>
+      new Response(
+        JSON.stringify({
+          data: {
+            r0: loadFixture<{ data: { r0: unknown } }>("github-graphql.json").data.r0,
+            r1: null,
+          },
+          errors: [
+            {
+              type: "NOT_FOUND",
+              path: ["r1"],
+              message: "Could not resolve to a Repository with the name 'deleted/gone'.",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    const result = await githubAdapter.collect(
+      ctx({
+        dataDir,
+        http: createHttpClient({ fetchImpl, maxRetries: 0 }),
+        env: { GH_STATS_TOKEN: "test-token" },
+        discovered,
+        log: {
+          info() {},
+          warn(_message, extra) {
+            warnings.push({ message: String(_message), repo: extra && typeof extra === "object" && "repo" in extra ? String(extra.repo) : undefined });
+          },
+          error() {},
+        },
+      }),
+    );
+    expect(result.failed).toBeFalsy();
+    expect(result.skipped).toBe(false);
+    expect(result.rowCount).toBe(1);
+    expect(warnings.some((row) => row.message?.includes("could not resolve repository") && row.repo === "deleted/gone")).toBe(true);
+  });
+
+  it("does not fail when a batch is all unresolved repositories", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-gh-all-missing-"));
+    const discovered = createDiscoveredRefs();
+    discovered.githubRepos.set("deleted/gone", { owner: "deleted", repo: "gone" });
+    const fetchImpl = async () =>
+      new Response(
+        JSON.stringify({
+          data: null,
+          errors: [
+            {
+              type: "NOT_FOUND",
+              path: ["r0"],
+              message: "Could not resolve to a Repository with the name 'deleted/gone'.",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    const result = await githubAdapter.collect(
+      ctx({
+        dataDir,
+        http: createHttpClient({ fetchImpl, maxRetries: 0 }),
+        env: { GITHUB_TOKEN: "test-token" },
+        discovered,
+      }),
+    );
+    expect(result.failed).toBeFalsy();
+    expect(result.skipped).toBe(false);
+    expect(result.rowCount).toBe(0);
   });
 });
 

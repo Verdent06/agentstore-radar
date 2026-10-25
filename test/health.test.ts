@@ -78,7 +78,12 @@ describe("health", () => {
     const report = evaluateHealth({ date: "2026-10-16", dataDir });
     expect(report.ok).toBe(false);
     expect(report.findings).toEqual([]);
-    expect(report.coverageFindings[0]).toMatchObject({ source: "github", coverage: 0.2, eligibleCount: 100 });
+    expect(report.coverageFindings[0]).toMatchObject({
+      source: "github",
+      coverage: 0.2,
+      eligibleCount: 100,
+      freshWithin7dCount: 20,
+    });
   });
 
   it("does not flag skipped sources or coverage at/above 70%", () => {
@@ -88,8 +93,8 @@ describe("health", () => {
       [],
       [],
       manifest("2026-10-16", [
-        { ...source("github", 80), eligibleCount: 100, fetchedCount: 80, coverage: 0.8 },
-        { ...source("npm", 0, true), eligibleCount: 10, fetchedCount: 0, coverage: 0 },
+        { ...source("github", 80), eligibleCount: 100, freshWithin7dCount: 80, coverage: 0.8 },
+        { ...source("npm", 0, true), eligibleCount: 10, freshWithin7dCount: 0, coverage: 0 },
       ]),
       dataDir,
     );

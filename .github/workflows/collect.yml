@@ -2,11 +2,22 @@ name: Collect snapshots
 
 on:
   schedule:
+    # Primary daily collect (UTC morning).
     - cron: "17 6 * * *"
+    # Same-day backstop: only collects if today's snapshot is missing or incomplete.
+    - cron: "17 18 * * *"
   workflow_dispatch:
     inputs:
       seed_only:
         description: "Copy public-repo data/ history into the private data repo; do not collect"
+        type: boolean
+        default: false
+      if_incomplete:
+        description: "Only collect if today's snapshot is missing or incomplete"
+        type: boolean
+        default: false
+      force:
+        description: "Re-collect even if today's snapshot is already complete (overwrites that day)"
         type: boolean
         default: false
 
@@ -15,16 +26,21 @@ concurrency:
   cancel-in-progress: false
 
 # Read-only on the public repo so this job cannot push snapshots here.
+# issues: write is for collector-missed alerts on this repo.
 permissions:
   contents: read
+  issues: write
 
 env:
   DATA_REPO: Verdent06/agentstore-radar-data
   DATA_DIR: ${{ github.workspace }}/.radar-data/data
+  COLLECTOR_ISSUE_REPO: Verdent06/agentstore-radar
+  IS_BACKSTOP: ${{ github.event.schedule == '17 18 * * *' }}
 
 jobs:
   collect:
     runs-on: ubuntu-latest
+    # GitHub-hosted max is 6h. Enrichment waits through npm/GitHub/PyPI resets.
     timeout-minutes: 360
     steps:
       - name: Checkout public collector
@@ -53,33 +69,48 @@ jobs:
         if: ${{ inputs.seed_only != true }}
 
       - name: Collect sanctioned public snapshots
+        id: collect
         if: ${{ inputs.seed_only != true }}
+        timeout-minutes: 330
         env:
           DATA_DIR: ${{ env.DATA_DIR }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_STATS_TOKEN: ${{ secrets.GH_STATS_TOKEN }}
           SMITHERY_API_KEY: ${{ secrets.SMITHERY_API_KEY }}
-        run: npm run collect -- --data "$DATA_DIR"
+        run: |
+          ARGS=(--data "$DATA_DIR")
+          if [[ "${{ inputs.force }}" == "true" ]]; then
+            ARGS+=(--force)
+          elif [[ "${IS_BACKSTOP}" == "true" || "${{ inputs.if_incomplete }}" == "true" ]]; then
+            ARGS+=(--if-incomplete)
+          fi
+          npm run collect -- "${ARGS[@]}"
 
       - name: Commit snapshot to private data repo
+        if: ${{ always() && inputs.seed_only != true && steps.collect.outcome != 'skipped' }}
         working-directory: .radar-data
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No snapshot changes"
-          else
-            DATE=$(date -u +%F)
-            git commit -m "data: snapshot ${DATE}"
-            git push
-          fi
+        run: bash "$GITHUB_WORKSPACE/scripts/push-data-repo.sh" "$GITHUB_WORKSPACE/.radar-data"
 
       - name: Health check
-        if: ${{ inputs.seed_only != true }}
+        if: ${{ inputs.seed_only != true && steps.collect.outcome == 'success' }}
+        continue-on-error: true
         env:
           DATA_DIR: ${{ env.DATA_DIR }}
-          HEALTH_ISSUE_REPO: Verdent06/agentstore-radar-data
-          HEALTH_ISSUE_TOKEN: ${{ secrets.HEALTH_ISSUE_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run health -- --data "$DATA_DIR"
+
+      - name: Alert if today's snapshot is still missing
+        if: ${{ always() && inputs.seed_only != true }}
+        env:
+          DATA_DIR: ${{ env.DATA_DIR }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COLLECTOR_ISSUE_REPO: Verdent06/agentstore-radar
+        run: |
+          ARGS=(--data "$DATA_DIR")
+          if [[ "${{ steps.collect.outcome }}" == "failure" ]]; then
+            ARGS+=(--collect-failed)
+          fi
+          if [[ "${IS_BACKSTOP}" == "true" ]]; then
+            ARGS+=(--backstop)
+          fi
+          npm run alert-missed -- "${ARGS[@]}"

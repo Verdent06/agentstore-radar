@@ -1,15 +1,16 @@
 import Link from "next/link";
 import { Shell } from "@/components/shell";
-import { formatDate, formatPct } from "@/lib/format";
+import { formatCount, formatDate, formatPct } from "@/lib/format";
+import { findApp } from "@/lib/query";
 import { appHref, loadAggregate } from "@/lib/store";
-import type { AnswerShareRowPublic } from "@/lib/types";
+import type { Aggregate, AnswerShareRowPublic } from "@/lib/types";
 
 export const metadata = {
   title: "Answer share",
   description: "Which apps frontier assistants recommend, from the weekly official-API probe.",
 };
 
-function ShareTable({ rows }: { rows: AnswerShareRowPublic[] }) {
+function ShareTable({ rows, agg }: { rows: AnswerShareRowPublic[]; agg: Aggregate }) {
   if (rows.length === 0) {
     return <p className="text-sm text-muted">No rows for this slice.</p>;
   }
@@ -30,18 +31,18 @@ function ShareTable({ rows }: { rows: AnswerShareRowPublic[] }) {
             <tr key={`${row.appId ?? row.name}-${index}`} className="border-t border-line">
               <td className="px-3 py-2 font-mono text-xs text-muted">{index + 1}</td>
               <td className="px-3 py-2">
-                {row.appId ? (
+                {row.appId && findApp(agg, row.appId) ? (
                   <Link href={appHref(row.appId)} className="font-medium hover:text-accent">
                     {row.name}
                   </Link>
                 ) : (
                   <span>
-                    {row.name} <span className="text-xs text-muted">(unmatched)</span>
+                    {row.name} {row.appId ? <span className="text-xs text-muted">(not in public top 10)</span> : <span className="text-xs text-muted">(unmatched)</span>}
                   </span>
                 )}
               </td>
               <td className="px-3 py-2 text-right font-mono tabular">{formatPct(row.answerShare)}</td>
-              <td className="px-3 py-2 text-right font-mono tabular">{row.mentionCount}</td>
+              <td className="px-3 py-2 text-right font-mono tabular">{formatCount(row.mentionCount)}</td>
               <td className="hidden px-3 py-2 text-right font-mono tabular text-muted md:table-cell">{formatPct(row.runShare)}</td>
             </tr>
           ))}
@@ -82,12 +83,12 @@ export default function AnswerSharePage() {
       </p>
       <section className="mt-8">
         <h2 className="mb-3 text-lg font-semibold">Overall</h2>
-        <ShareTable rows={share.overall} />
+        <ShareTable rows={share.overall} agg={agg} />
       </section>
       {providers.map((provider) => (
         <section key={provider} className="mt-8">
           <h2 className="mb-3 text-lg font-semibold capitalize">{provider}</h2>
-          <ShareTable rows={share.byProvider[provider] ?? []} />
+          <ShareTable rows={share.byProvider[provider] ?? []} agg={agg} />
         </section>
       ))}
     </Shell>

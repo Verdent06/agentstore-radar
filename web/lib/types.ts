@@ -1,4 +1,4 @@
-export const CHART_IDS = ["smithery", "npm", "github", "gemini"] as const;
+export const CHART_IDS = ["npm", "github", "gemini"] as const;
 export type ChartId = (typeof CHART_IDS)[number];
 
 export type MetricKey =
@@ -53,6 +53,7 @@ export type AppSummary = {
   pypiLastWeekDownloads: number | null;
   geminiStars: number | null;
   verified: boolean | null;
+  starsSource?: string | null;
 };
 
 export type CompactSeries = {
@@ -61,15 +62,29 @@ export type CompactSeries = {
   n?: Array<number | null>;
   p?: Array<number | null>;
   g?: Array<number | null>;
+  sc?: Array<0 | 1 | null>;
+  uc?: Array<0 | 1 | null>;
+  nc?: Array<0 | 1 | null>;
+  pc?: Array<0 | 1 | null>;
+  ss?: Array<string | null>;
 };
+
+export type HistoryGap = "partial" | "carried_forward" | "missing";
 
 export type HistoryPoint = {
   date: string;
   stars: number | null;
-  useCount: number | null;
   npmWeeklyDownloads: number | null;
   pypiLastWeekDownloads: number | null;
   geminiStars: number | null;
+  starsGap?: HistoryGap | null;
+  npmGap?: HistoryGap | null;
+  pypiGap?: HistoryGap | null;
+  geminiGap?: HistoryGap | null;
+  starsGrowth?: string | null;
+  npmGrowth?: string | null;
+  pypiGrowth?: string | null;
+  geminiGrowth?: string | null;
 };
 
 export type HeadlineStats = {
@@ -91,6 +106,8 @@ export type CoverageRow = {
   source: string;
   coverage?: number;
   eligibleCount?: number;
+  freshWithin7dCount?: number;
+  fetchedThisRunCount?: number;
   fetchedCount?: number;
   skipped: boolean;
 };
@@ -120,6 +137,9 @@ export type Aggregate = {
     latestDate: string | null;
     previousDate: string | null;
     weekAgoDate: string | null;
+    partialDates?: string[];
+    latestCompleteDate?: string | null;
+    previousCompleteDate?: string | null;
     coverage: CoverageRow[];
   };
   stats: HeadlineStats;
@@ -145,16 +165,10 @@ export type MoverRow = {
   previous: number;
   current: number;
   delta: number;
-  pct: number | null;
+  growth: string | null;
 };
 
 export const CHART_META: Record<ChartId, { title: string; metric: MetricKey; unit: string; blurb: string }> = {
-  smithery: {
-    title: "Smithery connections",
-    metric: "use_count",
-    unit: "use count",
-    blurb: "Live connections reported by the Smithery catalog.",
-  },
   npm: {
     title: "npm weekly downloads",
     metric: "npm_weekly_downloads",
@@ -171,7 +185,7 @@ export const CHART_META: Record<ChartId, { title: string; metric: MetricKey; uni
     title: "Gemini CLI gallery",
     metric: "gemini_stars",
     unit: "gallery stars",
-    blurb: "Stars as published on the Gemini CLI extensions gallery.",
+    blurb: "Static gallery star counts from extensions.json. App-level stars prefer live GitHub.",
   },
 };
 

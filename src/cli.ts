@@ -1,3 +1,4 @@
+import { runCollectorMissedAlert } from "./commands/alert-missed.ts";
 import { collectAnswerShare, printAnswerShareReport } from "./commands/answer-share.ts";
 import { collect } from "./commands/collect.ts";
 import { runHealth } from "./commands/health.ts";
@@ -21,9 +22,10 @@ function usage(): string {
   return `agentstore-radar
 
 Usage:
-  npm run collect -- [--date YYYY-MM-DD] [--data DIR] [--sources a,b] [--max-pages N]
+  npm run collect -- [--date YYYY-MM-DD] [--data DIR] [--sources a,b] [--max-pages N] [--if-incomplete] [--force]
   npm run report -- [--date YYYY-MM-DD] [--data DIR] [--limit N]
   npm run health -- [--date YYYY-MM-DD] [--data DIR]
+  npm run alert-missed -- [--date YYYY-MM-DD] [--data DIR] [--collect-failed] [--backstop]
   npm run answer-share -- [--date YYYY-MM-DD] [--data DIR] [--providers a,b] [--n 3] [--max-calls N] [--prompt-version v1]
   npm run answer-share:report -- [--date YYYY-MM-DD] [--data DIR] [--limit N]
 
@@ -48,14 +50,16 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === "collect") {
     const sources = argValue(args, "--sources")?.split(",").filter(Boolean);
     const maxPagesRaw = argValue(args, "--max-pages");
-    const manifest = await collect({
+    const outcome = await collect({
       date,
       dataDir,
       sources,
       maxPages: maxPagesRaw ? Number(maxPagesRaw) : undefined,
+      ifIncomplete: flag(args, "--if-incomplete"),
+      force: flag(args, "--force"),
     });
-    console.log(JSON.stringify(manifest, null, 2));
-    return 0;
+    console.log(JSON.stringify(outcome, null, 2));
+    return outcome.ok ? 0 : 1;
   }
   if (command === "report") {
     const limit = Number(argValue(args, "--limit") ?? "10");
@@ -66,6 +70,16 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const report = await runHealth({ date, dataDir });
     console.log(JSON.stringify(report, null, 2));
     return report.ok ? 0 : 1;
+  }
+  if (command === "alert-missed") {
+    const report = await runCollectorMissedAlert({
+      date,
+      dataDir,
+      collectFailed: flag(args, "--collect-failed"),
+      backstop: flag(args, "--backstop"),
+    });
+    console.log(JSON.stringify(report, null, 2));
+    return 0;
   }
   if (command === "answer-share") {
     const providers = argValue(args, "--providers")?.split(",").filter(Boolean);

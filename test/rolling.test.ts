@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   countFresh,
+  isCarriedForward,
   loadCheckpoint,
   loadLastFetched,
   mergeLastFetched,
@@ -50,6 +51,13 @@ describe("rolling last_fetched", () => {
     );
     expect(resumed).toBe(true);
     expect(dueKeys).toEqual(["b/two", "c/three"]);
+  });
+
+  it("treats same-day last_fetched as live, not carried_forward", () => {
+    expect(isCarriedForward("2026-10-24T11:07:24.740Z", "2026-10-24", "2026-10-24T19:48:02.231Z")).toBe(false);
+    expect(isCarriedForward("2026-10-24T19:48:02.231Z", "2026-10-24", "2026-10-24T19:48:02.231Z")).toBe(false);
+    expect(isCarriedForward("2026-10-18T12:00:00.000Z", "2026-10-24")).toBe(true);
+    expect(isCarriedForward(undefined, "2026-10-24")).toBe(true);
   });
 
   it("persists last_fetched and checkpoints under data/state", () => {

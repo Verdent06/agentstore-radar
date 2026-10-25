@@ -1,6 +1,6 @@
 import type { SourceName } from "../lib/schema.ts";
 
-export const CHART_IDS = ["smithery", "npm", "github", "gemini"] as const;
+export const CHART_IDS = ["npm", "github", "gemini"] as const;
 export type ChartId = (typeof CHART_IDS)[number];
 
 export const METRIC_KEYS = [
@@ -68,15 +68,25 @@ export type AppSummary = {
   pypiLastWeekDownloads: number | null;
   geminiStars: number | null;
   verified: boolean | null;
+  starsSource?: string | null;
 };
+
+export type HistoryGap = "partial" | "carried_forward" | "missing";
 
 export type HistoryPoint = {
   date: string;
   stars: number | null;
-  useCount: number | null;
   npmWeeklyDownloads: number | null;
   pypiLastWeekDownloads: number | null;
   geminiStars: number | null;
+  starsGap?: HistoryGap | null;
+  npmGap?: HistoryGap | null;
+  pypiGap?: HistoryGap | null;
+  geminiGap?: HistoryGap | null;
+  starsGrowth?: string | null;
+  npmGrowth?: string | null;
+  pypiGrowth?: string | null;
+  geminiGrowth?: string | null;
 };
 
 /** Parallel arrays aligned to `meta.snapshotDates`. Omitted when every value is null. */
@@ -86,12 +96,21 @@ export type CompactSeries = {
   n?: Array<number | null>;
   p?: Array<number | null>;
   g?: Array<number | null>;
+  /** 1 when the aligned metric was carried forward from an older fetch. */
+  sc?: Array<0 | 1 | null>;
+  uc?: Array<0 | 1 | null>;
+  nc?: Array<0 | 1 | null>;
+  pc?: Array<0 | 1 | null>;
+  /** Stars source (`github`, `gemini-cli`, …) aligned to `meta.snapshotDates`. */
+  ss?: Array<string | null>;
 };
 
 export type CoverageRow = {
   source: string;
   coverage?: number;
   eligibleCount?: number;
+  freshWithin7dCount?: number;
+  fetchedThisRunCount?: number;
   fetchedCount?: number;
   skipped: boolean;
   rowCount?: number;
@@ -129,23 +148,24 @@ export type MoverRow = {
   previous: number;
   current: number;
   delta: number;
-  pct: number | null;
+  /** Bucketed percent change; never an exact fraction. */
+  growth: string | null;
 };
 
 export type CategorySummary = {
   slug: CategorySlug;
   label: string;
   appCount: number;
-  useCount: number;
   stars: number;
   newThisSnapshot: number;
 };
 
 export type CategoryTrendPoint = {
   date: string;
-  appCount: number;
-  useCount: number;
-  stars: number;
+  appCount: number | null;
+  stars: number | null;
+  starsGrowth?: string | null;
+  gap: HistoryGap | null;
 };
 
 export type AggregateMeta = {
@@ -156,6 +176,10 @@ export type AggregateMeta = {
   latestDate: string | null;
   previousDate: string | null;
   weekAgoDate: string | null;
+  /** Snapshot dates `snapshotIsPartial` treated as incomplete. */
+  partialDates: string[];
+  latestCompleteDate?: string | null;
+  previousCompleteDate?: string | null;
   coverage: CoverageRow[];
 };
 
@@ -187,13 +211,6 @@ export const CHART_META: Record<
   ChartId,
   { title: string; metric: MetricKey; source: string; unit: string; blurb: string }
 > = {
-  smithery: {
-    title: "Smithery connections",
-    metric: "use_count",
-    source: "smithery",
-    unit: "use count",
-    blurb: "Live connections reported by the Smithery catalog.",
-  },
   npm: {
     title: "npm weekly downloads",
     metric: "npm_weekly_downloads",
@@ -213,7 +230,7 @@ export const CHART_META: Record<
     metric: "gemini_stars",
     source: "gemini-cli",
     unit: "gallery stars",
-    blurb: "Stars as published on the Gemini CLI extensions gallery.",
+    blurb: "Static gallery star counts from extensions.json. App-level stars prefer live GitHub.",
   },
 };
 

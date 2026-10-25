@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { writeFileAtomic } from "./io.ts";
 
 export const DEFAULT_REFRESH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -22,6 +23,21 @@ export function isStale(fetchedAt: string | undefined, now: Date, maxAgeMs = DEF
     return true;
   }
   return ts < now.getTime() - maxAgeMs;
+}
+
+/** True when the stored value was not fetched for this snapshot day (and is not this run's live fetch). */
+export function isCarriedForward(
+  lastFetchedAt: string | null | undefined,
+  snapshotDate: string,
+  collectedAt?: string,
+): boolean {
+  if (!lastFetchedAt) {
+    return true;
+  }
+  if (collectedAt && lastFetchedAt === collectedAt) {
+    return false;
+  }
+  return lastFetchedAt.slice(0, 10) !== snapshotDate;
 }
 
 export function selectDueKeys(
@@ -97,8 +113,7 @@ export function loadJsonState<T>(path: string, fallback: T): T {
 }
 
 export function persistJsonState(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(value)}\n`);
+  writeFileAtomic(path, `${JSON.stringify(value)}\n`);
 }
 
 export function clearStateFile(path: string): void {
