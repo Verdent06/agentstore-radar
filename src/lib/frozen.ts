@@ -1,14 +1,24 @@
+import { SOURCE_FREEZE_RATIO } from "./config.ts";
 import { listSnapshotDates, readSourceRows } from "./io.ts";
 import type { SourceName, SourceRow } from "./schema.ts";
 
 export type MetricObservation = {
   date: string;
   value: number | null;
+  fetchedAt?: string | null;
 };
 
 export type NumericSourceField = {
   [K in keyof SourceRow]: SourceRow[K] extends number | null ? K : never;
 }[keyof SourceRow];
+
+export type SourceFreezeDecision = {
+  sourceFrozen: boolean;
+  freezeRow: boolean[];
+  unchangedCount: number;
+  catalogSize: number;
+  ratio: number;
+};
 
 export function smitheryFrozenDays(env: NodeJS.ProcessEnv = process.env, fallback = 3): number {
   const raw = env.SMITHERY_FROZEN_DAYS?.trim();
@@ -55,6 +65,27 @@ export function isUnchangedForDays(
   return streak >= minDays;
 }
 
+/**
+ * Source-level freeze: when `>= ratio` of the catalog is unchanged for N days,
+ * those unchanged rows are frozen. Otherwise N-day freeze is not applied
+ * per-row, so genuinely flat/zero servers are not stuck frozen after a thaw.
+ */
+export function evaluateSourceFreeze(
+  unchangedForNDays: boolean[],
+  ratio = SOURCE_FREEZE_RATIO,
+): SourceFreezeDecision {
+  const catalogSize = unchangedForNDays.length;
+  const unchangedCount = unchangedForNDays.filter(Boolean).length;
+  const sourceFrozen = catalogSize > 0 && unchangedCount / catalogSize >= ratio;
+  return {
+    sourceFrozen,
+    freezeRow: unchangedForNDays.map((unchanged) => sourceFrozen && unchanged),
+    unchangedCount,
+    catalogSize,
+    ratio,
+  };
+}
+
 export function loadPreviousMetricHistory(
   dataDir: string,
   snapshotDate: string,
@@ -73,7 +104,11 @@ export function loadPreviousMetricHistory(
       }
       const raw = row[field];
       const list = byId.get(row.source_id) ?? [];
-      list.push({ date, value: typeof raw === "number" ? raw : null });
+      list.push({
+        date,
+        value: typeof raw === "number" ? raw : null,
+        fetchedAt: row.fetched_at ?? null,
+      });
       byId.set(row.source_id, list);
     }
   }

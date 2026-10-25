@@ -2,7 +2,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../src/lib/frozen.ts";
+import { evaluateSourceFreeze, isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../src/lib/frozen.ts";
+import { SOURCE_FREEZE_RATIO } from "../src/lib/config.ts";
 import { writeNormalized } from "../src/lib/io.ts";
 import { mergeApps } from "../src/lib/merge.ts";
 import { emptySourceRow, type SnapshotManifest, type SourceRow } from "../src/lib/schema.ts";
@@ -68,5 +69,27 @@ describe("frozen metric detection", () => {
       PIPEWORX_USE_COUNT,
     ]);
     expect(isUnchangedForDays(PIPEWORX_USE_COUNT, loaded.byId.get(PIPEWORX_GATEWAY) ?? [], loaded.dates, 3)).toBe(true);
+  });
+
+  it("source-freezes when >=95% of the catalog is unchanged, otherwise does not freeze per-row", () => {
+    expect(SOURCE_FREEZE_RATIO).toBe(0.95);
+    const nineteenOfTwenty = [...Array.from({ length: 19 }, () => true), false];
+    const frozen = evaluateSourceFreeze(nineteenOfTwenty);
+    expect(frozen.sourceFrozen).toBe(true);
+    expect(frozen.unchangedCount).toBe(19);
+    expect(frozen.freezeRow.filter(Boolean)).toHaveLength(19);
+    expect(frozen.freezeRow[19]).toBe(false);
+
+    const eighteenOfTwenty = [...Array.from({ length: 18 }, () => true), false, false];
+    const thawed = evaluateSourceFreeze(eighteenOfTwenty);
+    expect(thawed.sourceFrozen).toBe(false);
+    expect(thawed.freezeRow.every((row) => row === false)).toBe(true);
+  });
+
+  it("does not keep a genuine zero frozen after the source thaws", () => {
+    // 1/10 unchanged (the zero) — well under 95%, so the zero is not frozen.
+    const decision = evaluateSourceFreeze([true, ...Array.from({ length: 9 }, () => false)]);
+    expect(decision.sourceFrozen).toBe(false);
+    expect(decision.freezeRow[0]).toBe(false);
   });
 });

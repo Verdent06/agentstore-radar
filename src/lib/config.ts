@@ -41,8 +41,10 @@ export const NPM_SCOPED_MIN_INTERVAL_MS = 1200;
 export const NPM_BULK_MIN_INTERVAL_MS = 500;
 export const PYPI_MIN_INTERVAL_MS = 400;
 export const SMITHERY_USECOUNT_PAGE_SIZE = 10;
-/** Snapshot days of identical Smithery useCount (including today) before a value is frozen. */
+/** Snapshot days of identical catalog metrics (including today) before a value can be frozen. */
 export const SMITHERY_FROZEN_DAYS = 3;
+/** Treat the whole source as frozen when at least this share of rows is unchanged for N days. */
+export const SOURCE_FREEZE_RATIO = 0.95;
 /** Mark npm truncated/partial when more than this share of due keys fail in a completed pass. */
 export const NPM_PARTIAL_FAILURE_RATIO = 0.2;
 export const RATE_LIMIT_MIN_WAIT_MS = 15_000;

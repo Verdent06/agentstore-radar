@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { normalizeGeminiExtension } from "../src/adapters/gemini.ts";
+import { geminiAdapter, normalizeGeminiExtension } from "../src/adapters/gemini.ts";
 import { normalizeGithubRepo } from "../src/adapters/github.ts";
 import { normalizeMcpServer } from "../src/adapters/mcp-registry.ts";
 import { normalizeNpmPoint } from "../src/adapters/npm.ts";
@@ -212,11 +212,140 @@ describe("source normalizers", () => {
       frozen: true,
     });
     expect(result.freshTodayCount).toBe(0);
-    expect(result.fetchedThisRunCount).toBe(1);
-    expect((result.raw as { useCountRefresh?: { unchanged: number; frozen: number } }).useCountRefresh).toMatchObject({
+    expect(result.fetchedThisRunCount).toBe(0);
+    expect((result.raw as { useCountRefresh?: { unchanged: number; frozen: number; sourceFrozen: boolean } }).useCountRefresh).toMatchObject({
       unchanged: 1,
       frozen: 1,
+      sourceFrozen: true,
     });
+  });
+
+  it("does not freeze per-row zeros after the Smithery catalog thaws (<95% unchanged)", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-smithery-thaw-"));
+    const servers = [
+      { qualifiedName: "idle/zero", useCount: 0 },
+      { qualifiedName: "live/one", useCount: 10 },
+    ];
+    const writeDay = (date: string, counts: number[]) => {
+      const rows: SourceRow[] = servers.map((server, index) =>
+        emptySourceRow({
+          snapshot_date: date,
+          source: "smithery",
+          source_id: server.qualifiedName,
+          name: server.qualifiedName,
+          use_count: counts[index]!,
+          app_id: `smithery:${server.qualifiedName}`,
+          fetched_at: `${date}T12:00:00Z`,
+        }),
+      );
+      const manifest: SnapshotManifest = {
+        snapshotDate: date,
+        collectedAt: `${date}T12:00:00Z`,
+        appCount: rows.length,
+        sourceRowCount: rows.length,
+        partial: false,
+        completedSources: ["smithery"],
+        sources: [{ source: "smithery", rowCount: rows.length, skipped: false, collectedAt: `${date}T12:00:00Z` }],
+      };
+      writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
+    };
+    writeDay("2026-10-21", [0, 8]);
+    writeDay("2026-10-22", [0, 9]);
+    writeDay("2026-10-24", [0, 9]);
+    const list = {
+      servers,
+      pagination: { currentPage: 1, pageSize: 100, totalPages: 1, totalCount: 2 },
+    };
+    const result = await smitheryAdapter.collect({
+      snapshotDate: "2026-10-25",
+      collectedAt: "2026-10-25T12:00:00Z",
+      now: new Date("2026-10-25T12:00:00Z"),
+      dataDir,
+      env: {},
+      log: { info() {}, warn() {}, error() {} },
+      discovered: createDiscoveredRefs(),
+      http: createHttpClient({
+        fetchImpl: fixtureFetch([
+          {
+            match: /[?&]q=idle%2Fzero/,
+            body: {
+              servers: [servers[0]],
+              pagination: { currentPage: 1, pageSize: 10, totalPages: 1, totalCount: 1 },
+            },
+          },
+          {
+            match: /[?&]q=live%2Fone/,
+            body: {
+              servers: [{ ...servers[1], useCount: 10 }],
+              pagination: { currentPage: 1, pageSize: 10, totalPages: 1, totalCount: 1 },
+            },
+          },
+          { match: "api.smithery.ai/servers", body: list },
+        ]),
+        maxRetries: 0,
+      }),
+    });
+    expect((result.raw as { useCountRefresh?: { sourceFrozen: boolean } }).useCountRefresh?.sourceFrozen).toBe(false);
+    expect(result.records.find((row) => row.source_id === "idle/zero")).toMatchObject({
+      use_count: 0,
+      frozen: false,
+      carried_forward: false,
+    });
+    expect(result.fetchedThisRunCount).toBe(2);
+  });
+
+  it("stamps Gemini gallery stars frozen when the gallery is unchanged for N days", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-gemini-frozen-"));
+    const extensions = loadFixture<unknown[]>("gemini.json");
+    const writeDay = (date: string) => {
+      const rows: SourceRow[] = [
+        emptySourceRow({
+          snapshot_date: date,
+          source: "gemini-cli",
+          source_id: "@obra/superpowers",
+          name: "superpowers",
+          stars: 299294,
+          app_id: "github:obra/superpowers",
+          fetched_at: `${date}T12:00:00Z`,
+        }),
+      ];
+      const manifest: SnapshotManifest = {
+        snapshotDate: date,
+        collectedAt: `${date}T12:00:00Z`,
+        appCount: 1,
+        sourceRowCount: 1,
+        partial: false,
+        completedSources: ["gemini-cli"],
+        sources: [{ source: "gemini-cli", rowCount: 1, skipped: false, collectedAt: `${date}T12:00:00Z` }],
+      };
+      writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
+    };
+    writeDay("2026-10-21");
+    writeDay("2026-10-22");
+    writeDay("2026-10-24");
+    expect(existsSync(join(dataDir, "normalized", "2026-10-23"))).toBe(false);
+    const result = await geminiAdapter.collect({
+      snapshotDate: "2026-10-25",
+      collectedAt: "2026-10-25T12:00:00Z",
+      now: new Date("2026-10-25T12:00:00Z"),
+      dataDir,
+      env: {},
+      log: { info() {}, warn() {}, error() {} },
+      discovered: createDiscoveredRefs(),
+      http: createHttpClient({
+        fetchImpl: fixtureFetch([{ match: "geminicli.com/extensions.json", body: extensions }]),
+        maxRetries: 0,
+      }),
+    });
+    expect(result.records[0]).toMatchObject({
+      source_id: "@obra/superpowers",
+      stars: 299294,
+      carried_forward: true,
+      frozen: true,
+    });
+    expect(result.freshTodayCount).toBe(0);
+    expect(result.fetchedThisRunCount).toBe(0);
+    expect((result.raw as { freeze?: { sourceFrozen: boolean } }).freeze?.sourceFrozen).toBe(true);
   });
 
   it("counts fetchedThisRun as search hits this run and marks a 429-truncated search partial", async () => {

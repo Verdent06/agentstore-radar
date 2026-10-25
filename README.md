@@ -54,7 +54,7 @@ npm run report
 
 `--data` wins over `DATA_DIR`, which wins over `./data`.
 
-Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true when GitHub/npm/PyPI reused a value fetched on a **previous snapshot day**, or when Smithery `useCount` is frozen upstream). Smithery browse-list **and** `GET /servers?q=` return the same frozen `useCount` (e.g. `pipeworx/gateway` = 419019 on Oct 21, 22, 24, and 25; the detail endpoint is `null`; Oct 23 stays a gap). A search hit is not stamped fresh. If a value is unchanged for N snapshot days (default 3, `SMITHERY_FROZEN_DAYS`) it is flagged `frozen` and `carried_forward`. Merged `apps.ndjson` copies freshness onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*`, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a truncated MCP catalog is not treated as a one-day jump.
+Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true when GitHub/npm/PyPI reused a value fetched on a **previous snapshot day**, or when a catalog metric is source-frozen). Smithery browse-list **and** `GET /servers?q=` return the same frozen `useCount` (e.g. `pipeworx/gateway` = 419019 on Oct 21, 22, 24, and 25; the detail endpoint is `null`; Oct 23 stays a gap). Gemini gallery stars use the same check. A value is flagged `frozen`/`carried_forward` when **≥95%** of that source's catalog is unchanged for N snapshot days (default 3), not merely because one row was flat. `fetchedThisRunCount` counts only non-frozen hits. Merged `apps.ndjson` copies freshness onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*`, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a truncated MCP catalog is not treated as a one-day jump.
 
 `manifest.json` always records `partial: true|false` and `completedSources: [...]`. Incomplete sources include `stoppedAt: { source, page, cursor, error }` so a mid-pagination MCP 500 can resume from the last cursor instead of page 1.
 
@@ -150,8 +150,9 @@ Each source's `eligibleCount`, `freshTodayCount` (keys fetched on this UTC date 
 | GitHub | every discovered repo with a GitHub URL | all repos via 50-wide GraphQL (most-starred first). ~30k fits a 6h run | carry forward last-known stars; resume from checkpoint |
 | npm | every discovered npm package | unscoped in batches of 128; scoped one-by-one with 1.2s pacing and 429 patience | checkpoint + resume after Cloudflare 1015 / 429 |
 | PyPI | every discovered PyPI package | throttled `pypistats` recent for every package | checkpoint + resume after 429 |
-| MCP / Gemini | catalog page rows | full catalog in the run | n/a |
-| Smithery | catalog page rows | full catalog; `?q=` overlay is recorded but **not** stamped fresh | frozen `useCount` (unchanged for `SMITHERY_FROZEN_DAYS`, default 3) is `carried_forward`; 429 during search marks `truncated` |
+| MCP | catalog page rows | full catalog in the run | n/a |
+| Gemini | gallery JSON rows | full gallery | source freeze on unchanged gallery `stars` (≥95% for N days); live GitHub stars still win on merge |
+| Smithery | catalog page rows | full catalog; `?q=` overlay is recorded but **not** stamped fresh | source freeze when ≥95% of `useCount` is unchanged for `SMITHERY_FROZEN_DAYS` (default 3); 429 during search marks `truncated` |
 
 ## Development
 
