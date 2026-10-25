@@ -153,7 +153,6 @@ export function roundHeadlineStats(stats: HeadlineStats): HeadlineStats {
   return {
     ...stats,
     appCount: round2sf(stats.appCount),
-    totalUseCount: round2sf(stats.totalUseCount),
     totalStars: round2sf(stats.totalStars),
     totalNpmWeekly: round2sf(stats.totalNpmWeekly),
     multiStoreCount: round2sf(stats.multiStoreCount),

@@ -60,6 +60,10 @@ export function shouldAllowFixture(options?: {
 }): boolean {
   const argv = options?.argv ?? [];
   const env = options?.env ?? process.env;
+  // Vercel never ships demo fixtures, even with ALLOW_FIXTURE=1 or --allow-fixture.
+  if (isEnvFlagSet(env.VERCEL)) {
+    return false;
+  }
   if (options?.allowFixture === false || argv.includes("--require-private")) {
     return false;
   }
@@ -69,8 +73,7 @@ export function shouldAllowFixture(options?: {
   if (isEnvFlagSet(env.ALLOW_FIXTURE)) {
     return true;
   }
-  // Production/preview deploys and CI must not silently ship demo data.
-  if (isEnvFlagSet(env.VERCEL) || isEnvFlagSet(env.CI)) {
+  if (isEnvFlagSet(env.CI)) {
     return false;
   }
   return true;

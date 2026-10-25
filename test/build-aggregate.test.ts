@@ -86,6 +86,12 @@ describe("shouldAllowFixture", () => {
     expect(shouldAllowFixture({ env: { CI: "true" } })).toBe(false);
   });
 
+  it("never allows fixtures when VERCEL is set, even with ALLOW_FIXTURE=1 or --allow-fixture", () => {
+    expect(shouldAllowFixture({ env: { VERCEL: "1", ALLOW_FIXTURE: "1" } })).toBe(false);
+    expect(shouldAllowFixture({ argv: ["--allow-fixture"], env: { VERCEL: "1" } })).toBe(false);
+    expect(shouldAllowFixture({ allowFixture: true, env: { VERCEL: "1" } })).toBe(false);
+  });
+
   it("allows fixtures via explicit opt-in even in CI", () => {
     expect(shouldAllowFixture({ argv: ["--allow-fixture"], env: { CI: "true" } })).toBe(true);
     expect(shouldAllowFixture({ env: { CI: "true", ALLOW_FIXTURE: "1" } })).toBe(true);
@@ -112,6 +118,13 @@ describe("buildPublicAggregate", () => {
     await expect(buildPublicAggregate(["--out", out], cleanEnv({ VERCEL: "1" }))).rejects.toThrow(
       /Private snapshot data is required/,
     );
+  });
+
+  it("fails on Vercel with ALLOW_FIXTURE=1 when no private data is present", async () => {
+    const out = mkdtempSync(join(tmpdir(), "radar-vercel-fix-"));
+    await expect(
+      buildPublicAggregate(["--out", out], cleanEnv({ VERCEL: "1", ALLOW_FIXTURE: "1" })),
+    ).rejects.toThrow(/Private snapshot data is required/);
   });
 
   it("builds fixtures with meta.source=fixture when explicitly opted in", async () => {

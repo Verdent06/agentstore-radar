@@ -224,7 +224,7 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
     }));
   }
 
-  const stats = computeHeadlineStats(apps, snapshotDates, latestDate, previousDate, week);
+  const stats = computeHeadlineStats(apps, snapshotDates, latestDate, previousDate, week, [...latestApps.values()]);
   const draft: Aggregate = {
     meta: {
       builtAt: new Date().toISOString(),
@@ -265,15 +265,24 @@ function applyPublicTier(agg: Aggregate): Aggregate {
   };
 }
 
+/**
+ * Home KPIs count a metric only when `*_carried_forward` is explicitly false
+ * and `*_frozen` is not true. A missing `*_frozen` is fine (PR #11 has not
+ * landed yet). A missing `*_carried_forward` is not fresh.
+ */
+export function isFreshKpiValue(carriedForward: unknown, frozen: unknown): boolean {
+  return carriedForward === false && frozen !== true;
+}
+
 export function computeHeadlineStats(
   apps: AppSummary[],
   snapshotDates: string[],
   latestDate: string | null,
   previousDate: string | null,
   weekAgoDate: string | null,
+  latestRows: AppRow[] = [],
 ): HeadlineStats {
   const storeSet = new Set<string>();
-  let totalUseCount = 0;
   let totalStars = 0;
   let totalNpmWeekly = 0;
   let multiStoreCount = 0;
@@ -283,9 +292,6 @@ export function computeHeadlineStats(
     for (const store of app.stores) {
       storeSet.add(store);
     }
-    totalUseCount += app.useCount ?? 0;
-    totalStars += app.stars ?? 0;
-    totalNpmWeekly += app.npmWeeklyDownloads ?? 0;
     if (app.stores.length >= 2) {
       multiStoreCount += 1;
     }
@@ -294,6 +300,17 @@ export function computeHeadlineStats(
     }
     categories.add(app.category);
   }
+  for (const row of latestRows) {
+    if (isFreshKpiValue(row.stars_carried_forward, row.stars_frozen) && row.stars != null) {
+      totalStars += row.stars;
+    }
+    if (
+      isFreshKpiValue(row.npm_weekly_downloads_carried_forward, row.npm_weekly_downloads_frozen) &&
+      row.npm_weekly_downloads != null
+    ) {
+      totalNpmWeekly += row.npm_weekly_downloads;
+    }
+  }
   return {
     appCount: apps.length,
     storeCount: storeSet.size,
@@ -301,7 +318,6 @@ export function computeHeadlineStats(
     latestDate,
     previousDate,
     weekAgoDate: weekAgoDate === latestDate ? null : weekAgoDate,
-    totalUseCount,
     totalStars,
     totalNpmWeekly,
     multiStoreCount,

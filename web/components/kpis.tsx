@@ -47,15 +47,13 @@ export function formatKpis(stats: {
   storeCount: number;
   totalNpmWeekly: number;
   totalStars: number;
-  multiStoreCount: number;
-  newArrivalCount: number;
   snapshotCount: number;
   latestDate: string | null;
 }) {
   return [
     { label: "Apps tracked", value: formatNumber(stats.appCount), hint: `${stats.snapshotCount} snapshots` },
     { label: "Stores", value: formatNumber(stats.storeCount), hint: stats.latestDate ?? "" },
-    { label: "npm / week", value: formatCount(stats.totalNpmWeekly), hint: "sum of latest weekly downloads" },
-    { label: "GitHub stars", value: formatCount(stats.totalStars), hint: `${stats.multiStoreCount} multi-store · ${stats.newArrivalCount} new` },
+    { label: "npm / week", value: formatCount(stats.totalNpmWeekly), hint: "fresh today" },
+    { label: "GitHub stars", value: formatCount(stats.totalStars), hint: "fresh today" },
   ];
 }

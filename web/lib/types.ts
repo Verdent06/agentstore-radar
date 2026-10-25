@@ -94,7 +94,6 @@ export type HeadlineStats = {
   latestDate: string | null;
   previousDate: string | null;
   weekAgoDate: string | null;
-  totalUseCount: number;
   totalStars: number;
   totalNpmWeekly: number;
   multiStoreCount: number;
