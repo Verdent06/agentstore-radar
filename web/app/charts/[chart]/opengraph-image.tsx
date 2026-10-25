@@ -11,7 +11,7 @@ export const contentType = "image/png";
 
 export default async function Image({ params }: { params: Promise<{ chart: string }> }) {
   const { chart: raw } = await params;
-  const chart = isChartId(raw) ? raw : "smithery";
+  const chart = isChartId(raw) ? raw : "npm";
   const agg = loadAggregate();
   const spec = CHART_META[chart];
   const rows = topChart(agg, chart, 6).map((row) => ({

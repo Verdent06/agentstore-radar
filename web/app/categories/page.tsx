@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Shell } from "@/components/shell";
-import { formatNumber } from "@/lib/format";
+import { formatCount } from "@/lib/format";
 import { categorySummaries } from "@/lib/query";
 import { loadAggregate } from "@/lib/store";
 
@@ -23,7 +23,7 @@ export default function CategoriesPage() {
           <Link key={row.slug} href={`/categories/${row.slug}`} className="surface rounded-lg px-4 py-3 hover:border-accent">
             <div className="font-medium">{row.label}</div>
             <div className="mt-1 font-mono text-xs text-muted">
-              {row.appCount} apps · {formatNumber(row.useCount)} use · {row.newThisSnapshot} new
+              {row.appCount} apps · {formatCount(row.stars)} stars · {row.newThisSnapshot} new
             </div>
           </Link>
         ))}

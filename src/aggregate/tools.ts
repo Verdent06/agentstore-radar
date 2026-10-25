@@ -4,6 +4,7 @@ import {
   categories,
   categoryTrends,
   competitors,
+  growthWindow,
   homeLeaders,
   metricLabel,
   movers,
@@ -14,6 +15,7 @@ import {
   searchApps,
   topChart,
 } from "./query.ts";
+import { PUBLIC_DEFAULT_LIMIT, PUBLIC_TOP_N, growthBucket, roundCount } from "./public.ts";
 import { CHART_IDS, CATEGORY_SLUGS, METRIC_KEYS, type Aggregate, type CategorySlug, type ChartId, type MetricKey } from "./types.ts";
 
 export const TOOL_NAMES = [
@@ -30,18 +32,31 @@ export const TOOL_NAMES = [
 
 export type ToolName = (typeof TOOL_NAMES)[number];
 
-function asChart(value: string | undefined): ChartId {
-  if (value && (CHART_IDS as readonly string[]).includes(value)) {
+function asChart(value: string | undefined): ChartId | { error: string } {
+  if (value == null || value === "") {
+    return "npm";
+  }
+  if (value === "smithery") {
+    return { error: "chart unavailable: smithery" };
+  }
+  if ((CHART_IDS as readonly string[]).includes(value)) {
     return value as ChartId;
   }
-  return "smithery";
+  return { error: `unknown chart: ${value}` };
 }
 
-function asMetric(value: string | undefined): MetricKey {
-  if (value && (METRIC_KEYS as readonly string[]).includes(value)) {
+/** Missing metric defaults to npm downloads. Unknown names and use_count are rejected. */
+function asMetric(value: string | undefined): MetricKey | { error: string } {
+  if (value == null || value === "") {
+    return "npm_weekly_downloads";
+  }
+  if (value === "use_count") {
+    return { error: "unknown metric: use_count" };
+  }
+  if ((METRIC_KEYS as readonly string[]).includes(value)) {
     return value as MetricKey;
   }
-  return "use_count";
+  return { error: `unknown metric: ${value}` };
 }
 
 function asCategory(value: string | undefined): CategorySlug | undefined {
@@ -65,7 +80,7 @@ export function runTool(
       const query = String(args.query ?? args.q ?? "");
       const rows = searchApps(agg, query, {
         category: asCategory(typeof args.category === "string" ? args.category : undefined),
-        limit: typeof args.limit === "number" ? args.limit : undefined,
+        limit: typeof args.limit === "number" ? args.limit : PUBLIC_DEFAULT_LIMIT,
       });
       return jsonResult({
         query,
@@ -75,7 +90,6 @@ export function runTool(
           name: app.displayName,
           category: app.category,
           stores: app.stores,
-          useCount: app.useCount,
           stars: app.stars,
           description: app.description,
         })),
@@ -92,6 +106,9 @@ export function runTool(
     case "rank_history": {
       const id = String(args.app_id ?? args.id ?? "");
       const metric = asMetric(typeof args.metric === "string" ? args.metric : undefined);
+      if (typeof metric !== "string") {
+        return jsonResult(metric);
+      }
       return jsonResult({
         app_id: id,
         metric,
@@ -101,7 +118,10 @@ export function runTool(
     }
     case "top_charts": {
       const chart = asChart(typeof args.chart === "string" ? args.chart : undefined);
-      const limit = typeof args.limit === "number" ? args.limit : 25;
+      if (typeof chart !== "string") {
+        return jsonResult(chart);
+      }
+      const limit = typeof args.limit === "number" ? args.limit : PUBLIC_DEFAULT_LIMIT;
       return jsonResult({
         chart,
         rows: topChart(agg, chart, limit).map((row) => ({
@@ -110,33 +130,42 @@ export function runTool(
           id: row.app.id,
           name: row.app.displayName,
           category: row.app.category,
-          value: row.value,
-          delta: row.delta,
+          value: roundCount(row.value),
+          growth:
+            row.previousValue == null || row.previousValue === 0
+              ? null
+              : growthBucket((row.value - row.previousValue) / row.previousValue),
         })),
       });
     }
     case "movers": {
       const window = args.window === "7d" ? "7d" : "1d";
-      const metric = typeof args.metric === "string" ? asMetric(args.metric) : undefined;
-      const rows = movers(agg, { window, metric, limit: typeof args.limit === "number" ? args.limit : 10 });
+      let metric: MetricKey | undefined;
+      if (typeof args.metric === "string") {
+        const parsed = asMetric(args.metric);
+        if (typeof parsed !== "string") {
+          return jsonResult(parsed);
+        }
+        metric = parsed;
+      }
+      const ends = growthWindow(agg, window);
       return jsonResult({
         window,
-        from: window === "7d" ? agg.meta.weekAgoDate : agg.meta.previousCompleteDate ?? agg.meta.previousDate,
-        to: agg.meta.latestCompleteDate ?? agg.meta.latestDate,
+        from: ends?.fromDate ?? null,
+        to: ends?.toDate ?? null,
         partialDates: agg.meta.partialDates ?? [],
-        rows,
+        rows: movers(agg, { window, metric, limit: typeof args.limit === "number" ? args.limit : PUBLIC_DEFAULT_LIMIT }),
       });
     }
     case "competitors": {
       const id = String(args.app_id ?? args.id ?? "");
       return jsonResult({
         app_id: id,
-        rows: competitors(agg, id, typeof args.limit === "number" ? args.limit : 8).map((row) => ({
+        rows: competitors(agg, id, typeof args.limit === "number" ? args.limit : PUBLIC_DEFAULT_LIMIT).map((row) => ({
           id: row.id,
           name: row.displayName,
           category: row.category,
-          score: Number(row.score.toFixed(3)),
-          useCount: row.useCount,
+          score: roundCount(row.score),
           stars: row.stars,
           description: row.description,
         })),
@@ -147,7 +176,7 @@ export function runTool(
       return jsonResult({
         category: slug ?? "all",
         categories: slug ? undefined : categories(agg),
-        apps: slug ? appsInCategory(agg, slug, 15).map((app) => ({ id: app.id, name: app.displayName, useCount: app.useCount, stars: app.stars })) : undefined,
+        apps: slug ? appsInCategory(agg, slug, PUBLIC_TOP_N).map((app) => ({ id: app.id, name: app.displayName, stars: app.stars })) : undefined,
         points: categoryTrends(agg, slug),
       });
     }
@@ -155,13 +184,15 @@ export function runTool(
       return jsonResult(
         publicAnswerShare(agg, {
           provider: typeof args.provider === "string" ? args.provider : undefined,
-          limit: typeof args.limit === "number" ? args.limit : undefined,
+          limit: typeof args.limit === "number" ? args.limit : PUBLIC_DEFAULT_LIMIT,
         }),
       );
     }
     case "multi_store": {
       const newest = Boolean(args.new_arrivals);
-      const rows = newest ? newArrivals(agg, typeof args.limit === "number" ? args.limit : 25) : multiStoreApps(agg, typeof args.limit === "number" ? args.limit : 25);
+      const rows = newest
+        ? newArrivals(agg, typeof args.limit === "number" ? args.limit : PUBLIC_DEFAULT_LIMIT)
+        : multiStoreApps(agg, typeof args.limit === "number" ? args.limit : PUBLIC_DEFAULT_LIMIT);
       return jsonResult({
         kind: newest ? "new_arrivals" : "multi_store",
         rows: rows.map((app) => ({
@@ -170,14 +201,16 @@ export function runTool(
           stores: app.stores,
           category: app.category,
           firstSeen: app.firstSeen,
-          useCount: app.useCount,
           stars: app.stars,
         })),
-        homeLeaders: homeLeaders(agg, 8).map((row) => ({
+        homeLeaders: homeLeaders(agg, PUBLIC_DEFAULT_LIMIT).map((row) => ({
           id: row.app.id,
           name: row.app.displayName,
-          value: row.value,
-          delta: row.delta,
+          value: roundCount(row.value),
+          growth:
+            row.previousValue == null || row.previousValue === 0 || row.delta == null
+              ? null
+              : growthBucket(row.delta / row.previousValue),
         })),
       });
     }

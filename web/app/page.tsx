@@ -2,20 +2,22 @@ import Link from "next/link";
 import { DemoBanner, KpiGrid, formatKpis } from "@/components/kpis";
 import { Shell } from "@/components/shell";
 import { LeaderTable } from "@/components/table";
-import { formatDate } from "@/lib/format";
-import { homeRows, newArrivals, sparkValues, topChart } from "@/lib/query";
+import { formatCount, formatDate } from "@/lib/format";
+import { PUBLIC_TOP_N, homeMoverMetric, homeRows, newArrivals, sparkValues, topChart } from "@/lib/query";
 import { loadAggregate } from "@/lib/store";
+import { METRIC_LABELS } from "@/lib/types";
 
 export const dynamic = "force-static";
 
 export default function HomePage() {
   const agg = loadAggregate();
-  const hasMovers = agg.meta.snapshotDates.length >= 2;
-  const rows = homeRows(agg, 12);
-  const sparks = new Map(rows.map((row) => [row.app.id, sparkValues(agg, row.app.id, "use_count")]));
-  const arrivals = newArrivals(agg).slice(0, 5);
+  const metric = homeMoverMetric(agg);
+  const hasMovers = metric != null;
+  const rows = homeRows(agg, PUBLIC_TOP_N);
+  const sparkMetric = metric ?? "npm_weekly_downloads";
+  const sparks = new Map(rows.map((row) => [row.app.id, sparkValues(agg, row.app.id, sparkMetric)]));
+  const arrivals = newArrivals(agg, 5);
   const charts = [
-    { href: "/charts/smithery", label: "Smithery", row: topChart(agg, "smithery", 1)[0] },
     { href: "/charts/npm", label: "npm", row: topChart(agg, "npm", 1)[0] },
     { href: "/charts/github", label: "GitHub", row: topChart(agg, "github", 1)[0] },
     { href: "/charts/gemini", label: "Gemini CLI", row: topChart(agg, "gemini", 1)[0] },
@@ -37,12 +39,12 @@ export default function HomePage() {
 
       <KpiGrid items={formatKpis(agg.stats)} />
 
-      <div className="mt-8 grid gap-3 md:grid-cols-4">
+      <div className="mt-8 grid gap-3 md:grid-cols-3">
         {charts.map((card) => (
           <Link key={card.href} href={card.href} className="surface rounded-lg px-4 py-3 hover:border-accent">
             <div className="text-[11px] uppercase tracking-wide text-muted">{card.label}</div>
             <div className="mt-1 truncate font-medium">{card.row?.app.displayName ?? "—"}</div>
-            <div className="font-mono text-xs text-muted">{card.row ? `#1 · ${card.row.value.toLocaleString()}` : "No rows"}</div>
+            <div className="font-mono text-xs text-muted">{card.row ? `#1 · ${formatCount(card.row.value)}` : "No rows"}</div>
           </Link>
         ))}
       </div>
@@ -50,18 +52,20 @@ export default function HomePage() {
       <section className="mt-10">
         <div className="mb-3 flex items-end justify-between">
           <div>
-            <h2 className="text-lg font-semibold">{hasMovers ? "Top movers (use count)" : "Top by Smithery use count"}</h2>
+            <h2 className="text-lg font-semibold">
+              {metric ? `Top movers (${METRIC_LABELS[metric]})` : "Top by npm weekly downloads"}
+            </h2>
             <p className="text-sm text-muted">
               {hasMovers
-                ? `${formatDate(agg.meta.previousDate)} → ${formatDate(agg.meta.latestDate)}`
-                : "Need two snapshot days before movers appear."}
+                ? `${formatDate(agg.meta.previousCompleteDate ?? agg.meta.previousDate)} → ${formatDate(agg.meta.latestCompleteDate ?? agg.meta.latestDate)}`
+                : "Need two complete snapshot days before movers appear."}
             </p>
           </div>
           <Link href="/movers" className="text-sm text-accent hover:underline">
             Weekly card
           </Link>
         </div>
-        <LeaderTable rows={rows} valueLabel={hasMovers ? "Current" : "Use count"} sparks={sparks} />
+        <LeaderTable rows={rows} valueLabel={hasMovers ? "Current" : METRIC_LABELS[sparkMetric]} sparks={sparks} />
       </section>
 
       {agg.answerShare ? (

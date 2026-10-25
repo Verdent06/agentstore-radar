@@ -54,7 +54,7 @@ npm run report
 
 `--data` wins over `DATA_DIR`, which wins over `./data`.
 
-Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true only when GitHub/npm/PyPI reused a value fetched on a **previous snapshot day**, not a live fetch earlier the same day). Merged `apps.ndjson` copies those onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*` freshness fields, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a weekly refresh or a truncated MCP catalog is not treated as a one-day jump.
+Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true only when GitHub/npm/PyPI reused a value fetched on a **previous snapshot day**, not a live fetch earlier the same day). Merged `apps.ndjson` copies those onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*` freshness fields, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a weekly refresh or a truncated MCP catalog is not treated as a one-day jump. Default movers (homepage and MCP) rank fresh npm weekly downloads only — not Smithery `use_count` (static at the source) and not GitHub stars until that series passes data audit. Stars remain available as an explicit metric; a change in `stars_source` between two days is a series break (no growth computed across it). The Smithery leaderboard is hidden from the public site and MCP `top_charts` until that series passes audit.
 
 `manifest.json` always records `partial: true|false` and `completedSources: [...]`. Incomplete sources include `stoppedAt: { source, page, cursor, error }` so a mid-pagination MCP 500 can resume from the last cursor instead of page 1.
 
@@ -170,7 +170,7 @@ npm run aggregate          # DATA_DIR, else GitHub token, else bundled demo snap
 npm run dev --workspace=web
 ```
 
-The builder writes compact `web/data/radar.json` (and `radar.sqlite` when `node:sqlite` is available). That file is a summary: latest app cards, short metric series, coverage. It is **not** a dump of private NDJSON.
+The builder writes compact `web/data/radar.json` (and `radar.sqlite` when `node:sqlite` is available). That file is a **free-tier public slice**: top 10 per list, counts rounded to 2 significant figures, growth as percent buckets, last 14 days of history. Partial snapshot days (`manifest.partial: true`) are omitted from growth/movers. Per-app pages exist only for apps that appear in a public top-10 list. It is **not** a dump of private NDJSON. The MCP connector reads the same file.
 
 ### Vercel
 
@@ -219,7 +219,7 @@ npx tsx mcp/src/stdio.ts          # stdio
 npx tsx mcp/src/http.ts           # http://0.0.0.0:8787/mcp  (PORT / HOST)
 ```
 
-Tools: `search_apps`, `app_details`, `rank_history`, `top_charts`, `movers`, `competitors`, `category_trends`, `multi_store`, `answer_share`. All read the same aggregate; payloads are capped and never include snapshot files. `answer_share` returns `{ available: false }` when no probe is present.
+Tools: `search_apps`, `app_details`, `rank_history`, `top_charts`, `movers`, `competitors`, `category_trends`, `multi_store`, `answer_share`. All read the same free-tier aggregate; payloads are capped at 10 (default 5) and never include snapshot files. `answer_share` returns `{ available: false }` when no probe is present.
 
 Listing files:
 

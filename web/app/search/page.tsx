@@ -8,7 +8,7 @@ export const metadata = { title: "Search" };
 export default async function SearchPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const { q = "" } = await searchParams;
   const agg = loadAggregate();
-  const apps = searchApps(agg, q, 50);
+  const apps = searchApps(agg, q);
   return (
     <Shell>
       <h1 className="text-3xl font-semibold tracking-tight">Search</h1>

@@ -10,7 +10,7 @@ export const contentType = "image/png";
 
 export default function Image() {
   const agg = loadAggregate();
-  const rows = movers(agg, { window: "7d", metric: "use_count", limit: 6 }).map((row, index) => ({
+  const rows = movers(agg, { window: "7d", metric: "npm_weekly_downloads", limit: 6 }).map((row, index) => ({
     rank: index + 1,
     name: row.name,
     value: formatSigned(row.delta),
@@ -18,10 +18,10 @@ export default function Image() {
   }));
   return new ImageResponse(
     <OgFrame
-      eyebrow={`${agg.meta.weekAgoDate ?? ""} → ${agg.meta.latestDate ?? ""}`}
+      eyebrow={`${agg.meta.weekAgoDate ?? ""} → ${agg.meta.latestCompleteDate ?? agg.meta.latestDate ?? ""}`}
       title="Weekly movers"
       rows={rows}
-      footnote="Smithery use count · screenshot this page"
+      footnote="npm weekly downloads · screenshot this page"
     />,
     size,
   );

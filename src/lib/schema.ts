@@ -117,6 +117,7 @@ export const SnapshotManifestSchema = z.object({
   sources: z.array(SourceManifestSchema),
   appCount: z.number().int().nonnegative(),
   sourceRowCount: z.number().int().nonnegative(),
+  /** Collector-written flag. Missing/undefined means the day is complete unless a source failed/truncated. */
   partial: z.boolean().optional(),
   completedSources: z.array(SourceNameSchema).optional(),
   failedSourceCount: z.number().int().nonnegative().optional(),
