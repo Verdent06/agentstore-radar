@@ -1,4 +1,4 @@
-import { formatCompact, formatNumber } from "@/lib/format";
+import { formatCount, formatNumber } from "@/lib/format";
 
 export function KpiGrid({
   items,
@@ -18,8 +18,16 @@ export function KpiGrid({
   );
 }
 
-export function DemoBanner({ origin, latestDate }: { origin: string; latestDate: string | null }) {
-  if (origin !== "fixture") {
+export function DemoBanner({
+  origin,
+  source,
+  latestDate,
+}: {
+  origin: string;
+  source?: string;
+  latestDate: string | null;
+}) {
+  if (source !== "fixture" && origin !== "fixture") {
     return (
       <p className="text-xs text-muted">
         Snapshot {latestDate ?? "—"} · sourced from private history via build-time aggregate
@@ -37,17 +45,15 @@ export function DemoBanner({ origin, latestDate }: { origin: string; latestDate:
 export function formatKpis(stats: {
   appCount: number;
   storeCount: number;
-  totalUseCount: number;
+  totalNpmWeekly: number;
   totalStars: number;
-  multiStoreCount: number;
-  newArrivalCount: number;
   snapshotCount: number;
   latestDate: string | null;
 }) {
   return [
     { label: "Apps tracked", value: formatNumber(stats.appCount), hint: `${stats.snapshotCount} snapshots` },
     { label: "Stores", value: formatNumber(stats.storeCount), hint: stats.latestDate ?? "" },
-    { label: "Smithery connections", value: formatCompact(stats.totalUseCount), hint: "sum of latest use count" },
-    { label: "GitHub stars", value: formatCompact(stats.totalStars), hint: `${stats.multiStoreCount} multi-store · ${stats.newArrivalCount} new` },
+    { label: "npm / week", value: formatCount(stats.totalNpmWeekly), hint: "fresh today" },
+    { label: "GitHub stars", value: formatCount(stats.totalStars), hint: "fresh today" },
   ];
 }

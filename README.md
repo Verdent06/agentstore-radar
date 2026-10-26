@@ -54,7 +54,7 @@ npm run report
 
 `--data` wins over `DATA_DIR`, which wins over `./data`.
 
-Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true when GitHub/npm/PyPI reused a value fetched on a **previous snapshot day**, or when a catalog metric is source-frozen). Smithery browse-list **and** `GET /servers?q=` return the same frozen `useCount` (e.g. `pipeworx/gateway` = 419019 on Oct 21, 22, 24, and 25; the detail endpoint is `null`; Oct 23 stays a gap). Gemini gallery stars use the same check. PyPI `last_month` can sit still while `last_week` moves (e.g. `zotero-mcp` monthly 20314 on Oct 18 and Oct 25); monthly is then `frozen` even if weekly is fresh, and `last_month < last_week` marks the row carried_forward. A value is flagged `frozen`/`carried_forward` when **≥95%** of that source's catalog is unchanged for N snapshot days (default 3), not merely because one row was flat. `fetchedThisRunCount` counts only non-frozen hits. Merged `apps.ndjson` copies freshness onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*`, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count). Day-over-day movers ignore carried-forward points **and partial snapshot days** so a truncated MCP catalog is not treated as a one-day jump.
+Each `source_rows` record has `fetched_at` (when that source actually returned the metrics) and `carried_forward` (true when GitHub/npm/PyPI reused a value fetched on a **previous snapshot day**, or when a catalog metric is source-frozen — not a live fetch earlier the same day). Smithery browse-list **and** `GET /servers?q=` return the same frozen `useCount` (e.g. `pipeworx/gateway` = 419019 on Oct 21, 22, 24, and 25; the detail endpoint is `null`; Oct 23 stays a gap). Gemini gallery stars use the same check. PyPI `last_month` can sit still while `last_week` moves (e.g. `zotero-mcp` monthly 20314 on Oct 18 and Oct 25); monthly is then `frozen` even if weekly is fresh, and `last_month < last_week` marks the row carried_forward. A value is flagged `frozen`/`carried_forward` when **≥95%** of that source's catalog is unchanged for N snapshot days (default 3), not merely because one row was flat. `fetchedThisRunCount` counts only non-frozen hits. Merged `apps.ndjson` copies freshness onto `stars_*`, `use_count_*`, `npm_weekly_downloads_*`, and `pypi_*`, plus `stars_source` (`github` when the live GraphQL value won over a static Gemini gallery count) and `stars_frozen` / `npm_weekly_downloads_frozen` from the source row. Day-over-day movers ignore carried-forward points **and partial snapshot days** so a weekly refresh or a truncated MCP catalog is not treated as a one-day jump. Default movers (homepage and MCP) rank fresh npm weekly downloads only — not Smithery `use_count` (static at the source) and not GitHub stars until that series passes data audit. Stars remain available as an explicit metric; a change in `stars_source` between two days is a series break (no growth computed across it). The Smithery leaderboard is hidden from the public site and MCP `top_charts` until that series passes audit.
 
 `manifest.json` always records `partial: true|false` and `completedSources: [...]`. Incomplete sources include `stoppedAt: { source, page, cursor, error }` so a mid-pagination MCP 500 can resume from the last cursor instead of page 1.
 
@@ -92,8 +92,9 @@ npx tsx src/cli.ts report --data "$DATA_DIR" --limit 15
 Optional env:
 
 - `DATA_DIR` — snapshot root (see above)
+- `DATA_GITHUB_TOKEN` — PAT used by the public aggregate builder to read the private data repo (the only data-token env var to set on Vercel)
 - `GH_STATS_TOKEN` — optional PAT used first for GraphQL repo stats (higher budget than the default Actions token)
-- `GITHUB_TOKEN` / `GH_TOKEN` — GitHub GraphQL fallback **and** issue alerts. The collect workflow uses the built-in Actions token with `permissions: issues: write`. No `HEALTH_ISSUE_TOKEN` secret is required.
+- `GITHUB_TOKEN` / `GH_TOKEN` — GitHub GraphQL fallback **and** issue alerts. The collect workflow uses the built-in Actions token with `permissions: issues: write`. No `HEALTH_ISSUE_TOKEN` secret is required. Also accepted as a local fallback when cloning private snapshots if `DATA_GITHUB_TOKEN` is unset.
 - `SMITHERY_API_KEY` — only if Smithery starts requiring auth for public list
 - `SMITHERY_FROZEN_DAYS` — snapshot days of identical Smithery `useCount` (including today) before the value is marked frozen/`carried_forward` (default `3`)
 - `HEALTH_ISSUE_REPO` — optional override for source-health issues (defaults to `GITHUB_REPOSITORY` / this public repo)
@@ -109,7 +110,7 @@ Optional env:
 - Sources are collected independently with retries. One source failing still writes the others and records the failure on that day's `manifest.json`. Health coverage alerts `continue-on-error` so a low npm fetch rate does not mark a landed snapshot as a failed workflow.
 - If a run fails to write a usable snapshot, or the backstop still does not have today's snapshot, the job opens or comments on a public issue titled `Collector missed YYYY-MM-DD` in `Verdent06/agentstore-radar` (`issues: write`). No email/Slack.
 - [`.github/workflows/answer-share.yml`](.github/workflows/answer-share.yml) — weekly cron (Mondays `17 7 * * 1`) plus `workflow_dispatch`. Same private-repo deploy key. Asks each configured assistant which apps/tools/MCP servers it would recommend (`N=3` for variance). Missing provider keys are skipped. `MAX_CALLS` is a hard cost cap (workflow default `1200`).
-- [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — lint, typecheck, collector tests, aggregate build (fixtures unless a data token is set), Next.js build, MCP tests.
+- [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — lint, typecheck, collector tests, aggregate build (explicit `--allow-fixture` unless a data token/`DATA_DIR` is set), Next.js build, MCP tests.
 
 ### Answer share
 
@@ -169,46 +170,44 @@ Adapters live under `src/adapters/` and share a `SourceAdapter` interface (`cata
 Next.js App Router + Tailwind. Pages: home (headline stats + movers once two snapshot days exist, otherwise top by Smithery use count), per-source charts (Smithery / npm / GitHub / Gemini CLI), multi-store, new arrivals, keyword categories, per-app history, search, answer share (weekly assistant recommendations when `normalized/answer-share/<date>/shares.json` exists; empty state otherwise), and a screenshot-oriented [`/movers?shot=1`](web/app/movers/page.tsx) weekly card. Each leaderboard has an OG image for sharing.
 
 ```bash
-npm run aggregate          # DATA_DIR, else GitHub token, else bundled demo snapshots
+npm run aggregate                 # requires DATA_DIR or DATA_GITHUB_TOKEN (fails in CI/Vercel without them)
+npm run aggregate:fixture         # explicit opt-in to bundled demo snapshots (local + CI)
+npm run site:build                # production path: --require-private then Next.js build
+npm run site:build:fixture        # local/CI site build from fixtures
 npm run dev --workspace=web
 ```
 
-The builder writes compact `web/data/radar.json` (and `radar.sqlite` when `node:sqlite` is available). That file is a summary: latest app cards, short metric series, coverage. It is **not** a dump of private NDJSON.
+The builder writes compact `web/data/radar.json` (and `radar.sqlite` when `node:sqlite` is available). That file is a **free-tier public slice**: top 10 per list, counts rounded to 2 significant figures, growth as percent buckets, last 14 days of history. Partial snapshot days (`manifest.partial: true`) are omitted from growth/movers. Per-app pages exist only for apps that appear in a public top-10 list. It is **not** a dump of private NDJSON. The MCP connector reads the same file. `meta.source` is `"private"` or `"fixture"` so a production bundle cannot silently look like live data.
+
+Locally, with neither `CI` nor `VERCEL` set, `npm run aggregate` may still use fixtures if no token/`DATA_DIR` is present. **Vercel never falls back to fixtures**, even with `ALLOW_FIXTURE=1`. CI never does that unless you pass `--allow-fixture` or set `ALLOW_FIXTURE=1`. `npm run site:build` always passes `--require-private`.
 
 ### Vercel
 
-Create a project from this repo. Two layouts work:
+Create a **new** project from this repo. Set **Root Directory** to `web` so Next.js detection, `.next` output, and `next.config.ts` all live in the project root Vercel sees. Keep [web/vercel.json](web/vercel.json); there is no repo-root `vercel.json`.
 
-**A. Root Directory = repository root** (matches [vercel.json](vercel.json))
-
-| Setting | Value |
-| --- | --- |
-| Framework | Next.js |
-| Install | `npm ci` |
-| Build | `npm run site:build` |
-
-**B. Root Directory = `web`** (matches [web/vercel.json](web/vercel.json))
+Leave the dashboard Install / Build overrides empty — the config supplies them. Turn on **Include files outside the root directory** (the Vercel default) so the parent workspace install can reach `scripts/` and `src/`.
 
 | Setting | Value |
 | --- | --- |
+| Root Directory | `web` |
 | Framework | Next.js |
 | Install | `cd .. && npm ci` |
-| Build | `npx tsx ../scripts/build-aggregate.ts --out data && next build` |
+| Build | `npx tsx ../scripts/build-aggregate.ts --out data --require-private && next build` |
 
-Prefer **A**. If Vercel does not detect Next.js from the repo root, use **B**.
+Refresh live charts by redeploying (a Deploy Hook from the data repo, or a manual redeploy). The Hobby build is static: no ISR revalidation against GitHub.
 
-**Required / recommended env vars**
+**Required / recommended env vars** (Production + Preview)
 
 | Name | Required | Purpose |
 | --- | --- | --- |
-| `DATA_DIR` | one of these | Absolute path to the private `data/` tree (local or CI cache). |
-| `DATA_GITHUB_TOKEN` | one of these | Fine-grained or classic PAT that can **read** `Verdent06/agentstore-radar-data`. Used at **build time** to sparse-clone `data/normalized`. |
-| `GITHUB_TOKEN` | fallback | Same as above if it can read the private data repo. The default Vercel GitHub token usually **cannot**. |
+| `DATA_GITHUB_TOKEN` | **yes on Vercel** | Fine-grained PAT, **Contents: Read-only** on `Verdent06/agentstore-radar-data` only. Used at **build time** to sparse-clone `data/normalized`. Mark it Sensitive. Do not set `GITHUB_TOKEN` or `GH_TOKEN` on Vercel — the data-token source should stay unambiguous. |
+| `DATA_DIR` | local/CI alternative | Absolute path to the private `data/` tree. |
 | `DATA_REPO` | no | Defaults to `Verdent06/agentstore-radar-data`. |
 | `NEXT_PUBLIC_SITE_URL` | recommended | Canonical site URL for Open Graph (`https://your-project.vercel.app`). |
 | `AGGREGATE_PATH` | no | Override path to `radar.json` (site + MCP). |
+| `ALLOW_FIXTURE` | no | Explicit fixture opt-in for local/CI. Ignored when `--require-private` is set **or** `VERCEL` is set (Vercel never ships fixtures). |
 
-Without `DATA_DIR` or a token that can read the data repo, the build falls back to **demo fixtures** and the site banners that. Do not treat those numbers as live.
+A Vercel build **fails** if it cannot load the private data repo. It will not ship demo fixtures. The build log should show `token from DATA_GITHUB_TOKEN` and `source=private`.
 
 The Vercel build never downloads raw history to the public internet. Only the compact aggregate is bundled with the serverless/node build.
 
@@ -217,12 +216,12 @@ The Vercel build never downloads raw history to the public internet. Only the co
 Read-only official MCP TypeScript SDK v2 server (`@modelcontextprotocol/server`) with **Streamable HTTP** and **stdio**.
 
 ```bash
-npm run aggregate
+npm run aggregate                 # or npm run aggregate:fixture for demo data
 npx tsx mcp/src/stdio.ts          # stdio
 npx tsx mcp/src/http.ts           # http://0.0.0.0:8787/mcp  (PORT / HOST)
 ```
 
-Tools: `search_apps`, `app_details`, `rank_history`, `top_charts`, `movers`, `competitors`, `category_trends`, `multi_store`, `answer_share`. All read the same aggregate; payloads are capped and never include snapshot files. `answer_share` returns `{ available: false }` when no probe is present.
+Tools: `search_apps`, `app_details`, `rank_history`, `top_charts`, `movers`, `competitors`, `category_trends`, `multi_store`, `answer_share`. All read the same free-tier aggregate; payloads are capped at 10 (default 5) and never include snapshot files. `answer_share` returns `{ available: false }` when no probe is present.
 
 Listing files:
 

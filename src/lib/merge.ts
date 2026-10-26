@@ -25,10 +25,14 @@ type FreshnessKey =
   | "pypi_last_week_downloads"
   | "pypi_last_month_downloads";
 
-const FRESHNESS_FIELDS: Record<FreshnessKey, { at: keyof AppRow; carried: keyof AppRow }> = {
-  stars: { at: "stars_fetched_at", carried: "stars_carried_forward" },
+const FRESHNESS_FIELDS: Record<FreshnessKey, { at: keyof AppRow; carried: keyof AppRow; frozen?: keyof AppRow }> = {
+  stars: { at: "stars_fetched_at", carried: "stars_carried_forward", frozen: "stars_frozen" },
   use_count: { at: "use_count_fetched_at", carried: "use_count_carried_forward" },
-  npm_weekly_downloads: { at: "npm_weekly_downloads_fetched_at", carried: "npm_weekly_downloads_carried_forward" },
+  npm_weekly_downloads: {
+    at: "npm_weekly_downloads_fetched_at",
+    carried: "npm_weekly_downloads_carried_forward",
+    frozen: "npm_weekly_downloads_frozen",
+  },
   pypi_last_week_downloads: { at: "pypi_last_week_downloads_fetched_at", carried: "pypi_last_week_downloads_carried_forward" },
   pypi_last_month_downloads: { at: "pypi_last_month_downloads_fetched_at", carried: "pypi_last_month_downloads_carried_forward" },
 };
@@ -41,6 +45,9 @@ function applyFreshness(app: AppRow, key: FreshnessKey, row: SourceRow): void {
       ? row.carried_forward === true || row.frozen === true
       : row.carried_forward === true;
   (app[fields.carried] as boolean) = carried;
+  if (fields.frozen) {
+    (app[fields.frozen] as boolean) = row.frozen === true;
+  }
 }
 
 function preferNumber(
@@ -86,10 +93,12 @@ function emptyApp(snapshotDate: string, row: SourceRow): AppRow {
     pypi_last_month_downloads: row.pypi_last_month_downloads,
     stars_fetched_at: null,
     stars_carried_forward: false,
+    stars_frozen: false,
     use_count_fetched_at: null,
     use_count_carried_forward: false,
     npm_weekly_downloads_fetched_at: null,
     npm_weekly_downloads_carried_forward: false,
+    npm_weekly_downloads_frozen: false,
     pypi_last_week_downloads_fetched_at: null,
     pypi_last_week_downloads_carried_forward: false,
     pypi_last_month_downloads_fetched_at: null,

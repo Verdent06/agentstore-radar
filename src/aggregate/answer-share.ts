@@ -2,10 +2,11 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isValidDateString } from "../lib/dates.ts";
 import { AnswerShareSnapshotSchema, type AnswerShareRow, type AnswerShareSnapshot } from "../answer-share/schema.ts";
+import { PUBLIC_TOP_N, round2sf, roundCount } from "./public.ts";
 import type { AnswerSharePublic, AnswerShareRowPublic } from "./types.ts";
 
-const OVERALL_LIMIT = 25;
-const PROVIDER_LIMIT = 12;
+const OVERALL_LIMIT = PUBLIC_TOP_N;
+const PROVIDER_LIMIT = PUBLIC_TOP_N;
 
 export function listNormalizedAnswerShareDates(root: string): string[] {
   const dir = join(root, "normalized", "answer-share");
@@ -21,9 +22,9 @@ function compactRow(row: AnswerShareRow): AnswerShareRowPublic {
   return {
     name: row.name,
     appId: row.matched_app_id,
-    mentionCount: row.mention_count,
-    answerShare: row.answer_share,
-    runShare: row.run_share,
+    mentionCount: roundCount(row.mention_count) ?? 0,
+    answerShare: round2sf(row.answer_share),
+    runShare: round2sf(row.run_share),
   };
 }
 
@@ -44,7 +45,7 @@ export function compactAnswerShare(snapshot: AnswerShareSnapshot): AnswerSharePu
   return {
     probeDate: snapshot.probeDate,
     promptVersion: snapshot.promptVersion,
-    meanJaccard: snapshot.meanJaccard,
+    meanJaccard: snapshot.meanJaccard == null ? null : round2sf(snapshot.meanJaccard),
     overall: topRows(overall, OVERALL_LIMIT),
     byProvider,
   };

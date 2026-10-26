@@ -5,15 +5,21 @@ import { spawnSync } from "node:child_process";
 import { listSnapshotDates } from "../lib/io.ts";
 import { USER_AGENT } from "../lib/config.ts";
 import { writeDemoSnapshots } from "./demo.ts";
-import type { DataOrigin } from "./types.ts";
+import type { Aggregate, DataOrigin } from "./types.ts";
 
 export const DEFAULT_DATA_REPO = "Verdent06/agentstore-radar-data";
+/** Unique apps in `writeDemoSnapshots`. Private builds must exceed this. */
+export const FIXTURE_APP_CEILING = 21;
+export const DATA_TOKEN_ENV_KEYS = ["DATA_GITHUB_TOKEN", "GH_STATS_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"] as const;
 
 export type ResolveResult = {
   dataDir: string;
   origin: DataOrigin;
+  tokenEnvName?: string;
   cleanup?: () => void;
 };
+
+export type DataToken = { name: (typeof DATA_TOKEN_ENV_KEYS)[number]; value: string };
 
 function envValue(env: NodeJS.ProcessEnv, ...keys: string[]): string | undefined {
   for (const key of keys) {
@@ -23,6 +29,75 @@ function envValue(env: NodeJS.ProcessEnv, ...keys: string[]): string | undefined
     }
   }
   return undefined;
+}
+
+function isEnvFlagSet(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized !== "" && normalized !== "0" && normalized !== "false" && normalized !== "no";
+}
+
+export function resolveDataGithubToken(env: NodeJS.ProcessEnv = process.env): DataToken | undefined {
+  for (const name of DATA_TOKEN_ENV_KEYS) {
+    // The default Actions token is for this public repo and cannot read the private data repo.
+    if (name === "GITHUB_TOKEN" && isEnvFlagSet(env.GITHUB_ACTIONS)) {
+      continue;
+    }
+    const value = env[name]?.trim();
+    if (value) {
+      return { name, value };
+    }
+  }
+  return undefined;
+}
+
+export function shouldAllowFixture(options?: {
+  argv?: string[];
+  env?: NodeJS.ProcessEnv;
+  allowFixture?: boolean;
+}): boolean {
+  const argv = options?.argv ?? [];
+  const env = options?.env ?? process.env;
+  // Vercel never ships demo fixtures, even with ALLOW_FIXTURE=1 or --allow-fixture.
+  if (isEnvFlagSet(env.VERCEL)) {
+    return false;
+  }
+  if (options?.allowFixture === false || argv.includes("--require-private")) {
+    return false;
+  }
+  if (options?.allowFixture === true || argv.includes("--allow-fixture")) {
+    return true;
+  }
+  if (isEnvFlagSet(env.ALLOW_FIXTURE)) {
+    return true;
+  }
+  if (isEnvFlagSet(env.CI)) {
+    return false;
+  }
+  return true;
+}
+
+export function assertPrivateAggregate(agg: Pick<Aggregate, "meta" | "stats">): void {
+  const reasons: string[] = [];
+  if (agg.meta.source === "fixture" || agg.meta.origin === "fixture") {
+    reasons.push("source is fixture/demo data");
+  }
+  if (agg.stats.appCount <= FIXTURE_APP_CEILING) {
+    reasons.push(`app count ${agg.stats.appCount} ≤ ${FIXTURE_APP_CEILING} (fixture-sized)`);
+  }
+  if (reasons.length === 0) {
+    return;
+  }
+  throw new Error(
+    `Refusing to publish a non-private aggregate (${reasons.join("; ")}). ` +
+      "Set DATA_GITHUB_TOKEN or DATA_DIR to the private data repo, or pass --allow-fixture for local/CI.",
+  );
+}
+
+function redactSecret(text: string, secret: string): string {
+  return secret && text.includes(secret) ? text.split(secret).join("***") : text;
 }
 
 function hasSnapshots(dataDir: string): boolean {
@@ -37,14 +112,15 @@ function cloneDataRepo(repo: string, token: string, dest: string): void {
     { encoding: "utf8" },
   );
   if (clone.status !== 0) {
-    throw new Error(`git clone failed for ${repo}: ${clone.stderr || clone.stdout}`);
+    const detail = redactSecret(`${clone.stderr || clone.stdout}`, token);
+    throw new Error(`git clone failed for ${repo}: ${detail}`);
   }
   const sparse = spawnSync("git", ["sparse-checkout", "set", "data/normalized"], {
     cwd: dest,
     encoding: "utf8",
   });
   if (sparse.status !== 0) {
-    throw new Error(`git sparse-checkout failed: ${sparse.stderr || sparse.stdout}`);
+    throw new Error(`git sparse-checkout failed: ${redactSecret(`${sparse.stderr || sparse.stdout}`, token)}`);
   }
 }
 
@@ -111,43 +187,51 @@ async function downloadViaApi(repo: string, token: string, destNormalized: strin
 }
 
 export async function resolveSnapshotRoot(
-  options?: { dataDir?: string; env?: NodeJS.ProcessEnv; allowFixture?: boolean },
+  options?: { dataDir?: string; env?: NodeJS.ProcessEnv; allowFixture?: boolean; argv?: string[] },
 ): Promise<ResolveResult> {
   const env = options?.env ?? process.env;
+  const allowFixture = shouldAllowFixture(options);
   const explicit = options?.dataDir?.trim() || env.DATA_DIR?.trim();
   if (explicit && existsSync(explicit) && hasSnapshots(explicit)) {
     return { dataDir: explicit, origin: "data_dir" };
   }
 
-  const token = envValue(env, "DATA_GITHUB_TOKEN", "GH_STATS_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
+  const token = resolveDataGithubToken(env);
   const repo = envValue(env, "DATA_REPO") ?? DEFAULT_DATA_REPO;
   if (token) {
+    console.log(`[aggregate] token from ${token.name}`);
     const dest = mkdtempSync(join(tmpdir(), "radar-data-"));
     const cleanup = () => {
       rmSync(dest, { recursive: true, force: true });
     };
     try {
-      cloneDataRepo(repo, token, dest);
+      cloneDataRepo(repo, token.value, dest);
       const dataDir = join(dest, "data");
       if (hasSnapshots(dataDir)) {
-        return { dataDir, origin: "github", cleanup };
+        return { dataDir, origin: "github", tokenEnvName: token.name, cleanup };
       }
-      await downloadViaApi(repo, token, join(dest, "data", "normalized"));
+      await downloadViaApi(repo, token.value, join(dest, "data", "normalized"));
       if (hasSnapshots(dataDir)) {
-        return { dataDir, origin: "github", cleanup };
+        return { dataDir, origin: "github", tokenEnvName: token.name, cleanup };
       }
       cleanup();
     } catch (error) {
       cleanup();
-      if (options?.allowFixture === false) {
-        throw error;
+      const message = redactSecret(error instanceof Error ? error.message : String(error), token.value);
+      if (!allowFixture) {
+        throw new Error(
+          `Failed to load private snapshot data using ${token.name}: ${message}`,
+        );
       }
-      console.warn(`[aggregate] private data unavailable (${error instanceof Error ? error.message : error}); using fixture snapshots`);
+      console.warn(`[aggregate] private data unavailable (${message}); using fixture snapshots`);
     }
   }
 
-  if (options?.allowFixture === false) {
-    throw new Error("No snapshots found. Set DATA_DIR or DATA_GITHUB_TOKEN / GITHUB_TOKEN.");
+  if (!allowFixture) {
+    throw new Error(
+      "Private snapshot data is required. Set DATA_GITHUB_TOKEN (read access to Verdent06/agentstore-radar-data) or DATA_DIR, " +
+        "or pass --allow-fixture / ALLOW_FIXTURE=1 for local and CI fixture builds.",
+    );
   }
   const dest = mkdtempSync(join(tmpdir(), "radar-fixture-"));
   writeDemoSnapshots(dest);

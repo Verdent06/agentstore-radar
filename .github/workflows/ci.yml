@@ -19,12 +19,12 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
-      - name: Build public aggregate (fixtures unless DATA_DIR / token provided)
+      - name: Build public aggregate (private data, or fixtures via explicit opt-in)
         env:
           DATA_DIR: ${{ secrets.DATA_DIR }}
           DATA_GITHUB_TOKEN: ${{ secrets.DATA_GITHUB_TOKEN }}
           DATA_REPO: Verdent06/agentstore-radar-data
-        run: npm run aggregate
+        run: npm run aggregate:fixture
       - run: npm run typecheck --workspace=web
       - run: npm run build --workspace=web
       - run: npm run typecheck --workspace=mcp

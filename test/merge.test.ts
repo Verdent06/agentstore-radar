@@ -74,6 +74,26 @@ describe("mergeApps", () => {
     });
   });
 
+  it("copies source frozen onto AppRow stars_frozen for home KPIs", () => {
+    const apps = mergeApps("2026-10-25", [
+      emptySourceRow({
+        snapshot_date: "2026-10-25",
+        app_id: "github:obra/superpowers",
+        source: "gemini-cli",
+        source_id: "obra/superpowers",
+        name: "superpowers",
+        stars: 299294,
+        fetched_at: "2026-10-25T12:00:00Z",
+        carried_forward: true,
+        frozen: true,
+      }),
+    ]);
+    expect(apps[0]).toMatchObject({
+      stars_carried_forward: true,
+      stars_frozen: true,
+    });
+  });
+
   it("copies PyPI monthly frozen onto pypi_last_month_downloads_carried_forward without freezing weekly", () => {
     const apps = mergeApps("2026-10-25", [
       emptySourceRow({

@@ -1,8 +1,16 @@
 import { coverageFromManifest } from "../commands/report.ts";
+import { addUtcDays } from "../lib/dates.ts";
 import { listSnapshotDates, readApps, readManifest, readSourceRows } from "../lib/io.ts";
 import { snapshotIsPartial, type AppRow, type SourceName, type SourceRow } from "../lib/schema.ts";
 import { loadPublicAnswerShare } from "./answer-share.ts";
 import { classifyCategory } from "./classify.ts";
+import {
+  HISTORY_CAP_DAYS,
+  roundAppMetrics,
+  roundHeadlineStats,
+  roundSeries,
+} from "./public.ts";
+import { publicAppIds } from "./query.ts";
 import {
   STORE_SOURCES,
   type Aggregate,
@@ -11,11 +19,23 @@ import {
   type CoverageRow,
   type DataOrigin,
   type HeadlineStats,
-  type HistoryPoint,
   type StoreSource,
+  sourceFromOrigin,
 } from "./types.ts";
 
-const HISTORY_CAP_DAYS = 90;
+type PackedPoint = {
+  date: string;
+  stars: number | null;
+  useCount: number | null;
+  npmWeeklyDownloads: number | null;
+  pypiLastWeekDownloads: number | null;
+  geminiStars: number | null;
+  starsCarriedForward?: boolean;
+  useCountCarriedForward?: boolean;
+  npmCarriedForward?: boolean;
+  pypiCarriedForward?: boolean;
+  starsSource?: string | null;
+};
 
 function asNumber(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -47,14 +67,12 @@ function verifiedFromRows(rows: SourceRow[]): boolean | null {
 }
 
 function weekAgoDate(dates: string[], latest: string): string | null {
-  const target = new Date(`${latest}T00:00:00Z`);
-  target.setUTCDate(target.getUTCDate() - 7);
-  const wanted = target.toISOString().slice(0, 10);
+  const wanted = addUtcDays(latest, -7);
   const earlier = dates.filter((date) => date <= wanted);
   return earlier.at(-1) ?? dates[0] ?? null;
 }
 
-function compact(points: HistoryPoint[], dates: string[]): CompactSeries {
+function compact(points: PackedPoint[], dates: string[]): CompactSeries {
   const byDate = new Map(points.map((point) => [point.date, point]));
   const flag = (carried: boolean | undefined): 0 | 1 => (carried ? 1 : 0);
   const series: CompactSeries = {
@@ -67,6 +85,7 @@ function compact(points: HistoryPoint[], dates: string[]): CompactSeries {
     uc: dates.map((date) => flag(byDate.get(date)?.useCountCarriedForward)),
     nc: dates.map((date) => flag(byDate.get(date)?.npmCarriedForward)),
     pc: dates.map((date) => flag(byDate.get(date)?.pypiCarriedForward)),
+    ss: dates.map((date) => byDate.get(date)?.starsSource ?? null),
   };
   const pruneValues = (key: "s" | "u" | "n" | "p" | "g") => {
     if (series[key]?.every((value) => value == null)) {
@@ -87,19 +106,27 @@ function compact(points: HistoryPoint[], dates: string[]): CompactSeries {
   pruneFlags("uc");
   pruneFlags("nc");
   pruneFlags("pc");
+  if (series.ss?.every((value) => value == null)) {
+    delete series.ss;
+  }
   return series;
 }
 
 export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir"): Aggregate {
   const allDates = listSnapshotDates(dataDir);
-  const snapshotDates = allDates.slice(-HISTORY_CAP_DAYS);
-  const partialDates = snapshotDates.filter((date) => {
+  const allPartial = allDates.filter((date) => {
     try {
       return snapshotIsPartial(readManifest(date, dataDir));
     } catch {
       return false;
     }
   });
+  const allComplete = allDates.filter((date) => !allPartial.includes(date));
+  const fromComplete = allComplete.at(-HISTORY_CAP_DAYS) ?? allComplete[0] ?? null;
+  const toComplete = allComplete.at(-1) ?? null;
+  const snapshotDates =
+    fromComplete && toComplete ? allDates.filter((date) => date >= fromComplete && date <= toComplete) : [];
+  const partialDates = snapshotDates.filter((date) => allPartial.includes(date));
   const completeDates = snapshotDates.filter((date) => !partialDates.includes(date));
   const latestDate = snapshotDates.at(-1) ?? null;
   const previousDate = snapshotDates.length >= 2 ? snapshotDates.at(-2) ?? null : null;
@@ -108,7 +135,7 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
   const week = latestCompleteDate ? weekAgoDate(completeDates, latestCompleteDate) : null;
 
   const firstSeen = new Map<string, string>();
-  const history = new Map<string, HistoryPoint[]>();
+  const history = new Map<string, PackedPoint[]>();
   const latestApps = new Map<string, AppRow>();
   const latestSourceRows = new Map<string, SourceRow[]>();
 
@@ -139,6 +166,7 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
         useCountCarriedForward: app.use_count_carried_forward === true,
         npmCarriedForward: app.npm_weekly_downloads_carried_forward === true,
         pypiCarriedForward: app.pypi_last_week_downloads_carried_forward === true,
+        starsSource: app.stars_source ?? null,
       });
       history.set(app.app_id, points);
     }
@@ -197,11 +225,12 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
     }));
   }
 
-  const stats = computeHeadlineStats(apps, snapshotDates, latestDate, previousDate, week);
-  return {
+  const stats = computeHeadlineStats(apps, snapshotDates, latestDate, previousDate, week, [...latestApps.values()]);
+  const draft: Aggregate = {
     meta: {
       builtAt: new Date().toISOString(),
       origin,
+      source: sourceFromOrigin(origin),
       snapshotDates,
       latestDate,
       previousDate,
@@ -216,6 +245,34 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
     series,
     answerShare: loadPublicAnswerShare(dataDir),
   };
+  return applyPublicTier(draft);
+}
+
+function applyPublicTier(agg: Aggregate): Aggregate {
+  const allowed = publicAppIds(agg);
+  const apps = agg.apps.filter((app) => allowed.has(app.id)).map(roundAppMetrics);
+  const series: Record<string, CompactSeries> = {};
+  for (const app of apps) {
+    const packed = agg.series[app.id];
+    if (packed) {
+      series[app.id] = roundSeries(packed);
+    }
+  }
+  return {
+    ...agg,
+    stats: roundHeadlineStats(agg.stats),
+    apps,
+    series,
+  };
+}
+
+/**
+ * Home KPIs count a metric only when `*_carried_forward` is explicitly false
+ * and `*_frozen` is not true. A missing `*_frozen` is fine (PR #11 has not
+ * landed yet). A missing `*_carried_forward` is not fresh.
+ */
+export function isFreshKpiValue(carriedForward: unknown, frozen: unknown): boolean {
+  return carriedForward === false && frozen !== true;
 }
 
 export function computeHeadlineStats(
@@ -224,9 +281,9 @@ export function computeHeadlineStats(
   latestDate: string | null,
   previousDate: string | null,
   weekAgoDate: string | null,
+  latestRows: AppRow[] = [],
 ): HeadlineStats {
   const storeSet = new Set<string>();
-  let totalUseCount = 0;
   let totalStars = 0;
   let totalNpmWeekly = 0;
   let multiStoreCount = 0;
@@ -236,9 +293,6 @@ export function computeHeadlineStats(
     for (const store of app.stores) {
       storeSet.add(store);
     }
-    totalUseCount += app.useCount ?? 0;
-    totalStars += app.stars ?? 0;
-    totalNpmWeekly += app.npmWeeklyDownloads ?? 0;
     if (app.stores.length >= 2) {
       multiStoreCount += 1;
     }
@@ -247,6 +301,17 @@ export function computeHeadlineStats(
     }
     categories.add(app.category);
   }
+  for (const row of latestRows) {
+    if (isFreshKpiValue(row.stars_carried_forward, row.stars_frozen) && row.stars != null) {
+      totalStars += row.stars;
+    }
+    if (
+      isFreshKpiValue(row.npm_weekly_downloads_carried_forward, row.npm_weekly_downloads_frozen) &&
+      row.npm_weekly_downloads != null
+    ) {
+      totalNpmWeekly += row.npm_weekly_downloads;
+    }
+  }
   return {
     appCount: apps.length,
     storeCount: storeSet.size,
@@ -254,7 +319,6 @@ export function computeHeadlineStats(
     latestDate,
     previousDate,
     weekAgoDate: weekAgoDate === latestDate ? null : weekAgoDate,
-    totalUseCount,
     totalStars,
     totalNpmWeekly,
     multiStoreCount,

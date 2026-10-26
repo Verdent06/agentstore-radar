@@ -3,7 +3,7 @@ import { ThemeToggle } from "./theme";
 
 const NAV = [
   { href: "/", label: "Home" },
-  { href: "/charts/smithery", label: "Charts" },
+  { href: "/charts/npm", label: "Charts" },
   { href: "/movers", label: "Movers" },
   { href: "/multi-store", label: "Multi-store" },
   { href: "/new", label: "New" },

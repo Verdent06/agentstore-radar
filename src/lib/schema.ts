@@ -64,11 +64,15 @@ export const AppRowSchema = z.object({
   pypi_last_week_downloads: z.number().int().nullable(),
   pypi_last_month_downloads: z.number().int().nullable(),
   stars_fetched_at: z.string().nullable().optional().default(null),
-  stars_carried_forward: z.boolean().optional().default(false),
+  /** Explicit false is fresh; missing is not fresh for home KPIs. No default so missing stays missing. */
+  stars_carried_forward: z.boolean().optional(),
+  /** PR #11; missing means not frozen. */
+  stars_frozen: z.boolean().optional(),
   use_count_fetched_at: z.string().nullable().optional().default(null),
   use_count_carried_forward: z.boolean().optional().default(false),
   npm_weekly_downloads_fetched_at: z.string().nullable().optional().default(null),
-  npm_weekly_downloads_carried_forward: z.boolean().optional().default(false),
+  npm_weekly_downloads_carried_forward: z.boolean().optional(),
+  npm_weekly_downloads_frozen: z.boolean().optional(),
   pypi_last_week_downloads_fetched_at: z.string().nullable().optional().default(null),
   pypi_last_week_downloads_carried_forward: z.boolean().optional().default(false),
   pypi_last_month_downloads_fetched_at: z.string().nullable().optional().default(null),
@@ -121,6 +125,7 @@ export const SnapshotManifestSchema = z.object({
   sources: z.array(SourceManifestSchema),
   appCount: z.number().int().nonnegative(),
   sourceRowCount: z.number().int().nonnegative(),
+  /** Collector-written flag. Missing/undefined means the day is complete unless a source failed/truncated. */
   partial: z.boolean().optional(),
   completedSources: z.array(SourceNameSchema).optional(),
   failedSourceCount: z.number().int().nonnegative().optional(),
