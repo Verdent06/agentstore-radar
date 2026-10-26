@@ -71,7 +71,7 @@ export function findApp(agg: Aggregate, id: string): AppSummary | undefined {
 export function metricFromApp(app: AppSummary, metric: MetricKey): number | null {
   switch (metric) {
     case "use_count":
-      return app.useCount;
+      return null;
     case "stars":
       return app.stars;
     case "npm_weekly_downloads":
@@ -86,32 +86,30 @@ export function metricFromApp(app: AppSummary, metric: MetricKey): number | null
 function seriesValue(agg: Aggregate, id: string, metric: MetricKey, index: number): number | null {
   const series = agg.series[id];
   if (!series || index < 0) return null;
+  if (metric === "use_count") return null;
   const column =
-    metric === "use_count"
-      ? series.u
-      : metric === "stars"
-        ? series.s
-        : metric === "npm_weekly_downloads"
-          ? series.n
-          : metric === "pypi_last_week_downloads"
-            ? series.p
-            : series.g;
+    metric === "stars"
+      ? series.s
+      : metric === "npm_weekly_downloads"
+        ? series.n
+        : metric === "pypi_last_week_downloads"
+          ? series.p
+          : series.g;
   return column?.[index] ?? null;
 }
 
 function seriesCarried(agg: Aggregate, id: string, metric: MetricKey, index: number): boolean {
   const series = agg.series[id];
   if (!series || index < 0) return false;
+  if (metric === "use_count") return false;
   const column =
-    metric === "use_count"
-      ? series.uc
-      : metric === "stars"
-        ? series.sc
-        : metric === "npm_weekly_downloads"
-          ? series.nc
-          : metric === "pypi_last_week_downloads"
-            ? series.pc
-            : undefined;
+    metric === "stars"
+      ? series.sc
+      : metric === "npm_weekly_downloads"
+        ? series.nc
+        : metric === "pypi_last_week_downloads"
+          ? series.pc
+          : undefined;
   return column?.[index] === 1;
 }
 

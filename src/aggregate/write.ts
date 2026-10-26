@@ -45,7 +45,6 @@ export function writeAggregateSqlite(agg: Aggregate, path: string): string | nul
         forks INTEGER,
         open_issues INTEGER,
         pushed_at TEXT,
-        use_count REAL,
         npm_weekly_downloads INTEGER,
         pypi_last_week_downloads INTEGER,
         gemini_stars INTEGER,
@@ -55,7 +54,6 @@ export function writeAggregateSqlite(agg: Aggregate, path: string): string | nul
         app_id TEXT NOT NULL,
         date TEXT NOT NULL,
         stars INTEGER,
-        use_count REAL,
         npm_weekly_downloads INTEGER,
         pypi_last_week_downloads INTEGER,
         gemini_stars INTEGER,
@@ -72,10 +70,10 @@ export function writeAggregateSqlite(agg: Aggregate, path: string): string | nul
     insertMeta.run("coverage", JSON.stringify(agg.meta.coverage));
 
     const insertApp = db.prepare(`
-      INSERT INTO apps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO apps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertHistory = db.prepare(`
-      INSERT INTO history VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO history VALUES (?, ?, ?, ?, ?, ?)
     `);
     for (const app of agg.apps) {
       insertApp.run(
@@ -96,7 +94,6 @@ export function writeAggregateSqlite(agg: Aggregate, path: string): string | nul
         app.forks,
         app.openIssues,
         app.pushedAt,
-        app.useCount,
         app.npmWeeklyDownloads,
         app.pypiLastWeekDownloads,
         app.geminiStars,
@@ -111,7 +108,6 @@ export function writeAggregateSqlite(agg: Aggregate, path: string): string | nul
           app.id,
           date,
           series.s?.[index] ?? null,
-          series.u?.[index] ?? null,
           series.n?.[index] ?? null,
           series.p?.[index] ?? null,
           series.g?.[index] ?? null,

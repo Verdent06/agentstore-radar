@@ -97,50 +97,47 @@ export function completeSnapshotDates(agg: Pick<Aggregate, "meta">): string[] {
 }
 
 export function roundAppMetrics(app: AppSummary): AppSummary {
+  const { useCount: _useCount, ...rest } = app as AppSummary & { useCount?: unknown };
   return {
-    ...app,
-    stars: roundCount(app.stars),
-    forks: roundCount(app.forks),
-    openIssues: roundCount(app.openIssues),
-    useCount: roundCount(app.useCount),
-    npmWeeklyDownloads: roundCount(app.npmWeeklyDownloads),
-    pypiLastWeekDownloads: roundCount(app.pypiLastWeekDownloads),
-    geminiStars: roundCount(app.geminiStars),
+    ...rest,
+    stars: roundCount(rest.stars),
+    forks: roundCount(rest.forks),
+    openIssues: roundCount(rest.openIssues),
+    npmWeeklyDownloads: roundCount(rest.npmWeeklyDownloads),
+    pypiLastWeekDownloads: roundCount(rest.pypiLastWeekDownloads),
+    geminiStars: roundCount(rest.geminiStars),
   };
 }
 
 export function roundSeries(series: CompactSeries): CompactSeries {
   const roundColumn = (column: Array<number | null> | undefined): Array<number | null> | undefined =>
     column?.map((value) => roundCount(value));
+  const { u: _u, uc: _uc, ...rest } = series as CompactSeries & { u?: unknown; uc?: unknown };
   const next: CompactSeries = {
-    s: roundColumn(series.s),
-    u: roundColumn(series.u),
-    n: roundColumn(series.n),
-    p: roundColumn(series.p),
-    g: roundColumn(series.g),
-    sc: series.sc,
-    uc: series.uc,
-    nc: series.nc,
-    pc: series.pc,
-    ss: series.ss,
+    s: roundColumn(rest.s),
+    n: roundColumn(rest.n),
+    p: roundColumn(rest.p),
+    g: roundColumn(rest.g),
+    sc: rest.sc,
+    nc: rest.nc,
+    pc: rest.pc,
+    ss: rest.ss,
   };
-  const pruneValues = (key: "s" | "u" | "n" | "p" | "g") => {
+  const pruneValues = (key: "s" | "n" | "p" | "g") => {
     if (next[key]?.every((value) => value == null)) {
       delete next[key];
     }
   };
-  const pruneFlags = (key: "sc" | "uc" | "nc" | "pc") => {
+  const pruneFlags = (key: "sc" | "nc" | "pc") => {
     if (next[key]?.every((value) => value == null || value === 0)) {
       delete next[key];
     }
   };
   pruneValues("s");
-  pruneValues("u");
   pruneValues("n");
   pruneValues("p");
   pruneValues("g");
   pruneFlags("sc");
-  pruneFlags("uc");
   pruneFlags("nc");
   pruneFlags("pc");
   if (next.ss?.every((value) => value == null)) {

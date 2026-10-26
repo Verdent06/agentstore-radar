@@ -19,6 +19,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      - run: npm run test --workspace=web
       - name: Build public aggregate (private data, or fixtures via explicit opt-in)
         env:
           DATA_DIR: ${{ secrets.DATA_DIR }}

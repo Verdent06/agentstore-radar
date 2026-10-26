@@ -48,7 +48,6 @@ export type AppSummary = {
   forks: number | null;
   openIssues: number | null;
   pushedAt: string | null;
-  useCount: number | null;
   npmWeeklyDownloads: number | null;
   pypiLastWeekDownloads: number | null;
   geminiStars: number | null;
@@ -58,12 +57,10 @@ export type AppSummary = {
 
 export type CompactSeries = {
   s?: Array<number | null>;
-  u?: Array<number | null>;
   n?: Array<number | null>;
   p?: Array<number | null>;
   g?: Array<number | null>;
   sc?: Array<0 | 1 | null>;
-  uc?: Array<0 | 1 | null>;
   nc?: Array<0 | 1 | null>;
   pc?: Array<0 | 1 | null>;
   ss?: Array<string | null>;

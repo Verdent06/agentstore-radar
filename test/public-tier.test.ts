@@ -28,12 +28,14 @@ import {
   sparkValues,
   topChart,
 } from "../src/aggregate/query.ts";
-import { runTool } from "../src/aggregate/tools.ts";
+import { runTool, TOOL_NAMES } from "../src/aggregate/tools.ts";
 import { CHART_IDS } from "../src/aggregate/types.ts";
+import { writeAggregateFiles } from "../src/aggregate/write.ts";
 import { addUtcDays } from "../src/lib/dates.ts";
 import { writeNormalized } from "../src/lib/io.ts";
 import { mergeApps } from "../src/lib/merge.ts";
 import { emptySourceRow, type SnapshotManifest } from "../src/lib/schema.ts";
+import { collectForbiddenPublicKeys } from "./helpers.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..");
@@ -403,10 +405,9 @@ describe("built radar.json never holds exact fixture counts", () => {
     expect(json).not.toContain("87579");
     expect(json).not.toContain("299294");
     const brave = agg.apps.find((app) => app.id === "github:brave/brave-search-mcp");
-    expect(brave?.useCount).toBe(round2sf(87579));
-    const weekly = movers(agg, { window: "7d", metric: "use_count" }).find((row) => row.id === "github:brave/brave-search-mcp");
-    expect(weekly?.growth).toMatch(/%$/);
-    expect(weekly).not.toHaveProperty("pct");
+    expect(brave).toBeDefined();
+    expect(brave).not.toHaveProperty("useCount");
+    expect(movers(agg, { window: "7d", metric: "use_count" })).toEqual([]);
   });
 });
 
@@ -592,7 +593,8 @@ describe("hidden smithery chart and public use_count", () => {
     expect(page).not.toMatch(/Use count/);
     const kpis = readFileSync(join(repoRoot, "web/components/kpis.tsx"), "utf8");
     expect(kpis).not.toMatch(/use_count|useCount|totalUseCount/);
-    expect(kpis).toContain("fresh today");
+    expect(kpis).toContain("fresh on");
+    expect(kpis).not.toContain("fresh today");
   });
 
   it("movers page keeps the complete-day window and layers the fixture source check", () => {
@@ -600,5 +602,48 @@ describe("hidden smithery chart and public use_count", () => {
     expect(page).toContain("agg.meta.latestCompleteDate ?? agg.meta.latestDate");
     expect(page).toContain('agg.meta.source === "fixture" || agg.meta.origin === "fixture"');
     expect(page).not.toMatch(/formatDate\(agg\.meta\.weekAgoDate\)\} → \{formatDate\(agg\.meta\.latestDate\)\}/);
+  });
+});
+
+describe("public output never includes useCount / use_count / u keys", () => {
+  it("recursively scans built radar.json and MCP tool payloads", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-no-u-keys-"));
+    writeDemoSnapshots(dataDir);
+    const agg = buildAggregate(dataDir, "fixture");
+    expect(agg.apps.length).toBeGreaterThan(0);
+    expect(Object.keys(agg.series).length).toBeGreaterThan(0);
+
+    const out = mkdtempSync(join(tmpdir(), "radar-no-u-out-"));
+    const written = writeAggregateFiles(agg, out);
+    const radar = JSON.parse(readFileSync(written.json, "utf8")) as unknown;
+    expect(collectForbiddenPublicKeys(radar)).toEqual([]);
+    expect(agg.apps.some((app) => "useCount" in app)).toBe(false);
+    expect(Object.values(agg.series).some((series) => "u" in series || "uc" in series)).toBe(false);
+
+    const brave = "github:brave/brave-search-mcp";
+    const toolArgs: Record<(typeof TOOL_NAMES)[number], Record<string, unknown>> = {
+      search_apps: { query: "mcp" },
+      app_details: { app_id: brave },
+      rank_history: { app_id: brave, metric: "stars" },
+      top_charts: { chart: "npm" },
+      movers: { window: "1d" },
+      competitors: { app_id: brave },
+      category_trends: { category: "search" },
+      multi_store: {},
+      answer_share: {},
+    };
+    for (const name of TOOL_NAMES) {
+      const payload = JSON.parse(runTool(agg, name, toolArgs[name]).content[0]!.text) as unknown;
+      expect(collectForbiddenPublicKeys(payload), name).toEqual([]);
+    }
+    const extra = [
+      runTool(agg, "rank_history", { app_id: brave }),
+      runTool(agg, "movers", { window: "7d" }),
+      runTool(agg, "top_charts", {}),
+      runTool(agg, "search_apps", { query: "brave" }),
+    ];
+    for (const result of extra) {
+      expect(collectForbiddenPublicKeys(JSON.parse(result.content[0]!.text))).toEqual([]);
+    }
   });
 });
