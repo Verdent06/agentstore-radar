@@ -6,7 +6,7 @@ import { githubAdapter, githubStatsToken, buildGithubGraphqlQuery } from "../src
 import { npmAdapter, npmBulkUrl, isScopedNpmPackage } from "../src/adapters/npm.ts";
 import { pypiAdapter, pypiMonthlyInconsistent, pypiRecentUrl } from "../src/adapters/pypi.ts";
 import { createDiscoveredRefs, type CollectContext } from "../src/adapters/types.ts";
-import { GITHUB_GRAPHQL_BATCH, NPM_BULK_LIMIT } from "../src/lib/config.ts";
+import { GITHUB_GRAPHQL_BATCH, NPM_BULK_LIMIT, SOURCE_FREEZE_RATIO } from "../src/lib/config.ts";
 import { createHttpClient } from "../src/lib/http.ts";
 import { writeNormalized } from "../src/lib/io.ts";
 import { mergeApps } from "../src/lib/merge.ts";
@@ -560,5 +560,110 @@ describe("pypi growth adapter", () => {
       pypi_last_month_downloads: 20314,
       pypi_last_month_downloads_carried_forward: true,
     });
+  });
+
+  it("freezes one stuck PyPI last_month when 19 of 20 packages still move", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-pypi-per-row-"));
+    const stuck = "zotero-mcp";
+    const live = Array.from({ length: 19 }, (_, index) => `live-mcp-${String(index).padStart(2, "0")}`);
+    const names = [...live, stuck];
+    expect(names).toHaveLength(20);
+    expect(1 / names.length).toBeLessThan(SOURCE_FREEZE_RATIO);
+
+    const liveWeek = (name: string, day: number) => 100 * day + Number(name.slice(-2));
+    const liveMonth = (name: string, day: number) => 1000 * day + Number(name.slice(-2));
+    const writeDay = (date: string, day: number) => {
+      const rows: SourceRow[] = names.map((name) =>
+        emptySourceRow({
+          snapshot_date: date,
+          source: "pypi",
+          source_id: name,
+          name,
+          pypi_package: name,
+          pypi_last_week_downloads: name === stuck ? 1000 + day * 100 : liveWeek(name, day),
+          pypi_last_month_downloads: name === stuck ? 20314 : liveMonth(name, day),
+          app_id: `pypi:${name}`,
+          fetched_at: `${date}T12:00:00Z`,
+        }),
+      );
+      const manifest: SnapshotManifest = {
+        snapshotDate: date,
+        collectedAt: `${date}T12:00:00Z`,
+        appCount: rows.length,
+        sourceRowCount: rows.length,
+        partial: false,
+        completedSources: ["pypi"],
+        sources: [{ source: "pypi", rowCount: rows.length, skipped: false, collectedAt: `${date}T12:00:00Z` }],
+      };
+      writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
+    };
+    writeDay("2026-10-22", 2);
+    writeDay("2026-10-24", 3);
+    expect(existsSync(join(dataDir, "normalized", "2026-10-23"))).toBe(false);
+
+    const discovered = createDiscoveredRefs();
+    for (const name of names) {
+      discovered.pypiPackages.add(name);
+    }
+    const result = await pypiAdapter.collect(
+      ctx({
+        snapshotDate: "2026-10-25",
+        collectedAt: "2026-10-25T12:00:00Z",
+        now: new Date("2026-10-25T12:00:00Z"),
+        dataDir,
+        sleep: async () => {},
+        http: createHttpClient({
+          fetchImpl: fixtureFetch(
+            names.map((name) => ({
+              match: `pypistats.org/api/packages/${name}/recent`,
+              body: {
+                data:
+                  name === stuck
+                    ? { last_day: 50, last_week: 1400, last_month: 20314 }
+                    : {
+                        last_day: 10,
+                        last_week: liveWeek(name, 4),
+                        last_month: liveMonth(name, 4),
+                      },
+                package: name,
+                type: "recent_downloads",
+              },
+            })),
+          ),
+          maxRetries: 0,
+          sleep: async () => {},
+        }),
+        discovered,
+      }),
+    );
+
+    expect(existsSync(join(dataDir, "normalized", "2026-10-23"))).toBe(false);
+    expect(result.records).toHaveLength(20);
+    const stuckRow = result.records.find((row) => row.source_id === stuck);
+    expect(stuckRow).toMatchObject({
+      pypi_last_week_downloads: 1400,
+      pypi_last_month_downloads: 20314,
+      carried_forward: false,
+      frozen: true,
+    });
+    const liveRows = result.records.filter((row) => row.source_id !== stuck);
+    expect(liveRows).toHaveLength(19);
+    expect(liveRows.every((row) => row.frozen === false && row.carried_forward === false)).toBe(true);
+    expect(liveRows.every((row) => (row.pypi_last_month_downloads ?? 0) > (row.pypi_last_week_downloads ?? 0))).toBe(
+      true,
+    );
+
+    const apps = mergeApps("2026-10-25", result.records);
+    expect(apps.find((app) => app.pypi_package === stuck)).toMatchObject({
+      pypi_last_week_downloads_carried_forward: false,
+      pypi_last_month_downloads_carried_forward: true,
+    });
+    expect(
+      apps.filter((app) => app.pypi_package !== stuck).every(
+        (app) =>
+          app.pypi_last_week_downloads_carried_forward === false &&
+          app.pypi_last_month_downloads_carried_forward === false,
+      ),
+    ).toBe(true);
   });
 });
