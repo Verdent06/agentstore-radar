@@ -2,7 +2,6 @@ export const CHART_IDS = ["npm", "github", "gemini"] as const;
 export type ChartId = (typeof CHART_IDS)[number];
 
 export type MetricKey =
-  | "use_count"
   | "stars"
   | "npm_weekly_downloads"
   | "pypi_last_week_downloads"
@@ -207,7 +206,6 @@ export const CATEGORY_LABELS: Record<CategorySlug, string> = {
 };
 
 export const METRIC_LABELS: Record<MetricKey, string> = {
-  use_count: "Smithery use count",
   stars: "GitHub stars",
   npm_weekly_downloads: "npm weekly downloads",
   pypi_last_week_downloads: "PyPI weekly downloads",

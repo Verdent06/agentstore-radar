@@ -29,7 +29,7 @@ import {
   topChart,
 } from "../src/aggregate/query.ts";
 import { runTool, TOOL_NAMES } from "../src/aggregate/tools.ts";
-import { CHART_IDS } from "../src/aggregate/types.ts";
+import { CHART_IDS, METRIC_KEYS } from "../src/aggregate/types.ts";
 import { writeAggregateFiles } from "../src/aggregate/write.ts";
 import { addUtcDays } from "../src/lib/dates.ts";
 import { writeNormalized } from "../src/lib/io.ts";
@@ -182,7 +182,7 @@ describe("list caps and public app pages", () => {
 
     expect(topChart(agg, "npm", 50).length).toBeLessThanOrEqual(PUBLIC_TOP_N);
     expect(searchApps(agg, "", { limit: 50 }).length).toBeLessThanOrEqual(PUBLIC_TOP_N);
-    expect(movers(agg, { window: "1d", metric: "use_count", limit: 50 }).length).toBeLessThanOrEqual(PUBLIC_TOP_N * 2);
+    expect(movers(agg, { window: "1d", metric: "npm_weekly_downloads", limit: 50 }).length).toBeLessThanOrEqual(PUBLIC_TOP_N * 2);
     expect(clampLimit(50)).toBe(PUBLIC_MAX_LIMIT);
     expect(agg.apps.length).toBeLessThanOrEqual(ids.length);
     expect(findApp(agg, "github:example/app-01")).toBeUndefined();
@@ -277,6 +277,21 @@ describe("rank_history metric fallback", () => {
     const moversUnknown = JSON.parse(runTool(agg, "movers", { metric: "not_a_metric" }).content[0]!.text);
     expect(moversUnknown).toEqual({ error: "unknown metric: not_a_metric" });
     expect(JSON.stringify(moversUnknown)).not.toMatch(/use_count|useCount/);
+  });
+
+  it("rank_history and movers reject metric=use_count", () => {
+    expect(METRIC_KEYS).not.toContain("use_count");
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-metric-usecount-"));
+    writeDemoSnapshots(dataDir);
+    const agg = buildAggregate(dataDir, "fixture");
+    const history = JSON.parse(
+      runTool(agg, "rank_history", { app_id: "github:example/github-mcp", metric: "use_count" }).content[0]!.text,
+    );
+    expect(history).toEqual({ error: "unknown metric: use_count" });
+    expect(history.points).toBeUndefined();
+    const moversRejected = JSON.parse(runTool(agg, "movers", { metric: "use_count" }).content[0]!.text);
+    expect(moversRejected).toEqual({ error: "unknown metric: use_count" });
+    expect(moversRejected.rows).toBeUndefined();
   });
 });
 
@@ -407,7 +422,9 @@ describe("built radar.json never holds exact fixture counts", () => {
     const brave = agg.apps.find((app) => app.id === "github:brave/brave-search-mcp");
     expect(brave).toBeDefined();
     expect(brave).not.toHaveProperty("useCount");
-    expect(movers(agg, { window: "7d", metric: "use_count" })).toEqual([]);
+    expect(JSON.parse(runTool(agg, "movers", { window: "7d", metric: "use_count" }).content[0]!.text)).toEqual({
+      error: "unknown metric: use_count",
+    });
   });
 });
 
@@ -602,6 +619,12 @@ describe("hidden smithery chart and public use_count", () => {
     expect(page).toContain("agg.meta.latestCompleteDate ?? agg.meta.latestDate");
     expect(page).toContain('agg.meta.source === "fixture" || agg.meta.origin === "fixture"');
     expect(page).not.toMatch(/formatDate\(agg\.meta\.weekAgoDate\)\} → \{formatDate\(agg\.meta\.latestDate\)\}/);
+  });
+
+  it("home KPIs pass only latestCompleteDate into formatKpis", () => {
+    const page = readFileSync(join(repoRoot, "web/app/page.tsx"), "utf8");
+    expect(page).toContain("formatKpis({ ...agg.stats, latestCompleteDate: agg.meta.latestCompleteDate })");
+    expect(page).not.toMatch(/formatKpis\([^)]*latestDate/);
   });
 });
 

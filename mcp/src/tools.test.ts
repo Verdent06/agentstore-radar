@@ -77,6 +77,17 @@ describe("MCP tool payloads", () => {
     assert.equal(JSON.stringify(unknown).includes("use_count"), false);
   });
 
+  it("rejects metric=use_count on rank_history and movers", () => {
+    const history = JSON.parse(
+      runTool(agg, "rank_history", { app_id: "github:example/github-mcp", metric: "use_count" }).content[0]!.text,
+    );
+    assert.deepEqual(history, { error: "unknown metric: use_count" });
+    assert.equal(history.points, undefined);
+    const moversRejected = JSON.parse(runTool(agg, "movers", { metric: "use_count" }).content[0]!.text);
+    assert.deepEqual(moversRejected, { error: "unknown metric: use_count" });
+    assert.equal(moversRejected.rows, undefined);
+  });
+
   it("omits useCount from search, competitors, category_trends, multi_store, and app_details", () => {
     const search = JSON.parse(runTool(agg, "search_apps", { query: "postgres" }).content[0]!.text);
     assert.equal(JSON.stringify(search.apps).includes("useCount"), false);

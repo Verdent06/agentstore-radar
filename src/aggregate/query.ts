@@ -146,8 +146,6 @@ export function seriesToPoints(agg: Aggregate, id: string): HistoryPoint[] {
 
 export function metricFromApp(app: AppSummary, metric: MetricKey): number | null {
   switch (metric) {
-    case "use_count":
-      return null;
     case "stars":
       return app.stars;
     case "npm_weekly_downloads":
@@ -161,8 +159,6 @@ export function metricFromApp(app: AppSummary, metric: MetricKey): number | null
 
 export function metricFromPoint(point: HistoryPoint, metric: MetricKey): number | null {
   switch (metric) {
-    case "use_count":
-      return null;
     case "stars":
       return point.stars;
     case "npm_weekly_downloads":
@@ -178,9 +174,6 @@ export function metricFromSeries(series: CompactSeries | undefined, metric: Metr
   if (!series) {
     return null;
   }
-  if (metric === "use_count") {
-    return null;
-  }
   const column =
     metric === "stars"
       ? series.s
@@ -194,9 +187,6 @@ export function metricFromSeries(series: CompactSeries | undefined, metric: Metr
 
 export function metricCarriedForward(series: CompactSeries | undefined, metric: MetricKey, index: number): boolean {
   if (!series) {
-    return false;
-  }
-  if (metric === "use_count") {
     return false;
   }
   const column =

@@ -44,7 +44,9 @@ describe("public aggregate queries", () => {
     expect(leaders[0]?.app.id).toBe("github:example/github-mcp");
     expect(leaders[0]?.delta).not.toBeNull();
     expect(leaders[0]?.delta).not.toBe(0);
-    expect(movers(agg, { window: "7d", metric: "use_count" })).toEqual([]);
+    expect(JSON.parse(runTool(agg, "movers", { window: "7d", metric: "use_count" }).content[0]!.text)).toEqual({
+      error: "unknown metric: use_count",
+    });
   });
 
   it("defaults movers to npm downloads, omitting stars and use_count", () => {
@@ -65,8 +67,11 @@ describe("public aggregate queries", () => {
   });
 
   it("returns rank history and description-based competitors", () => {
-    const ranks = rankHistory(agg, "github:brave/brave-search-mcp", "use_count");
-    expect(ranks.every((point) => point.value == null && point.rank == null)).toBe(true);
+    const ranks = JSON.parse(
+      runTool(agg, "rank_history", { app_id: "github:brave/brave-search-mcp", metric: "use_count" }).content[0]!.text,
+    );
+    expect(ranks).toEqual({ error: "unknown metric: use_count" });
+    expect(rankHistory(agg, "github:brave/brave-search-mcp", "stars").at(-1)?.rank).toBeGreaterThan(0);
     const similar = competitors(agg, "github:brave/brave-search-mcp");
     expect(similar.some((app) => app.id === "github:example/universal-search")).toBe(true);
   });
@@ -171,7 +176,9 @@ describe("default movers and stars_source series breaks", () => {
       current: 5000,
       delta: 4950,
     });
-    expect(movers(agg, { metric: "use_count" })).toEqual([]);
+    expect(JSON.parse(runTool(agg, "movers", { metric: "use_count" }).content[0]!.text)).toEqual({
+      error: "unknown metric: use_count",
+    });
     expect(homeMoverMetric(agg)).toBe("npm_weekly_downloads");
     expect(homeLeaders(agg, 5)[0]).toMatchObject({
       app: expect.objectContaining({ id: "github:example/mixed" }),

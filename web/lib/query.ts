@@ -70,8 +70,6 @@ export function findApp(agg: Aggregate, id: string): AppSummary | undefined {
 
 export function metricFromApp(app: AppSummary, metric: MetricKey): number | null {
   switch (metric) {
-    case "use_count":
-      return null;
     case "stars":
       return app.stars;
     case "npm_weekly_downloads":
@@ -86,7 +84,6 @@ export function metricFromApp(app: AppSummary, metric: MetricKey): number | null
 function seriesValue(agg: Aggregate, id: string, metric: MetricKey, index: number): number | null {
   const series = agg.series[id];
   if (!series || index < 0) return null;
-  if (metric === "use_count") return null;
   const column =
     metric === "stars"
       ? series.s
@@ -101,7 +98,6 @@ function seriesValue(agg: Aggregate, id: string, metric: MetricKey, index: numbe
 function seriesCarried(agg: Aggregate, id: string, metric: MetricKey, index: number): boolean {
   const series = agg.series[id];
   if (!series || index < 0) return false;
-  if (metric === "use_count") return false;
   const column =
     metric === "stars"
       ? series.sc
