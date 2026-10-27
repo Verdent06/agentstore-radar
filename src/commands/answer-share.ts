@@ -20,7 +20,7 @@ import {
 } from "../answer-share/providers.ts";
 import { ANSWER_SHARE_DEFAULT_N, ANSWER_SHARE_PROMPT_VERSION } from "../lib/config.ts";
 import { utcDateString } from "../lib/dates.ts";
-import { createHttpClient, type HttpClient } from "../lib/http.ts";
+import { createHttpClient, HttpError, type HttpClient } from "../lib/http.ts";
 import { createLogger, type Logger } from "../lib/logger.ts";
 import { computeAnswerShareSnapshot } from "../answer-share/share.ts";
 import type { AppRow } from "../lib/schema.ts";
@@ -36,8 +36,15 @@ import { PROVIDER_NAMES } from "../answer-share/schema.ts";
 export const NO_PROVIDERS_CONFIGURED = "no providers configured";
 export const NO_PROVIDER_CALLS_SUCCEEDED = "no provider calls succeeded";
 
-function hasSuccessfulProviderCall(responses: RawResponseRecord[]): boolean {
-  return responses.some((row) => !row.error);
+function failedCallLabel(error: unknown): string {
+  if (error instanceof HttpError) {
+    return String(error.status);
+  }
+  if (error instanceof Error) {
+    const status = error.message.match(/\bHTTP (\d{3})\b/);
+    return status?.[1] ?? error.message;
+  }
+  return String(error ?? "unknown");
 }
 
 export type AnswerShareCollectOptions = {
@@ -111,9 +118,17 @@ export async function collectAnswerShare(options: AnswerShareCollectOptions = {}
         skipReason: `missing ${PROVIDER_CONFIGS[name].envKey}`,
         settings,
         disabledMidRun: false,
+        lastError: undefined as unknown,
       };
     }
-    return { name, enabled: true as const, settings, disabledMidRun: false, skipReason: undefined as string | undefined };
+    return {
+      name,
+      enabled: true as const,
+      settings,
+      disabledMidRun: false,
+      skipReason: undefined as string | undefined,
+      lastError: undefined as unknown,
+    };
   });
 
   const enabled = providerStates.filter((state) => state.enabled);
@@ -203,6 +218,7 @@ export async function collectAnswerShare(options: AnswerShareCollectOptions = {}
             error: message,
           });
           log.warn("answer-share call failed", { provider: state.name, prompt: prompt.id, run, error: message });
+          state.lastError = error;
           if (isAuthFailure(error)) {
             state.disabledMidRun = true;
             state.skipReason = message;
@@ -217,24 +233,24 @@ export async function collectAnswerShare(options: AnswerShareCollectOptions = {}
     truncated = true;
   }
 
-  if (!hasSuccessfulProviderCall(responses)) {
-    log.error(NO_PROVIDER_CALLS_SUCCEEDED);
-    throw new Error(NO_PROVIDER_CALLS_SUCCEEDED);
-  }
-
-  const extracted = extractFromRecords(responses, promptSet.prompts);
-  const mentions = normalizeMentions(extracted, apps);
-  const shares = computeAnswerShareSnapshot(probeDate, promptSet.version, mentions, responses);
-
   const providerRuns: ProviderRun[] = providerStates.map((state) => {
     const stats = callsByProvider.get(state.name)!;
-    const skipped = !state.enabled || (stats.calls === 0 && Boolean(state.skipReason));
+    const ran = stats.calls - stats.errors > 0;
+    const skipped = !state.enabled || stats.calls === stats.errors;
+    let skipReason: string | undefined;
+    if (!state.enabled) {
+      skipReason = state.skipReason;
+    } else if (stats.calls === stats.errors && stats.calls > 0) {
+      skipReason = `all calls failed: ${failedCallLabel(state.lastError)}`;
+    } else if (skipped) {
+      skipReason = state.skipReason;
+    }
     const estimateCalls = plannedByProvider.get(state.name) ?? 0;
     return {
       provider: state.name,
-      ran: stats.calls > 0,
+      ran,
       skipped,
-      skipReason: skipped ? state.skipReason : state.disabledMidRun ? state.skipReason : undefined,
+      skipReason,
       model: state.settings.model,
       settings: state.settings,
       calls: stats.calls,
@@ -246,6 +262,15 @@ export async function collectAnswerShare(options: AnswerShareCollectOptions = {}
       webSearchCalls: stats.searches,
     };
   });
+
+  if (!providerRuns.some((row) => row.ran)) {
+    log.error(NO_PROVIDER_CALLS_SUCCEEDED);
+    throw new Error(NO_PROVIDER_CALLS_SUCCEEDED);
+  }
+
+  const extracted = extractFromRecords(responses, promptSet.prompts);
+  const mentions = normalizeMentions(extracted, apps);
+  const shares = computeAnswerShareSnapshot(probeDate, promptSet.version, mentions, responses);
 
   const manifest: AnswerShareManifest = {
     probeDate,

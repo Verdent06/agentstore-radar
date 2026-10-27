@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { collectAnswerShare } from "../src/commands/answer-share.ts";
+import { buildAnswerShareReport, collectAnswerShare } from "../src/commands/answer-share.ts";
 import {
   answerSharePaths,
   assertNotOverwritingPastAnswerShare,
@@ -204,6 +204,41 @@ describe("collectAnswerShare", () => {
     expect(existsSync(paths.manifestPath)).toBe(false);
     expect(existsSync(paths.sharesPath)).toBe(false);
     expect(existsSync(paths.responsesPath)).toBe(false);
+  });
+
+  it("marks anthropic skipped when openai succeeds and anthropic returns 401", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "answer-share-mixed-"));
+    const fetchImpl = async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("api.openai.com")) {
+        return new Response(JSON.stringify(loadFixture("answer-share/openai-response.json")), { status: 200 });
+      }
+      if (url.includes("api.anthropic.com")) {
+        return new Response("invalid api key", { status: 401 });
+      }
+      throw new Error(`Unexpected fetch in test: ${url}`);
+    };
+    const manifest = await collectAnswerShare({
+      date: "2026-10-16",
+      dataDir,
+      now: new Date("2026-10-16T12:00:00Z"),
+      n: 2,
+      prompts: [prompts[0]!],
+      apps,
+      env: { OPENAI_API_KEY: "sk-test", ANTHROPIC_API_KEY: "sk-ant" },
+      http: createHttpClient({ fetchImpl, maxRetries: 0 }),
+      log: silent,
+    });
+    expect(manifest.ran).toEqual(["openai"]);
+    const anthropic = manifest.providers.find((row) => row.provider === "anthropic");
+    expect(anthropic?.ran).toBe(false);
+    expect(anthropic?.skipped).toBe(true);
+    expect(anthropic?.skipReason).toMatch(/all calls failed: 401/);
+    expect(manifest.skipped).toContain("anthropic");
+    const text = buildAnswerShareReport({ date: "2026-10-16", dataDir, limit: 5 });
+    const ranLine = text.split("\n").find((line) => line.startsWith("Providers ran:"));
+    expect(ranLine).toBe("Providers ran: openai");
+    expect(ranLine).not.toContain("anthropic");
   });
 
   it("runs all four providers and writes results when every key is set", async () => {
