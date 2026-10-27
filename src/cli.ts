@@ -1,5 +1,10 @@
 import { runCollectorMissedAlert } from "./commands/alert-missed.ts";
-import { collectAnswerShare, printAnswerShareReport } from "./commands/answer-share.ts";
+import {
+  collectAnswerShare,
+  NO_PROVIDER_CALLS_SUCCEEDED,
+  NO_PROVIDERS_CONFIGURED,
+  printAnswerShareReport,
+} from "./commands/answer-share.ts";
 import { collect } from "./commands/collect.ts";
 import { runHealth } from "./commands/health.ts";
 import { printReport } from "./commands/report.ts";
@@ -98,7 +103,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return manifest.ran.length > 0 ? 0 : 1;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("no providers configured")) {
+      if (message === NO_PROVIDERS_CONFIGURED || message === NO_PROVIDER_CALLS_SUCCEEDED) {
         console.error(message);
         return 1;
       }

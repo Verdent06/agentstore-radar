@@ -33,6 +33,13 @@ import type {
 } from "../answer-share/schema.ts";
 import { PROVIDER_NAMES } from "../answer-share/schema.ts";
 
+export const NO_PROVIDERS_CONFIGURED = "no providers configured";
+export const NO_PROVIDER_CALLS_SUCCEEDED = "no provider calls succeeded";
+
+function hasSuccessfulProviderCall(responses: RawResponseRecord[]): boolean {
+  return responses.some((row) => !row.error);
+}
+
 export type AnswerShareCollectOptions = {
   date?: string;
   dataDir?: string;
@@ -111,8 +118,8 @@ export async function collectAnswerShare(options: AnswerShareCollectOptions = {}
 
   const enabled = providerStates.filter((state) => state.enabled);
   if (enabled.length === 0) {
-    log.error("no providers configured");
-    throw new Error("no providers configured");
+    log.error(NO_PROVIDERS_CONFIGURED);
+    throw new Error(NO_PROVIDERS_CONFIGURED);
   }
   // Fair estimate: interleave until global cap.
   const plannedByProvider = new Map<ProviderName, number>(enabled.map((state) => [state.name, 0]));
@@ -208,6 +215,11 @@ export async function collectAnswerShare(options: AnswerShareCollectOptions = {}
 
   if (maxCalls != null && callsMade >= maxCalls && planned > callsMade) {
     truncated = true;
+  }
+
+  if (!hasSuccessfulProviderCall(responses)) {
+    log.error(NO_PROVIDER_CALLS_SUCCEEDED);
+    throw new Error(NO_PROVIDER_CALLS_SUCCEEDED);
   }
 
   const extracted = extractFromRecords(responses, promptSet.prompts);

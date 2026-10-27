@@ -154,6 +154,58 @@ describe("collectAnswerShare", () => {
     expect(existsSync(paths.responsesPath)).toBe(false);
   });
 
+  it("fails and writes nothing when keys are set but every provider call errors", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "answer-share-all-fail-"));
+    const errors: string[] = [];
+    const fetchImpl = async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("api.openai.com")) {
+        return new Response("invalid api key", { status: 401 });
+      }
+      if (url.includes("api.anthropic.com")) {
+        return new Response("rate limited", { status: 429 });
+      }
+      if (url.includes("generativelanguage.googleapis.com")) {
+        return new Response("no credits", { status: 402 });
+      }
+      if (url.includes("api.x.ai")) {
+        throw new Error("network down");
+      }
+      throw new Error(`Unexpected fetch in test: ${url}`);
+    };
+    await expect(
+      collectAnswerShare({
+        date: "2026-10-16",
+        dataDir,
+        now: new Date("2026-10-16T12:00:00Z"),
+        n: 1,
+        prompts: [prompts[0]!],
+        apps,
+        env: {
+          OPENAI_API_KEY: "sk-test",
+          ANTHROPIC_API_KEY: "sk-ant",
+          GEMINI_API_KEY: "gem",
+          XAI_API_KEY: "xai",
+        },
+        http: createHttpClient({ fetchImpl, maxRetries: 0 }),
+        log: {
+          info() {},
+          warn() {},
+          error(message) {
+            errors.push(message);
+          },
+        },
+      }),
+    ).rejects.toThrow(/no provider calls succeeded/);
+    expect(errors).toContain("no provider calls succeeded");
+    const paths = answerSharePaths("2026-10-16", dataDir);
+    expect(existsSync(paths.rawDir)).toBe(false);
+    expect(existsSync(paths.normalizedDir)).toBe(false);
+    expect(existsSync(paths.manifestPath)).toBe(false);
+    expect(existsSync(paths.sharesPath)).toBe(false);
+    expect(existsSync(paths.responsesPath)).toBe(false);
+  });
+
   it("runs all four providers and writes results when every key is set", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "answer-share-all-"));
     let calls = 0;
