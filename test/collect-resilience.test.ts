@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -249,6 +250,11 @@ describe("collect resilience", () => {
       },
       dataDir,
     );
+    execSync("git init && git add -A && git -c user.email=test@example.com -c user.name=test commit -m previous", {
+      cwd: dataDir,
+      encoding: "utf8",
+    });
+    const previousCommit = execSync("git rev-parse HEAD", { cwd: dataDir, encoding: "utf8" }).trim();
     const catalogFetch = fixtureFetch(catalogs);
     const forced = await collect({
       date: "2026-10-24",
@@ -277,7 +283,10 @@ describe("collect resilience", () => {
       overwrittenAt: "2026-10-24T19:48:02.000Z",
       previousCollectedAt: "2026-10-24T11:07:24.740Z",
       previousRunId: "run-morning",
+      previousCommit,
+      runId: "run-evening",
     });
+    expect(next.overwrite?.previousCommit).toMatch(/^[0-9a-f]{7,40}$/i);
     const backupRel = next.overwrite?.previousBackupPath;
     expect(backupRel).toMatch(/^backups\/normalized\/2026-10-24\//);
     const backupDir = join(dataDir, backupRel!);

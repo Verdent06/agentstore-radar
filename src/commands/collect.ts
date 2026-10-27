@@ -229,12 +229,15 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     }
     const stamp = snapshotBackupStamp(previous?.collectedAt, previous?.runId);
     previousBackupPath = backupNormalizedSnapshot(snapshotDate, dataDir, stamp);
+    const previousCommit = tryGitHead(dataDir) ?? tryGitHead(dirname(dataDir));
     overwrite = {
       overwrittenAt: collectedAt,
       previousBackupPath,
       previousCollectedAt: previous?.collectedAt,
       previousRunId: previous?.runId,
-      previousGitSha: tryGitHead(dataDir) ?? tryGitHead(dirname(dataDir)),
+      previousGitSha: previousCommit,
+      previousCommit,
+      runId,
     };
     log.warn("force overwrite of existing snapshot; previous day kept as backup", overwrite);
   }

@@ -91,7 +91,7 @@ jobs:
           npm run collect -- "${ARGS[@]}"
 
       - name: Commit snapshot to private data repo
-        if: ${{ always() && inputs.seed_only != true && inputs.skip_push != true && steps.collect.outcome != 'skipped' }}
+        if: ${{ always() && github.ref == 'refs/heads/main' && inputs.seed_only != true && inputs.skip_push != true && steps.collect.outcome != 'skipped' }}
         working-directory: .radar-data
         run: bash "$GITHUB_WORKSPACE/scripts/push-data-repo.sh" "$GITHUB_WORKSPACE/.radar-data"
 

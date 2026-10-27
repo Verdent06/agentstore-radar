@@ -137,6 +137,8 @@ export const SnapshotManifestSchema = z.object({
       previousCollectedAt: z.string().optional(),
       previousRunId: z.string().optional(),
       previousGitSha: z.string().optional(),
+      previousCommit: z.string().optional(),
+      runId: z.string().optional(),
     })
     .optional(),
 });
