@@ -50,7 +50,12 @@ describe("push-data-repo.sh", () => {
 
     execFileSync("bash", [script, second, "2026-10-24"], {
       stdio: "pipe",
-      env: { ...process.env, GIT_PUSH_ATTEMPTS: "3", GIT_PUSH_SLEEP_SECONDS: "0" },
+      env: {
+        ...process.env,
+        GITHUB_REF: "refs/heads/main",
+        GIT_PUSH_ATTEMPTS: "3",
+        GIT_PUSH_SLEEP_SECONDS: "0",
+      },
     });
     const log = git(second, "log --oneline origin/main");
     expect(log).toMatch(/snapshot 2026-10-24/);
@@ -106,7 +111,10 @@ describe("push-data-repo.sh", () => {
 
     mkdirSync(join(checkout, "data/normalized"), { recursive: true });
     writeFileSync(join(checkout, "data/normalized/2026-10-19"), "");
-    const output = execFileSync("bash", [script, checkout, "2026-10-19"], { encoding: "utf8" });
+    const output = execFileSync("bash", [script, checkout, "2026-10-19"], {
+      encoding: "utf8",
+      env: { ...process.env, GITHUB_REF: "refs/heads/main" },
+    });
     expect(output).toMatch(/No snapshot changes|removing broken snapshot file/);
     expect(git(checkout, "log --oneline")).not.toMatch(/2026-10-19/);
   });
