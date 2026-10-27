@@ -41,6 +41,48 @@ export function prioritizeKeys(keys: string[], scoreOf: (key: string) => number)
     .map((row) => row.key);
 }
 
+function fetchedAtMs(lastFetched: LastFetchedMap, key: string): number {
+  const raw = lastFetched[key];
+  if (!raw) {
+    return 0;
+  }
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+/** Oldest last_fetched first (missing first). Equal timestamps keep a higher score ahead. */
+export function prioritizeStalestFirst(
+  keys: string[],
+  lastFetched: LastFetchedMap,
+  scoreOf?: (key: string) => number,
+): string[] {
+  return keys
+    .map((key, index) => ({
+      key,
+      index,
+      fetchedAt: fetchedAtMs(lastFetched, key),
+      score: scoreOf?.(key) ?? 0,
+    }))
+    .sort((a, b) => a.fetchedAt - b.fetchedAt || b.score - a.score || a.index - b.index)
+    .map((row) => row.key);
+}
+
+export function takeRunBatch(keys: string[], limit: number): string[] {
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return keys;
+  }
+  return keys.slice(0, Math.floor(limit));
+}
+
+export function selectRunBatch(
+  dueKeys: string[],
+  lastFetched: LastFetchedMap,
+  limit: number,
+  scoreOf?: (key: string) => number,
+): string[] {
+  return takeRunBatch(prioritizeStalestFirst(dueKeys, lastFetched, scoreOf), limit);
+}
+
 /** True when the stored value was not fetched for this snapshot day (and is not this run's live fetch). */
 export function isCarriedForward(
   lastFetchedAt: string | null | undefined,

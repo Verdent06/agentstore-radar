@@ -12,7 +12,10 @@ import {
   persistCheckpoint,
   persistLastFetched,
   prioritizeKeys,
+  prioritizeStalestFirst,
   resumeDailyDueKeys,
+  selectRunBatch,
+  takeRunBatch,
   resumeDueKeys,
   selectDailyDueKeys,
   selectDueKeys,
@@ -91,6 +94,24 @@ describe("rolling last_fetched", () => {
       "low",
       "also-low",
     ]);
+  });
+
+  it("rotates the stalest keys first and caps the run batch", () => {
+    const lastFetched = {
+      fresh: "2026-10-26T12:00:00Z",
+      mid: "2026-10-20T12:00:00Z",
+      older: "2026-10-10T12:00:00Z",
+    };
+    expect(prioritizeStalestFirst(["fresh", "missing", "mid", "older"], lastFetched)).toEqual([
+      "missing",
+      "older",
+      "mid",
+      "fresh",
+    ]);
+    expect(takeRunBatch(["a", "b", "c", "d"], 2)).toEqual(["a", "b"]);
+    expect(
+      selectRunBatch(["fresh", "mid", "older", "missing"], lastFetched, 2, (key) => (key === "older" ? 9 : 1)),
+    ).toEqual(["missing", "older"]);
   });
 
   it("treats same-day last_fetched as live, not carried_forward", () => {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { GITHUB_GRAPHQL_BATCH, GITHUB_GRAPHQL_URL, MAX_RATE_LIMIT_WAIT_MS } from "../lib/config.ts";
+import { GITHUB_GRAPHQL_BATCH, GITHUB_GRAPHQL_URL, GITHUB_RUN_BATCH, MAX_RATE_LIMIT_WAIT_MS, runBatchSize } from "../lib/config.ts";
 import { computeCoverage } from "../lib/coverage.ts";
 import { HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, type GithubRepoRef } from "../lib/matching.ts";
@@ -15,8 +15,8 @@ import {
   persistCheckpoint,
   persistEntityCache,
   persistLastFetched,
-  prioritizeKeys,
   resumeDailyDueKeys,
+  selectRunBatch,
 } from "../lib/rolling.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
 import { chunk, sleep as defaultSleep } from "../lib/util.ts";
@@ -226,7 +226,12 @@ export const githubAdapter: SourceAdapter = {
     const cache = loadEntityCache(ctx.dataDir, "github");
     const checkpoint = loadCheckpoint(ctx.dataDir, "github");
     const { dueKeys: unorderedDue, resumed } = resumeDailyDueKeys(allKeys, lastFetched, ctx.snapshotDate, checkpoint);
-    const dueKeys = prioritizeKeys(unorderedDue, (key) => cachedStars(cache[key]));
+    const dueKeys = selectRunBatch(
+      unorderedDue,
+      lastFetched,
+      runBatchSize(ctx.env, "RADAR_GITHUB_BATCH", GITHUB_RUN_BATCH),
+      (key) => cachedStars(cache[key]),
+    );
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
 
@@ -311,7 +316,8 @@ export const githubAdapter: SourceAdapter = {
 
     ctx.log.info("github fetching repositories", {
       requested: allKeys.length,
-      due: dueKeys.length,
+      due: unorderedDue.length,
+      batch: dueKeys.length,
       resumed,
       batches: Math.ceil(dueKeys.length / GITHUB_GRAPHQL_BATCH),
     });

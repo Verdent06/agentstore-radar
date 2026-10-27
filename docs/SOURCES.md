@@ -49,7 +49,7 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - Docs: [npm download counts](https://github.com/npm/registry/blob/main/docs/download-counts.md)
 - `GET https://api.npmjs.org/downloads/point/last-week/{package}`
 - Bulk: comma-separated, max **128**, **unscoped only**. Scoped packages (`@scope/name`) are fetched one-by-one with `%2F`
-- Throttle `api.npmjs.org` (~500ms bulk, ~1.2s scoped). Back off on HTTP 429 and Cloudflare error 1015. `Retry-After: 0` is ignored (it caused an immediate retry storm on 2026-10-25); waits floor at 15s and continue the same package until the 70-minute budget is exhausted
+- Throttle `api.npmjs.org` (~500ms bulk, ~1.2s scoped). Back off on HTTP 429 and Cloudflare error 1015. `Retry-After: 0` is ignored (it caused an immediate retry storm on 2026-10-25); waits floor at 15s and **delay that package instead of stopping npm**. After the 70-minute wait budget a key is left for the next run, not used to mark the source truncated. Each run refreshes a stalest-first batch (`RADAR_NPM_BATCH`, default 1500) so the job finishes inside the Actions time limit.
 - Checkpoint + **daily** `last_fetched` under `data/state/npm/`. Scoped packages (the 2026-10-25 429, `@abhishekjkrsna/swapi-mcp`) are the slow path; unscoped bulk of 128 still runs first. Due keys are ordered by last-known weekly downloads. Same `fetched_at` / `carried_forward` stamping as GitHub.
 
 ## PyPI / pypistats

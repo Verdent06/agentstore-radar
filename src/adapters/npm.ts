@@ -1,7 +1,15 @@
 import { z } from "zod";
-import { NPM_BULK_LIMIT, NPM_BULK_MIN_INTERVAL_MS, NPM_DOWNLOADS_BASE, NPM_PARTIAL_FAILURE_RATIO, NPM_SCOPED_MIN_INTERVAL_MS } from "../lib/config.ts";
+import {
+  NPM_BULK_LIMIT,
+  NPM_BULK_MIN_INTERVAL_MS,
+  NPM_DOWNLOADS_BASE,
+  NPM_PARTIAL_FAILURE_RATIO,
+  NPM_RUN_BATCH,
+  NPM_SCOPED_MIN_INTERVAL_MS,
+  runBatchSize,
+} from "../lib/config.ts";
 import { computeCoverage } from "../lib/coverage.ts";
-import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
+import { fetchJsonWithRateLimitWait, isHttpRateLimit } from "../lib/http.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import {
   clearCheckpoint,
@@ -14,8 +22,8 @@ import {
   persistCheckpoint,
   persistEntityCache,
   persistLastFetched,
-  prioritizeKeys,
   resumeDailyDueKeys,
+  selectRunBatch,
 } from "../lib/rolling.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
 import { chunk, sleep as defaultSleep } from "../lib/util.ts";
@@ -122,7 +130,12 @@ export const npmAdapter: SourceAdapter = {
     const cache = loadEntityCache(ctx.dataDir, "npm");
     const checkpoint = loadCheckpoint(ctx.dataDir, "npm");
     const { dueKeys: unorderedDue, resumed } = resumeDailyDueKeys(allKeys, lastFetched, ctx.snapshotDate, checkpoint);
-    const dueKeys = prioritizeKeys(unorderedDue, (key) => cachedDownloads(cache[key]));
+    const dueKeys = selectRunBatch(
+      unorderedDue,
+      lastFetched,
+      runBatchSize(ctx.env, "RADAR_NPM_BATCH", NPM_RUN_BATCH),
+      (key) => cachedDownloads(cache[key]),
+    );
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
 
@@ -185,7 +198,8 @@ export const npmAdapter: SourceAdapter = {
     const unscoped = dueKeys.filter((name) => !isScopedNpmPackage(name));
     ctx.log.info("npm fetching downloads", {
       requested: allKeys.length,
-      due: dueKeys.length,
+      due: unorderedDue.length,
+      batch: dueKeys.length,
       unscoped: unscoped.length,
       scoped: scoped.length,
       resumed,
@@ -194,6 +208,7 @@ export const npmAdapter: SourceAdapter = {
     let fetchedThisRun = 0;
     let truncated = false;
     let processed = 0;
+    let deferred = 0;
     let stoppedAt: SourceResult["stoppedAt"];
 
     const fetchNpm = async (url: string, minIntervalMs: number): Promise<unknown> =>
@@ -210,15 +225,15 @@ export const npmAdapter: SourceAdapter = {
         },
       });
 
-    try {
-      const batches = chunk(unscoped, NPM_BULK_LIMIT);
-      for (const [index, batch] of batches.entries()) {
-        persistCheckpoint(ctx.dataDir, "npm", {
-          snapshotDate: ctx.snapshotDate,
-          dueKeys,
-          nextIndex: processed,
-          startedAt: checkpoint?.startedAt ?? fetchedAt,
-        });
+    const batches = chunk(unscoped, NPM_BULK_LIMIT);
+    for (const [index, batch] of batches.entries()) {
+      persistCheckpoint(ctx.dataDir, "npm", {
+        snapshotDate: ctx.snapshotDate,
+        dueKeys,
+        nextIndex: processed,
+        startedAt: checkpoint?.startedAt ?? fetchedAt,
+      });
+      try {
         const payload = await fetchNpm(npmBulkUrl(batch), NPM_BULK_MIN_INTERVAL_MS);
         if (batch.length === 1) {
           if (rememberPoint(cache, lastFetched, batch[0]!, payload, fetchedAt)) {
@@ -234,62 +249,61 @@ export const npmAdapter: SourceAdapter = {
             }
           }
         }
-        processed += batch.length;
-        persistLastFetched(ctx.dataDir, "npm", lastFetched);
-        persistEntityCache(ctx.dataDir, "npm", cache);
-        if ((index + 1) % 10 === 0 || index + 1 === batches.length) {
-          ctx.log.info("npm bulk progress", {
+      } catch (error) {
+        if (isHttpRateLimit(error)) {
+          deferred += batch.length;
+          ctx.log.warn("npm bulk delayed past wait budget; leaving batch for next run", {
             batch: index + 1,
-            batches: batches.length,
-            fetchedThisRun,
+            size: batch.length,
+            error: String(error),
           });
+          processed += batch.length;
+          continue;
         }
-      }
-
-      for (const name of scoped) {
-        persistCheckpoint(ctx.dataDir, "npm", {
-          snapshotDate: ctx.snapshotDate,
-          dueKeys,
-          nextIndex: processed,
-          startedAt: checkpoint?.startedAt ?? fetchedAt,
-        });
-        try {
-          const payload = await fetchNpm(npmScopedUrl(name), NPM_SCOPED_MIN_INTERVAL_MS);
-          if (rememberPoint(cache, lastFetched, name, payload, fetchedAt)) {
-            fetchedThisRun += 1;
-          }
-        } catch (error) {
-          if (error instanceof HttpError && (error.status === 429 || error.status === 403 || error.cloudflare)) {
-            throw error;
-          }
-          ctx.log.warn("npm scoped package fetch failed", { name, error: String(error) });
-        }
-        processed += 1;
-        persistLastFetched(ctx.dataDir, "npm", lastFetched);
-        persistEntityCache(ctx.dataDir, "npm", cache);
-      }
-    } catch (error) {
-      if (
-        error instanceof HttpError &&
-        (error.status === 429 || error.status === 403 || error.cloudflare) &&
-        (fetchedThisRun > 0 || Object.keys(cache).length > 0)
-      ) {
-        truncated = true;
-        stoppedAt = sourceStoppedAt("npm", error, { page: Math.floor(processed / Math.max(NPM_BULK_LIMIT, 1)) + 1 });
-        ctx.log.warn("npm stopped early after rate limit; keeping partial snapshot", {
-          fetchedThisRun,
-          processed,
-          requested: allKeys.length,
-          due: dueKeys.length,
-          error: stoppedAt.error,
-        });
-      } else {
         throw error;
+      }
+      processed += batch.length;
+      persistLastFetched(ctx.dataDir, "npm", lastFetched);
+      persistEntityCache(ctx.dataDir, "npm", cache);
+      if ((index + 1) % 10 === 0 || index + 1 === batches.length) {
+        ctx.log.info("npm bulk progress", {
+          batch: index + 1,
+          batches: batches.length,
+          fetchedThisRun,
+        });
       }
     }
 
+    for (const name of scoped) {
+      persistCheckpoint(ctx.dataDir, "npm", {
+        snapshotDate: ctx.snapshotDate,
+        dueKeys,
+        nextIndex: processed,
+        startedAt: checkpoint?.startedAt ?? fetchedAt,
+      });
+      try {
+        const payload = await fetchNpm(npmScopedUrl(name), NPM_SCOPED_MIN_INTERVAL_MS);
+        if (rememberPoint(cache, lastFetched, name, payload, fetchedAt)) {
+          fetchedThisRun += 1;
+        }
+      } catch (error) {
+        if (isHttpRateLimit(error)) {
+          deferred += 1;
+          ctx.log.warn("npm scoped delayed past wait budget; leaving key for next run", {
+            name,
+            error: String(error),
+          });
+        } else {
+          ctx.log.warn("npm scoped package fetch failed", { name, error: String(error) });
+        }
+      }
+      processed += 1;
+      persistLastFetched(ctx.dataDir, "npm", lastFetched);
+      persistEntityCache(ctx.dataDir, "npm", cache);
+    }
+
     if (!truncated && dueKeys.length > 0) {
-      const failedDue = dueKeys.length - fetchedThisRun;
+      const failedDue = dueKeys.length - fetchedThisRun - deferred;
       const failRatio = failedDue / dueKeys.length;
       if (failRatio > NPM_PARTIAL_FAILURE_RATIO) {
         truncated = true;

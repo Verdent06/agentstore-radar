@@ -1,5 +1,13 @@
 import { z } from "zod";
-import { SMITHERY_FROZEN_DAYS, SMITHERY_SERVERS_URL, SMITHERY_STABLE_SEED, SMITHERY_USECOUNT_PAGE_SIZE, SOURCE_FREEZE_RATIO } from "../lib/config.ts";
+import {
+  SMITHERY_FROZEN_DAYS,
+  SMITHERY_SERVERS_URL,
+  SMITHERY_STABLE_SEED,
+  SMITHERY_USECOUNT_PAGE_SIZE,
+  SMITHERY_USECOUNT_RUN_BATCH,
+  SOURCE_FREEZE_RATIO,
+  runBatchSize,
+} from "../lib/config.ts";
 import { computeCoverage } from "../lib/coverage.ts";
 import { evaluateSourceFreeze, isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../lib/frozen.ts";
 import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
@@ -13,8 +21,8 @@ import {
   persistCheckpoint,
   persistEntityCache,
   persistLastFetched,
-  prioritizeKeys,
   resumeDailyDueKeys,
+  selectRunBatch,
 } from "../lib/rolling.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
 import { errorMessage, sleep as defaultSleep } from "../lib/util.ts";
@@ -228,13 +236,18 @@ export const smitheryAdapter: SourceAdapter = {
       indexesByName.set(name, indexes);
     }
     const { dueKeys: unorderedDue, resumed } = resumeDailyDueKeys(allKeys, lastFetched, ctx.snapshotDate, checkpoint);
-    const dueKeys = prioritizeKeys(unorderedDue, (key) => {
-      const cached = cache[key]?.useCount;
-      if (typeof cached === "number") {
-        return cached;
-      }
-      return listCountByName.get(key) ?? 0;
-    });
+    const dueKeys = selectRunBatch(
+      unorderedDue,
+      lastFetched,
+      runBatchSize(ctx.env, "RADAR_SMITHERY_BATCH", SMITHERY_USECOUNT_RUN_BATCH),
+      (key) => {
+        const cached = cache[key]?.useCount;
+        if (typeof cached === "number") {
+          return cached;
+        }
+        return listCountByName.get(key) ?? 0;
+      },
+    );
 
     let useCountAttempted = 0;
     let useCountUpdated = 0;
@@ -246,7 +259,8 @@ export const smitheryAdapter: SourceAdapter = {
 
     ctx.log.info("smithery refreshing useCount via search", {
       catalog: allKeys.length,
-      due: dueKeys.length,
+      due: unorderedDue.length,
+      batch: dueKeys.length,
       resumed,
     });
 

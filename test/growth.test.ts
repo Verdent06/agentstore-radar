@@ -63,6 +63,43 @@ describe("github growth adapter", () => {
     expect(result.truncated).toBe(false);
   });
 
+  it("fetches a bounded stalest-first GitHub batch without marking the source truncated", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-gh-batch-"));
+    persistLastFetched(dataDir, "github", {
+      "example/weather": "2026-10-24T12:00:00Z",
+      "example/mid": "2026-10-20T12:00:00Z",
+    });
+    const discovered = createDiscoveredRefs();
+    discovered.githubRepos.set("example/weather", { owner: "example", repo: "weather" });
+    discovered.githubRepos.set("example/mid", { owner: "example", repo: "mid" });
+    discovered.githubRepos.set("example/old", { owner: "example", repo: "old" });
+    let calls = 0;
+    const result = await githubAdapter.collect(
+      ctx({
+        snapshotDate: "2026-10-25",
+        collectedAt: "2026-10-25T12:00:00Z",
+        now: new Date("2026-10-25T12:00:00Z"),
+        dataDir,
+        env: { GH_STATS_TOKEN: "test-token", RADAR_GITHUB_BATCH: "1" },
+        http: createHttpClient({
+          fetchImpl: async () => {
+            calls += 1;
+            return new Response(JSON.stringify(loadFixture("github-graphql.json")), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          },
+          maxRetries: 0,
+        }),
+        discovered,
+      }),
+    );
+    expect(calls).toBe(1);
+    expect(result.truncated).toBe(false);
+    expect(result.fetchedThisRunCount).toBe(1);
+    expect(result.eligibleCount).toBe(3);
+  });
+
   it("refetches repos last seen on a previous UTC day", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-gh-"));
     persistLastFetched(dataDir, "github", { "example/weather": "2026-10-14T00:00:00Z" });
@@ -322,10 +359,61 @@ describe("npm growth adapter", () => {
       }),
     );
     expect(calls).toBeGreaterThan(1);
-    expect(result.truncated).toBe(true);
+    expect(result.truncated).toBe(false);
+    expect(result.stoppedAt).toBeUndefined();
     expect(result.rowCount).toBe(1);
     expect(result.eligibleCount).toBe(2);
     expect(result.coverage).toBe(0.5);
+  });
+
+  it("fetches a bounded stalest-first npm batch without marking the source truncated", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-npm-batch-"));
+    persistLastFetched(dataDir, "npm", {
+      "pkg-fresh": "2026-10-24T12:00:00Z",
+      "pkg-mid": "2026-10-20T12:00:00Z",
+    });
+    persistEntityCache(dataDir, "npm", {
+      "pkg-fresh": { downloads: 9, package: "pkg-fresh" },
+      "pkg-mid": { downloads: 8, package: "pkg-mid" },
+      "pkg-old": { downloads: 7, package: "pkg-old" },
+    });
+    const discovered = createDiscoveredRefs();
+    for (const name of ["pkg-fresh", "pkg-mid", "pkg-old"]) {
+      discovered.npmPackages.add(name);
+    }
+    const requested: string[] = [];
+    const result = await npmAdapter.collect(
+      ctx({
+        snapshotDate: "2026-10-25",
+        collectedAt: "2026-10-25T12:00:00Z",
+        now: new Date("2026-10-25T12:00:00Z"),
+        dataDir,
+        env: { RADAR_NPM_BATCH: "2" },
+        http: createHttpClient({
+          fetchImpl: async (input) => {
+            requested.push(String(input));
+            const url = String(input);
+            const body: Record<string, { downloads: number; package: string }> = {};
+            for (const name of ["pkg-old", "pkg-mid", "pkg-fresh"]) {
+              if (url.includes(name)) {
+                body[name] = { downloads: 10, package: name };
+              }
+            }
+            return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+          },
+          maxRetries: 0,
+          sleep: async () => {},
+        }),
+        discovered,
+        sleep: async () => {},
+      }),
+    );
+    expect(result.truncated).toBe(false);
+    expect(result.fetchedThisRunCount).toBe(2);
+    expect(result.rowCount).toBe(3);
+    const fetched = result.records.filter((row) => row.carried_forward !== true).map((row) => row.source_id).sort();
+    expect(fetched).toEqual(["pkg-mid", "pkg-old"]);
+    expect(requested.join(" ")).not.toContain("pkg-fresh");
   });
 
   it("retries a scoped 429 and still finishes without truncating", async () => {
@@ -360,6 +448,41 @@ describe("npm growth adapter", () => {
     expect(result.truncated).toBe(false);
     expect(result.rowCount).toBe(2);
     expect(result.coverage).toBe(1);
+  });
+
+  it("waits Retry-After on an npm 429 instead of marking the source truncated", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-npm-retry-after-"));
+    const discovered = createDiscoveredRefs();
+    discovered.npmPackages.add("@scope/pkg");
+    const waits: number[] = [];
+    let calls = 0;
+    const result = await npmAdapter.collect(
+      ctx({
+        dataDir,
+        http: createHttpClient({
+          fetchImpl: async () => {
+            calls += 1;
+            if (calls === 1) {
+              return new Response("slow down", { status: 429, headers: { "retry-after": "30" } });
+            }
+            return new Response(JSON.stringify({ downloads: 4, package: "@scope/pkg" }), { status: 200 });
+          },
+          maxRetries: 0,
+          sleep: async (ms) => {
+            waits.push(ms);
+          },
+        }),
+        discovered,
+        sleep: async (ms) => {
+          waits.push(ms);
+        },
+      }),
+    );
+    expect(calls).toBe(2);
+    expect(waits.some((ms) => ms >= 30_000)).toBe(true);
+    expect(result.truncated).toBe(false);
+    expect(result.fetchedThisRunCount).toBe(1);
+    expect(result.rowCount).toBe(1);
   });
 
   it("marks npm partial when more than 20% of due keys fail", async () => {

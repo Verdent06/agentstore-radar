@@ -40,6 +40,23 @@ export const NPM_BULK_LIMIT = 128;
 export const NPM_SCOPED_MIN_INTERVAL_MS = 1200;
 export const NPM_BULK_MIN_INTERVAL_MS = 500;
 export const PYPI_MIN_INTERVAL_MS = 400;
+/** Per-run enrichment caps so one collect finishes inside the Actions time limit. */
+export const GITHUB_RUN_BATCH = 4000;
+export const NPM_RUN_BATCH = 1500;
+export const PYPI_RUN_BATCH = 800;
+export const SMITHERY_USECOUNT_RUN_BATCH = 400;
+
+export function runBatchSize(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
+  const raw = env[key]?.trim();
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
 export const SMITHERY_USECOUNT_PAGE_SIZE = 10;
 /** Snapshot days of identical catalog metrics (including today) before a value can be frozen. */
 export const SMITHERY_FROZEN_DAYS = 3;

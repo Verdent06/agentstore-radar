@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { PYPI_MIN_INTERVAL_MS, PYPISTATS_BASE, SMITHERY_FROZEN_DAYS, SOURCE_FREEZE_RATIO } from "../lib/config.ts";
+import {
+  PYPI_MIN_INTERVAL_MS,
+  PYPI_RUN_BATCH,
+  PYPISTATS_BASE,
+  SMITHERY_FROZEN_DAYS,
+  SOURCE_FREEZE_RATIO,
+  runBatchSize,
+} from "../lib/config.ts";
 import { computeCoverage } from "../lib/coverage.ts";
 import { evaluateSourceFreeze, isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../lib/frozen.ts";
 import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
@@ -15,8 +22,8 @@ import {
   persistCheckpoint,
   persistEntityCache,
   persistLastFetched,
-  prioritizeKeys,
   resumeDailyDueKeys,
+  selectRunBatch,
 } from "../lib/rolling.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
 import { sleep as defaultSleep } from "../lib/util.ts";
@@ -150,7 +157,12 @@ export const pypiAdapter: SourceAdapter = {
     const cache = loadEntityCache(ctx.dataDir, "pypi");
     const checkpoint = loadCheckpoint(ctx.dataDir, "pypi");
     const { dueKeys: unorderedDue, resumed } = resumeDailyDueKeys(allKeys, lastFetched, ctx.snapshotDate, checkpoint);
-    const dueKeys = prioritizeKeys(unorderedDue, (key) => cachedWeekDownloads(cache[key]));
+    const dueKeys = selectRunBatch(
+      unorderedDue,
+      lastFetched,
+      runBatchSize(ctx.env, "RADAR_PYPI_BATCH", PYPI_RUN_BATCH),
+      (key) => cachedWeekDownloads(cache[key]),
+    );
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
     const frozenDays = smitheryFrozenDays(ctx.env, SMITHERY_FROZEN_DAYS);
@@ -233,7 +245,8 @@ export const pypiAdapter: SourceAdapter = {
 
     ctx.log.info("pypi fetching recent downloads", {
       requested: allKeys.length,
-      due: dueKeys.length,
+      due: unorderedDue.length,
+      batch: dueKeys.length,
       resumed,
     });
 
