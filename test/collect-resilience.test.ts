@@ -255,6 +255,7 @@ describe("collect resilience", () => {
       encoding: "utf8",
     });
     const previousCommit = execSync("git rev-parse HEAD", { cwd: dataDir, encoding: "utf8" }).trim();
+    const newSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const catalogFetch = fixtureFetch(catalogs);
     const forced = await collect({
       date: "2026-10-24",
@@ -262,7 +263,7 @@ describe("collect resilience", () => {
       now: new Date("2026-10-24T19:48:02Z"),
       force: true,
       runId: "run-evening",
-      env: {},
+      env: { GITHUB_SHA: newSha },
       http: createHttpClient({
         fetchImpl: async (input, init) => {
           if (String(input).includes("registry.modelcontextprotocol.io")) {
@@ -285,8 +286,12 @@ describe("collect resilience", () => {
       previousRunId: "run-morning",
       previousCommit,
       runId: "run-evening",
+      reason: "force overwrite of existing snapshot",
+      newSha,
     });
     expect(next.overwrite?.previousCommit).toMatch(/^[0-9a-f]{7,40}$/i);
+    expect(next.overwrite?.reason).toBe("force overwrite of existing snapshot");
+    expect(next.overwrite?.newSha).toBe(newSha);
     const backupRel = next.overwrite?.previousBackupPath;
     expect(backupRel).toMatch(/^backups\/normalized\/2026-10-24\//);
     const backupDir = join(dataDir, backupRel!);

@@ -32,7 +32,7 @@ User-Agent: agentstore-radar/0.1 (+https://github.com/Verdent06/agentstore-radar
 
 ## Data layout (private repo)
 
-Never overwrite a past day's snapshot. A complete same-day snapshot is left in place; re-runs skip unless `--force` (workflow_dispatch `force`) is set. `--force` moves the previous day to `data/backups/normalized/<date>/<stamp>/` and records the overwrite on the new manifest (`overwrite.previousCommit`, `overwrite.runId`, `overwrite.overwrittenAt`). Incomplete/partial days may be collected again. Only **main** collector runs may push to the private data repo's `main`; branch validation uses `skip_push`.
+Never overwrite a past day's snapshot. A complete same-day snapshot is left in place; re-runs skip unless `--force` (workflow_dispatch `force`) is set. `--force` moves the previous day to `data/backups/normalized/<date>/<stamp>/` and records the overwrite on the new manifest (`overwrite.previousCommit`, `overwrite.runId`, `overwrite.overwrittenAt`, `overwrite.reason`, `overwrite.newSha`). Incomplete/partial days may be collected again. Only **main** collector runs may push to the private data repo's `main`; branch validation uses `skip_push`.
 
 ```
 data/raw/<source>/<YYYY-MM-DD>.json      # or .json.gz when payload ≥ 256 KiB

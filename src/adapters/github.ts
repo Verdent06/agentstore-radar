@@ -85,6 +85,8 @@ export type GithubRawSnapshot = {
   truncated?: boolean;
   resumed?: boolean;
   repositories: unknown[];
+  unresolvedRepos?: string[];
+  unresolvedCount?: number;
 };
 
 export function githubStatsToken(env: NodeJS.ProcessEnv): string | undefined {
@@ -199,6 +201,7 @@ function recordsFromCache(
   cache: Record<string, unknown>,
   lastFetched: Record<string, string>,
   collectedAt: string,
+  unresolvedKeys: Set<string> = new Set(),
 ): SourceRow[] {
   const records: SourceRow[] = [];
   for (const key of keys) {
@@ -209,7 +212,10 @@ function recordsFromCache(
     const row = normalizeGithubRepo(snapshotDate, item, refFromKey(key));
     if (row) {
       const fetchedAt = lastFetched[key] ?? null;
-      records.push(withObservation(row, fetchedAt, isCarriedForward(fetchedAt, snapshotDate, collectedAt)));
+      const unresolved = unresolvedKeys.has(key);
+      records.push(
+        withObservation(row, fetchedAt, unresolved || isCarriedForward(fetchedAt, snapshotDate, collectedAt)),
+      );
     }
   }
   return records;
@@ -234,6 +240,8 @@ export const githubAdapter: SourceAdapter = {
     );
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
+    const unresolvedRepos: string[] = [];
+    const unresolvedKeys = new Set<string>();
 
     const finish = (input: {
       skipped: boolean;
@@ -244,9 +252,10 @@ export const githubAdapter: SourceAdapter = {
       rawExtra?: Record<string, unknown>;
       stoppedAt?: SourceResult["stoppedAt"];
     }): SourceResult => {
-      const records = recordsFromCache(ctx.snapshotDate, allKeys, cache, lastFetched, fetchedAt);
-      const freshTodayCount = countFreshToday(allKeys, lastFetched, ctx.snapshotDate);
-      const freshWithin7dCount = countFresh(allKeys, lastFetched, ctx.now);
+      const records = recordsFromCache(ctx.snapshotDate, allKeys, cache, lastFetched, fetchedAt, unresolvedKeys);
+      const countableKeys = allKeys.filter((key) => !unresolvedKeys.has(key));
+      const freshTodayCount = countFreshToday(countableKeys, lastFetched, ctx.snapshotDate);
+      const freshWithin7dCount = countFresh(countableKeys, lastFetched, ctx.now);
       const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
       const lastFetchedAt = Object.values(lastFetched).sort().at(-1);
       persistLastFetched(ctx.dataDir, "github", lastFetched);
@@ -274,6 +283,8 @@ export const githubAdapter: SourceAdapter = {
         fetchedThisRunCount: input.fetchedThisRun,
         coverage,
         lastFetchedAt,
+        unresolvedCount: unresolvedKeys.size,
+        unresolvedRepos: unresolvedRepos.length > 0 ? unresolvedRepos : undefined,
         stoppedAt: input.stoppedAt,
         error: input.stoppedAt?.error,
         raw: {
@@ -285,6 +296,7 @@ export const githubAdapter: SourceAdapter = {
           resumed,
           repositories: allKeys.map((key) => cache[key]).filter((item) => item != null),
           ...input.rawExtra,
+          ...(unresolvedRepos.length > 0 ? { unresolvedRepos, unresolvedCount: unresolvedKeys.size } : {}),
         } satisfies GithubRawSnapshot,
         records,
       };
@@ -326,7 +338,6 @@ export const githubAdapter: SourceAdapter = {
     let processed = 0;
     let truncated = false;
     let stoppedAt: SourceResult["stoppedAt"];
-    const unresolvedRepos: string[] = [];
     const dueRefs = dueKeys
       .map((key) => ctx.discovered.githubRepos.get(key))
       .filter((ref): ref is GithubRepoRef => Boolean(ref));
@@ -360,7 +371,7 @@ export const githubAdapter: SourceAdapter = {
           const aliasIndex = alias && /^r\d+$/.test(alias) ? Number(alias.slice(1)) : Number.NaN;
           const requested = Number.isInteger(aliasIndex) ? batch[aliasIndex] : undefined;
           const key = requested ? `${requested.owner}/${requested.repo}`.toLowerCase() : repo.toLowerCase();
-          lastFetched[key] = fetchedAt;
+          unresolvedKeys.add(key);
           ctx.log.warn("github could not resolve repository", { repo, error: error.message });
         }
         if (isGraphqlRateLimit(otherErrors) && !payload.data) {
@@ -466,7 +477,6 @@ export const githubAdapter: SourceAdapter = {
       fetchedThisRun,
       processed,
       stoppedAt,
-      rawExtra: unresolvedRepos.length > 0 ? { unresolvedRepos } : undefined,
     });
   },
 };

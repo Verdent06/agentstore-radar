@@ -109,6 +109,9 @@ export const SourceManifestSchema = z.object({
   fetchedCount: z.number().int().nonnegative().optional(),
   coverage: z.number().min(0).max(1).optional(),
   lastFetchedAt: z.string().optional(),
+  /** GraphQL NOT_FOUND / unresolved aliases. Excluded from freshTodayCount. */
+  unresolvedCount: z.number().int().nonnegative().optional(),
+  unresolvedRepos: z.array(z.string()).optional(),
   failed: z.boolean().optional(),
   error: z.string().optional(),
   truncated: z.boolean().optional(),
@@ -139,6 +142,8 @@ export const SnapshotManifestSchema = z.object({
       previousGitSha: z.string().optional(),
       previousCommit: z.string().optional(),
       runId: z.string().optional(),
+      reason: z.string().optional(),
+      newSha: z.string().optional(),
     })
     .optional(),
 });

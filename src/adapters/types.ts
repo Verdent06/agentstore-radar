@@ -46,6 +46,8 @@ export type SourceResult = {
   fetchedThisRunCount?: number;
   coverage?: number;
   lastFetchedAt?: string;
+  unresolvedCount?: number;
+  unresolvedRepos?: string[];
   truncated?: boolean;
   failed?: boolean;
   error?: string;

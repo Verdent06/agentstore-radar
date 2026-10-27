@@ -10,7 +10,7 @@ import { GITHUB_GRAPHQL_BATCH, NPM_BULK_LIMIT, SOURCE_FREEZE_RATIO } from "../sr
 import { createHttpClient } from "../src/lib/http.ts";
 import { writeNormalized } from "../src/lib/io.ts";
 import { mergeApps } from "../src/lib/merge.ts";
-import { persistEntityCache, persistLastFetched } from "../src/lib/rolling.ts";
+import { loadLastFetched, persistEntityCache, persistLastFetched } from "../src/lib/rolling.ts";
 import { emptySourceRow, type SnapshotManifest, type SourceRow } from "../src/lib/schema.ts";
 import { chunk } from "../src/lib/util.ts";
 import { fixtureFetch, loadFixture } from "./helpers.ts";
@@ -250,6 +250,10 @@ describe("github growth adapter", () => {
     expect(result.failed).toBeFalsy();
     expect(result.skipped).toBe(false);
     expect(result.rowCount).toBe(1);
+    expect(result.unresolvedCount).toBe(1);
+    expect(result.freshTodayCount).toBe(1);
+    expect(result.records[0]?.carried_forward).toBe(false);
+    expect(loadLastFetched(dataDir, "github")["deleted/gone"]).toBeUndefined();
     expect(warnings.some((row) => row.message?.includes("could not resolve repository") && row.repo === "deleted/gone")).toBe(true);
   });
 
@@ -282,6 +286,70 @@ describe("github growth adapter", () => {
     expect(result.failed).toBeFalsy();
     expect(result.skipped).toBe(false);
     expect(result.rowCount).toBe(0);
+    expect(result.unresolvedCount).toBe(1);
+    expect(result.freshTodayCount).toBe(0);
+    expect(loadLastFetched(dataDir, "github")["deleted/gone"]).toBeUndefined();
+  });
+
+  it("carries forward a 14-day-old cache when GraphQL returns NOT_FOUND and does not count it fresh", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-gh-unresolved-cache-"));
+    const originalFetchedAt = "2026-10-11T12:00:00Z";
+    persistLastFetched(dataDir, "github", { "example/weather": originalFetchedAt });
+    persistEntityCache(dataDir, "github", {
+      "example/weather": {
+        nameWithOwner: "example/weather",
+        url: "https://github.com/example/weather",
+        stargazerCount: 17,
+        forkCount: 2,
+        pushedAt: "2026-10-01T00:00:00Z",
+        isArchived: false,
+        issues: { totalCount: 0 },
+      },
+    });
+    const discovered = createDiscoveredRefs();
+    discovered.githubRepos.set("example/weather", { owner: "example", repo: "weather" });
+    const result = await githubAdapter.collect(
+      ctx({
+        snapshotDate: "2026-10-25",
+        collectedAt: "2026-10-25T12:00:00Z",
+        now: new Date("2026-10-25T12:00:00Z"),
+        dataDir,
+        http: createHttpClient({
+          fetchImpl: async () =>
+            new Response(
+              JSON.stringify({
+                data: { r0: null },
+                errors: [
+                  {
+                    type: "NOT_FOUND",
+                    path: ["r0"],
+                    message: "Could not resolve to a Repository with the name 'example/weather'.",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            ),
+          maxRetries: 0,
+        }),
+        env: { GITHUB_TOKEN: "test-token" },
+        discovered,
+      }),
+    );
+    expect(result.failed).toBeFalsy();
+    expect(result.skipped).toBe(false);
+    expect(result.unresolvedCount).toBe(1);
+    expect(result.unresolvedRepos).toEqual(["example/weather"]);
+    expect(result.fetchedThisRunCount).toBe(0);
+    expect(result.freshTodayCount).toBe(0);
+    expect(result.coverage).toBe(0);
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0]).toMatchObject({
+      stars: 17,
+      carried_forward: true,
+      fetched_at: originalFetchedAt,
+    });
+    expect(result.records[0]?.carried_forward).toBe(true);
+    expect(loadLastFetched(dataDir, "github")["example/weather"]).toBe(originalFetchedAt);
   });
 });
 
