@@ -124,22 +124,71 @@ describe("collectAnswerShare", () => {
     expect(manifest.ran).toEqual(expect.arrayContaining(["openai", "gemini"]));
   });
 
-  it("writes a skipped-only manifest when no keys are present and never hits the network", async () => {
+  it("fails with no providers configured, writes nothing, and never hits the network", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "answer-share-none-"));
+    const errors: string[] = [];
+    await expect(
+      collectAnswerShare({
+        date: "2026-10-16",
+        dataDir,
+        now: new Date("2026-10-16T12:00:00Z"),
+        prompts,
+        apps,
+        env: {},
+        http: createHttpClient({ fetchImpl: denyNetworkFetch(), maxRetries: 0 }),
+        log: {
+          info() {},
+          warn() {},
+          error(message) {
+            errors.push(message);
+          },
+        },
+      }),
+    ).rejects.toThrow(/no providers configured/);
+    expect(errors).toContain("no providers configured");
+    const paths = answerSharePaths("2026-10-16", dataDir);
+    expect(existsSync(paths.rawDir)).toBe(false);
+    expect(existsSync(paths.normalizedDir)).toBe(false);
+    expect(existsSync(paths.manifestPath)).toBe(false);
+    expect(existsSync(paths.sharesPath)).toBe(false);
+    expect(existsSync(paths.responsesPath)).toBe(false);
+  });
+
+  it("runs all four providers and writes results when every key is set", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "answer-share-all-"));
+    let calls = 0;
+    const fetchImpl = async (input: string | URL) => {
+      calls += 1;
+      return providerFetch()(input);
+    };
     const manifest = await collectAnswerShare({
       date: "2026-10-16",
       dataDir,
       now: new Date("2026-10-16T12:00:00Z"),
+      n: 1,
       prompts,
       apps,
-      env: {},
-      http: createHttpClient({ fetchImpl: denyNetworkFetch(), maxRetries: 0 }),
+      env: {
+        OPENAI_API_KEY: "sk-test",
+        ANTHROPIC_API_KEY: "sk-ant",
+        GEMINI_API_KEY: "gem",
+        XAI_API_KEY: "xai",
+      },
+      http: createHttpClient({ fetchImpl, maxRetries: 0 }),
       log: silent,
     });
-    expect(manifest.ran).toEqual([]);
-    expect(manifest.skipped).toHaveLength(4);
-    expect(manifest.callsMade).toBe(0);
-    expect(readAnswerShareResponses("2026-10-16", dataDir)).toEqual([]);
+    expect(manifest.ran).toEqual(["openai", "anthropic", "gemini", "xai"]);
+    expect(manifest.skipped).toEqual([]);
+    expect(manifest.callsMade).toBe(8);
+    expect(calls).toBe(8);
+    const responses = readAnswerShareResponses("2026-10-16", dataDir);
+    expect(responses).toHaveLength(8);
+    expect(new Set(responses.map((row) => row.provider))).toEqual(
+      new Set(["openai", "anthropic", "gemini", "xai"]),
+    );
+    const paths = answerSharePaths("2026-10-16", dataDir);
+    expect(existsSync(paths.manifestPath)).toBe(true);
+    expect(existsSync(paths.sharesPath)).toBe(true);
   });
 
   it("refuses to overwrite a past day's probe", async () => {
@@ -148,10 +197,11 @@ describe("collectAnswerShare", () => {
       date: "2026-10-14",
       dataDir,
       now: new Date("2026-10-14T12:00:00Z"),
-      prompts,
+      n: 1,
+      prompts: [prompts[0]!],
       apps,
-      env: {},
-      http: createHttpClient({ fetchImpl: denyNetworkFetch(), maxRetries: 0 }),
+      env: { OPENAI_API_KEY: "sk" },
+      http: createHttpClient({ fetchImpl: providerFetch(), maxRetries: 0 }),
       log: silent,
     });
     expect(() => assertNotOverwritingPastAnswerShare("2026-10-14", "2026-10-16", dataDir)).toThrow(/past answer-share/);

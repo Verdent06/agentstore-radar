@@ -110,6 +110,10 @@ export async function collectAnswerShare(options: AnswerShareCollectOptions = {}
   });
 
   const enabled = providerStates.filter((state) => state.enabled);
+  if (enabled.length === 0) {
+    log.error("no providers configured");
+    throw new Error("no providers configured");
+  }
   // Fair estimate: interleave until global cap.
   const plannedByProvider = new Map<ProviderName, number>(enabled.map((state) => [state.name, 0]));
   let planned = 0;
@@ -133,9 +137,6 @@ export async function collectAnswerShare(options: AnswerShareCollectOptions = {}
   log.info(printed);
   if (maxCalls != null) {
     log.info(`MAX_CALLS=${maxCalls}`);
-  }
-  if (enabled.length === 0) {
-    log.warn("no answer-share providers enabled; skipping live calls");
   }
 
   const apps = loadLatestApps(dataDir, options.apps);

@@ -85,16 +85,25 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const providers = argValue(args, "--providers")?.split(",").filter(Boolean);
     const nRaw = argValue(args, "--n");
     const maxCallsRaw = argValue(args, "--max-calls");
-    const manifest = await collectAnswerShare({
-      date,
-      dataDir,
-      providers,
-      n: nRaw ? Number(nRaw) : undefined,
-      maxCalls: maxCallsRaw ? Number(maxCallsRaw) : undefined,
-      promptVersion: argValue(args, "--prompt-version"),
-    });
-    console.log(JSON.stringify(manifest, null, 2));
-    return 0;
+    try {
+      const manifest = await collectAnswerShare({
+        date,
+        dataDir,
+        providers,
+        n: nRaw ? Number(nRaw) : undefined,
+        maxCalls: maxCallsRaw ? Number(maxCallsRaw) : undefined,
+        promptVersion: argValue(args, "--prompt-version"),
+      });
+      console.log(JSON.stringify(manifest, null, 2));
+      return manifest.ran.length > 0 ? 0 : 1;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("no providers configured")) {
+        console.error(message);
+        return 1;
+      }
+      throw error;
+    }
   }
   if (command === "answer-share-report") {
     const limit = Number(argValue(args, "--limit") ?? "10");
