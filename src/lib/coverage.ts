@@ -17,10 +17,11 @@ export function computeCoverage(eligible: number, fetched: number): CoverageStat
 }
 
 /**
- * Share of eligible keys actually fetched live this run.
+ * Share of eligible keys actually fetched live this run, including rows whose
+ * value did not change and catalog rows that stay frozen/unrankable.
  * Unresolved GitHub repos are excluded from the denominator so deleted/renamed
- * aliases cannot inflate or deflate the metric. Separate from `coverage`
- * (fresh today / eligible).
+ * aliases cannot inflate or deflate the metric. Separate from `coverage` /
+ * `fresh` (carried_forward false AND not frozen).
  */
 export function computeFetchedShare(fetchedThisRun: number, eligible: number, unresolvedCount = 0): number {
   const denom = Math.max(0, eligible) - Math.max(0, unresolvedCount);

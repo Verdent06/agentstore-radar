@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { GEMINI_EXTENSIONS_URL, SMITHERY_FROZEN_DAYS, SOURCE_FREEZE_RATIO } from "../lib/config.ts";
-import { computeCoverage } from "../lib/coverage.ts";
+import { computeCoverage, computeFetchedShare } from "../lib/coverage.ts";
 import { evaluateSourceFreeze, isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../lib/frozen.ts";
 import { appIdFromIdentity, githubRepoUrl, parseGithubRepo } from "../lib/matching.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
@@ -117,8 +117,11 @@ export const geminiAdapter: SourceAdapter = {
       }
       records.push(withObservation(item.row, frozen ? previousFetchedAt : ctx.collectedAt, frozen, frozen));
     }
-    const freshTodayCount = records.filter((row) => row.carried_forward !== true).length;
-    const fetchedThisRunCount = records.length - frozenCount;
+    const freshTodayCount = records.filter((row) => row.carried_forward !== true && row.frozen !== true).length;
+    // The gallery JSON is fetched in full every run. Frozen/unrankable stars still
+    // count as fetched; `fresh` stays carried_forward false AND not frozen.
+    const fetchedThisRunCount = records.length;
+    const fetchedShare = computeFetchedShare(fetchedThisRunCount, records.length);
     const { coverage } = computeCoverage(records.length, freshTodayCount);
     if (freeze.sourceFrozen) {
       ctx.log.warn("gemini-cli stars source-frozen; stamping unchanged rows frozen/carried_forward, not fresh", {
@@ -129,7 +132,13 @@ export const geminiAdapter: SourceAdapter = {
       });
     }
 
-    ctx.log.info("gemini-cli collected", { rows: records.length, frozenCount, sourceFrozen: freeze.sourceFrozen });
+    ctx.log.info("gemini-cli collected", {
+      rows: records.length,
+      fetchedThisRunCount,
+      fetchedShare,
+      frozenCount,
+      sourceFrozen: freeze.sourceFrozen,
+    });
     const raw: GeminiRawSnapshot = {
       endpoint: GEMINI_EXTENSIONS_URL,
       fetchedAt: ctx.collectedAt,
@@ -149,6 +158,7 @@ export const geminiAdapter: SourceAdapter = {
       skipped: false,
       eligibleCount: records.length,
       fetchedThisRunCount,
+      fetchedShare,
       freshTodayCount,
       coverage,
       raw,

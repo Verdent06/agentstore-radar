@@ -44,6 +44,10 @@ export const PYPI_MIN_INTERVAL_MS = 400;
  * Per-run enrichment caps. Defaults cover the current catalog (~32k GitHub,
  * ~14k npm, ~5k PyPI) so fetchedShare can hit ≥0.80 in one Actions run.
  * Tests and emergency throttling override via RADAR_*_BATCH.
+ * Smithery `fetchedShare` is the seeded list catalog (~20.8k, ~208 pages of 100
+ * at ~120ms ≈ 25s), not this overlay cap. Overlay `?q=` is a thaw probe of the
+ * same frozen index (400 × 120ms ≈ 48s). Raising overlay to 80% of the catalog
+ * would be ~16.6k searches ≈ 33 min of the same frozen values, so we do not.
  */
 export const GITHUB_RUN_BATCH = 50_000;
 export const NPM_RUN_BATCH = 20_000;

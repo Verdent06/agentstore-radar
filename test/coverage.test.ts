@@ -36,4 +36,9 @@ describe("fetchedShare", () => {
     expect(computeFetchedShare(0, 1, 1)).toBe(1);
     expect(computeFetchedShare(100, 200, 50)).toBeCloseTo(100 / 150);
   });
+
+  it("counts an unchanged live fetch in the numerator", () => {
+    expect(computeFetchedShare(1, 1)).toBe(1);
+    expect(computeFetchedShare(1, 2)).toBe(0.5);
+  });
 });

@@ -847,6 +847,9 @@ describe("pypi growth adapter", () => {
       carried_forward: false,
       frozen: true,
     });
+    expect(result.fetchedThisRunCount).toBe(1);
+    expect(result.fetchedShare).toBe(1);
+    expect(result.truncated).toBe(false);
     const apps = mergeApps("2026-10-25", result.records);
     expect(apps[0]).toMatchObject({
       pypi_last_week_downloads: 1400,
@@ -1043,5 +1046,87 @@ describe("pypi growth adapter", () => {
     const carried = result.records.filter((row) => row.source_id !== live);
     expect(carried.length).toBe(19);
     expect(carried.every((row) => row.carried_forward === true)).toBe(true);
+  });
+
+  it("counts an unchanged PyPI value fetched today toward fetchedShare, not as a failed fetch", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-pypi-unchanged-fetched-"));
+    const same = "pkg-same";
+    const missed = "pkg-missed";
+    const writeDay = (date: string, week: number) => {
+      const rows: SourceRow[] = [same, missed].map((name) =>
+        emptySourceRow({
+          snapshot_date: date,
+          source: "pypi",
+          source_id: name,
+          name,
+          pypi_package: name,
+          pypi_last_week_downloads: week,
+          pypi_last_month_downloads: 20314,
+          app_id: `pypi:${name}`,
+          fetched_at: `${date}T12:00:00Z`,
+        }),
+      );
+      const manifest: SnapshotManifest = {
+        snapshotDate: date,
+        collectedAt: `${date}T12:00:00Z`,
+        appCount: rows.length,
+        sourceRowCount: rows.length,
+        partial: false,
+        completedSources: ["pypi"],
+        sources: [{ source: "pypi", rowCount: rows.length, skipped: false, collectedAt: `${date}T12:00:00Z` }],
+      };
+      writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
+    };
+    writeDay("2026-10-22", 1100);
+    writeDay("2026-10-24", 1300);
+    persistLastFetched(dataDir, "pypi", { [missed]: "2026-10-24T12:00:00Z" });
+    persistEntityCache(dataDir, "pypi", {
+      [missed]: { data: { last_week: 1300, last_month: 20314 }, package: missed, type: "recent_downloads" },
+    });
+    const discovered = createDiscoveredRefs();
+    discovered.pypiPackages.add(same);
+    discovered.pypiPackages.add(missed);
+    const result = await pypiAdapter.collect(
+      ctx({
+        snapshotDate: "2026-10-25",
+        collectedAt: "2026-10-25T12:00:00Z",
+        now: new Date("2026-10-25T12:00:00Z"),
+        dataDir,
+        sleep: async () => {},
+        http: createHttpClient({
+          fetchImpl: async (input) => {
+            const url = String(input);
+            if (url.includes(`/packages/${same}/recent`)) {
+              return new Response(
+                JSON.stringify({
+                  data: { last_day: 50, last_week: 1400, last_month: 20314 },
+                  package: same,
+                  type: "recent_downloads",
+                }),
+                { status: 200, headers: { "content-type": "application/json" } },
+              );
+            }
+            return new Response("upstream error", { status: 500 });
+          },
+          maxRetries: 0,
+          sleep: async () => {},
+        }),
+        discovered,
+      }),
+    );
+    expect(result.fetchedThisRunCount).toBe(1);
+    expect(result.fetchedShare).toBe(0.5);
+    expect(result.truncated).toBe(false);
+    expect(result.records.find((row) => row.source_id === same)).toMatchObject({
+      pypi_last_month_downloads: 20314,
+      pypi_last_week_downloads: 1400,
+      carried_forward: false,
+      frozen: true,
+      fetched_at: "2026-10-25T12:00:00Z",
+    });
+    expect(result.records.find((row) => row.source_id === missed)).toMatchObject({
+      carried_forward: true,
+      fetched_at: "2026-10-24T12:00:00Z",
+    });
   });
 });
