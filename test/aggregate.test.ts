@@ -341,9 +341,9 @@ describe("home KPI freshness", () => {
     expect(stats.npmKpiHeld).toBe(true);
     expect(stats.starsKpiHeld).toBe(true);
     expect(stats.pypiKpiHeld).toBe(true);
-    const naiveLastDay = decideKpiFreshCoverage("npm", [series[2]!], "2026-10-22");
-    expect(naiveLastDay.held).toBe(false);
-    expect(stats.npmKpiHeld).not.toBe(naiveLastDay.held);
+    const lastDayOnly = decideKpiFreshCoverage("npm", [series[2]!], "2026-10-22");
+    expect(lastDayOnly.held).toBe(true);
+    expect(lastDayOnly.baseline).toBeNull();
   });
 
   it("holds GitHub, npm, and PyPI KPIs on Oct 25–27-style mostly carried_forward days", () => {
@@ -365,7 +365,7 @@ describe("home KPI freshness", () => {
     expect(JSON.stringify(agg.stats)).not.toMatch(/useCount|use_count|geminiStars|totalGemini/);
   });
 
-  it("holds GitHub stars when fresh share is below 80% even if the count matches baseline", () => {
+  it("holds every KPI tile when no complete day reaches 80% fresh share", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-kpi-share-"));
     writeKpiSnapshot(dataDir, "2026-10-24", coverageApps("2026-10-24", 7, 3));
     writeKpiSnapshot(dataDir, "2026-10-25", coverageApps("2026-10-25", 7, 3));
@@ -373,7 +373,19 @@ describe("home KPI freshness", () => {
     expect(agg.stats.starsFreshCount).toBe(7);
     expect(agg.stats.starsFreshCount / 10).toBeLessThan(0.8);
     expect(agg.stats.starsKpiHeld).toBe(true);
-    expect(agg.stats.npmKpiHeld).toBe(false);
+    expect(agg.stats.npmKpiHeld).toBe(true);
+    expect(agg.stats.pypiKpiHeld).toBe(true);
     expect(agg.stats.npmFreshCount).toBe(7);
+  });
+
+  it("shows npm and stars when a good 80% day is followed by today within 10%", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-kpi-ok-"));
+    writeKpiSnapshot(dataDir, "2026-10-24", coverageApps("2026-10-24", 8, 2));
+    writeKpiSnapshot(dataDir, "2026-10-25", coverageApps("2026-10-25", 8, 2));
+    const agg = buildAggregate(dataDir, "data_dir");
+    expect(agg.stats.starsFreshCount / 10).toBe(0.8);
+    expect(agg.stats.npmKpiHeld).toBe(false);
+    expect(agg.stats.starsKpiHeld).toBe(false);
+    expect(agg.stats.pypiKpiHeld).toBe(false);
   });
 });

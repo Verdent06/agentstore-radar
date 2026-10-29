@@ -5,23 +5,15 @@ export const RAW_GZIP_THRESHOLD_BYTES = 256 * 1024;
 export const HEALTH_DROP_THRESHOLD = 0.3;
 export const LOW_COVERAGE_THRESHOLD = 0.7;
 
-/**
- * A complete day can become the KPI fresh-coverage baseline only if its own
- * fresh row count is at least this share of the prior good day (90%).
- * Do not take the last complete day blindly.
- */
-export const KPI_BASELINE_MIN_RATIO = 0.9;
-
 /** Show a KPI only when today's fresh row count is within this fraction of the baseline. */
 export const KPI_FRESH_COVERAGE_TOLERANCE = 0.1;
 
 /**
- * Per-source minimum fresh share (fresh / eligible) required to show a KPI.
- * GitHub stars stay held while fresh share is below 80%.
+ * Per-source minimum fresh share (fresh / eligible) for a complete day to be
+ * a KPI baseline candidate, and for today's tile to show. Applied independently
+ * to GitHub, npm, and PyPI — not a walk versus the previous day.
  */
-export const KPI_MIN_FRESH_SHARE = {
-  github: 0.8,
-} as const;
+export const KPI_MIN_FRESH_SHARE = 0.8;
 export const MAX_RATE_LIMIT_WAIT_MS = 70 * 60 * 1000;
 export const HTTP_MAX_RETRIES = 6;
 export const HTTP_5XX_MAX_WAIT_MS = 60_000;

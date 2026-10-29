@@ -1,8 +1,4 @@
-import {
-  KPI_BASELINE_MIN_RATIO,
-  KPI_FRESH_COVERAGE_TOLERANCE,
-  KPI_MIN_FRESH_SHARE,
-} from "../lib/config.ts";
+import { KPI_FRESH_COVERAGE_TOLERANCE, KPI_MIN_FRESH_SHARE } from "../lib/config.ts";
 
 /** Public homepage metric KPIs. Smithery use_count and Gemini stars stay excluded. */
 export const KPI_SOURCES = ["github", "npm", "pypi"] as const;
@@ -95,23 +91,58 @@ export function dailyFreshCoverage(
   return { date, ...countFreshCoverage(scoped, source) };
 }
 
+export function freshShare(freshCount: number, eligibleCount: number): number {
+  if (eligibleCount <= 0) {
+    return 0;
+  }
+  return freshCount / eligibleCount;
+}
+
 /**
- * Walk complete days oldest → newest. The first day is good; each later day is
- * good only when its fresh count is not below 90% of the prior *good* day.
- * Returns that most recent good day — not necessarily the last complete day.
+ * A complete day is "good" for a source only when its own fresh share is at
+ * least KPI_MIN_FRESH_SHARE. Days are never compared to the previous day.
+ *
+ * TODO: once the collector's per-source manifest `fetchedShare` field lands,
+ * add a consistency check that fresh share <= fetchedShare. Do not replace
+ * fresh share with fetchedShare: fetchedShare counts frozen-but-fetched rows.
+ */
+export function minFreshShareForSource(source: KpiSource): number {
+  const bySource: Record<KpiSource, number> = {
+    github: KPI_MIN_FRESH_SHARE,
+    npm: KPI_MIN_FRESH_SHARE,
+    pypi: KPI_MIN_FRESH_SHARE,
+  };
+  return bySource[source];
+}
+
+export function isGoodFreshCoverageDay(
+  day: DailyFreshCoverage,
+  minShare = KPI_MIN_FRESH_SHARE,
+): boolean {
+  return day.eligibleCount > 0 && freshShare(day.freshCount, day.eligibleCount) >= minShare;
+}
+
+/**
+ * Most recent complete day whose own fresh share is at least 80%.
+ * When `todayDate` is set, use the latest good day strictly before today so
+ * today's count can be checked against that baseline; a good today with no
+ * prior good day is its own baseline.
  */
 export function selectFreshCoverageBaseline(
   days: readonly DailyFreshCoverage[],
-  minRatio = KPI_BASELINE_MIN_RATIO,
+  todayDate?: string | null,
+  minShare = KPI_MIN_FRESH_SHARE,
 ): DailyFreshCoverage | null {
   const ordered = [...days].sort((a, b) => a.date.localeCompare(b.date));
-  let baseline: DailyFreshCoverage | null = null;
-  for (const day of ordered) {
-    if (baseline == null || day.freshCount >= minRatio * baseline.freshCount) {
-      baseline = day;
+  const good = ordered.filter((day) => isGoodFreshCoverageDay(day, minShare));
+  if (todayDate) {
+    const prior = good.filter((day) => day.date < todayDate);
+    if (prior.length > 0) {
+      return prior.at(-1) ?? null;
     }
+    return good.find((day) => day.date === todayDate) ?? null;
   }
-  return baseline;
+  return good.at(-1) ?? null;
 }
 
 /** True when `todayCount` is within ±tolerance of `baselineCount`. */
@@ -126,36 +157,25 @@ export function isFreshCountWithinTolerance(
   return Math.abs(todayCount - baselineCount) <= tolerance * baselineCount;
 }
 
-export function freshShare(freshCount: number, eligibleCount: number): number {
-  if (eligibleCount <= 0) {
-    return 0;
-  }
-  return freshCount / eligibleCount;
-}
-
-export function minFreshShareForSource(source: KpiSource): number | undefined {
-  if (source === "github") {
-    return KPI_MIN_FRESH_SHARE.github;
-  }
-  return undefined;
-}
-
 export function decideKpiFreshCoverage(
   source: KpiSource,
   days: readonly DailyFreshCoverage[],
   todayDate: string | null,
 ): KpiCoverageDecision {
+  const minShare = minFreshShareForSource(source);
   const ordered = [...days].sort((a, b) => a.date.localeCompare(b.date));
-  const baseline = selectFreshCoverageBaseline(ordered);
   const today = todayDate
     ? (ordered.find((day) => day.date === todayDate) ?? null)
     : (ordered.at(-1) ?? null);
-  if (!today || !baseline) {
+  const baseline = selectFreshCoverageBaseline(ordered, today?.date ?? todayDate, minShare);
+  if (!today) {
     return { held: true, reason: "no_baseline", today, baseline };
   }
-  const minShare = minFreshShareForSource(source);
-  if (minShare != null && (today.eligibleCount <= 0 || freshShare(today.freshCount, today.eligibleCount) < minShare)) {
-    return { held: true, reason: "low_fresh_share", today, baseline };
+  if (!isGoodFreshCoverageDay(today, minShare)) {
+    return { held: true, reason: baseline ? "low_fresh_share" : "no_baseline", today, baseline };
+  }
+  if (!baseline) {
+    return { held: true, reason: "no_baseline", today, baseline };
   }
   if (!isFreshCountWithinTolerance(today.freshCount, baseline.freshCount)) {
     return { held: true, reason: "low_fresh_coverage", today, baseline };

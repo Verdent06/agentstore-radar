@@ -9,14 +9,11 @@ import {
   decideKpiFreshCoverage,
   isFreshCountWithinTolerance,
   isFreshKpiValue,
+  isGoodFreshCoverageDay,
   selectFreshCoverageBaseline,
   type DailyFreshCoverage,
 } from "../src/aggregate/kpi-coverage.ts";
-import {
-  KPI_BASELINE_MIN_RATIO,
-  KPI_FRESH_COVERAGE_TOLERANCE,
-  KPI_MIN_FRESH_SHARE,
-} from "../src/lib/config.ts";
+import { KPI_FRESH_COVERAGE_TOLERANCE, KPI_MIN_FRESH_SHARE } from "../src/lib/config.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..");
@@ -26,11 +23,9 @@ function day(date: string, freshCount: number, eligibleCount = freshCount): Dail
 }
 
 describe("KPI fresh-coverage constants", () => {
-  it("exposes a 90% prior-good-day baseline, 10% show tolerance, and 80% GitHub min share", () => {
-    expect(KPI_BASELINE_MIN_RATIO).toBe(0.9);
+  it("exposes an 80% per-source fresh-share bar and a 10% count tolerance", () => {
+    expect(KPI_MIN_FRESH_SHARE).toBe(0.8);
     expect(KPI_FRESH_COVERAGE_TOLERANCE).toBe(0.1);
-    expect(KPI_MIN_FRESH_SHARE.github).toBe(0.8);
-    expect(KPI_MIN_FRESH_SHARE).toEqual({ github: 0.8 });
     expect(KPI_HELD_LOW_FRESH_COVERAGE).toBe("held: low fresh coverage");
   });
 
@@ -49,33 +44,82 @@ describe("selectFreshCoverageBaseline", () => {
       day("2026-10-21", 4_535, 4_535),
       day("2026-10-22", 610, 4_535),
     ];
+    expect(isGoodFreshCoverageDay(days[0]!)).toBe(false);
+    expect(isGoodFreshCoverageDay(days[1]!)).toBe(true);
     const baseline = selectFreshCoverageBaseline(days);
     expect(baseline?.date).toBe("2026-10-21");
     expect(baseline?.freshCount).toBe(4_535);
     expect(baseline?.date).not.toBe("2026-10-20");
     expect(baseline?.freshCount).not.toBe(603);
-    expect(baseline?.date).not.toBe("2026-10-22");
-
-    const lastComplete = days.at(-1)!;
-    expect(lastComplete.freshCount).toBe(610);
-    // A last-complete-day baseline of 610 would unlock today's similarly-low KPI.
-    expect(isFreshCountWithinTolerance(lastComplete.freshCount, lastComplete.freshCount)).toBe(true);
-    expect(isFreshCountWithinTolerance(lastComplete.freshCount, 603)).toBe(true);
-    expect(isFreshCountWithinTolerance(lastComplete.freshCount, baseline!.freshCount)).toBe(false);
 
     const npm = decideKpiFreshCoverage("npm", days, "2026-10-22");
     expect(npm.held).toBe(true);
-    expect(npm.reason).toBe("low_fresh_coverage");
     expect(npm.baseline?.freshCount).toBe(4_535);
     expect(npm.today?.freshCount).toBe(610);
   });
+});
 
-  it("keeps walking off the prior good day, not a low intervening day", () => {
-    const days = [day("2026-10-01", 4_535), day("2026-10-02", 603), day("2026-10-03", 580)];
-    const baseline = selectFreshCoverageBaseline(days);
-    expect(baseline).toEqual(day("2026-10-01", 4_535));
-    expect(580).toBeGreaterThanOrEqual(KPI_BASELINE_MIN_RATIO * 603);
-    expect(580).toBeLessThan(KPI_BASELINE_MIN_RATIO * 4_535);
+describe("absolute 80% fresh-share baseline (fails if the relative walk returns)", () => {
+  it("(a) slow slide 100, 91, 82, 74 holds once share drops below 80%", () => {
+    const days = [
+      day("2026-10-21", 100, 100),
+      day("2026-10-22", 91, 100),
+      day("2026-10-23", 82, 100),
+      day("2026-10-24", 74, 100),
+    ];
+    // A 90%-of-prior-count walk would still treat 74 as good (74 >= 0.9 * 82).
+    expect(74).toBeGreaterThanOrEqual(0.9 * 82);
+    expect(74 / 100).toBeLessThan(KPI_MIN_FRESH_SHARE);
+    expect(isGoodFreshCoverageDay(days[3]!)).toBe(false);
+    const npm = decideKpiFreshCoverage("npm", days, "2026-10-24");
+    expect(npm.held).toBe(true);
+    expect(npm.reason).not.toBe("ok");
+    expect(selectFreshCoverageBaseline(days, "2026-10-24")?.freshCount).toBe(82);
+  });
+
+  it("(b) a window that opens on a 0.4% day then an equally bad today is held", () => {
+    const days = [day("2026-10-25", 18, 4_535), day("2026-10-26", 18, 4_535)];
+    expect(18 / 4_535).toBeCloseTo(0.004, 3);
+    expect(isGoodFreshCoverageDay(days[0]!)).toBe(false);
+    expect(isFreshCountWithinTolerance(18, 18)).toBe(true);
+    const npm = decideKpiFreshCoverage("npm", days, "2026-10-26");
+    expect(npm.held).toBe(true);
+    expect(selectFreshCoverageBaseline(days, "2026-10-26")).toBeNull();
+  });
+
+  it("(c) no good day means every tile is held", () => {
+    const days = [day("2026-10-25", 10, 100), day("2026-10-26", 12, 100), day("2026-10-27", 11, 100)];
+    for (const source of KPI_SOURCES) {
+      const decision = decideKpiFreshCoverage(source, days, "2026-10-27");
+      expect(decision.held, source).toBe(true);
+      expect(decision.baseline, source).toBeNull();
+      expect(decision.reason, source).toBe("no_baseline");
+    }
+  });
+
+  it("(d) a good baseline plus today at 80% or more and within 10% shows the tile", () => {
+    const days = [day("2026-10-24", 100, 100), day("2026-10-25", 95, 100)];
+    expect(isGoodFreshCoverageDay(days[0]!)).toBe(true);
+    expect(isGoodFreshCoverageDay(days[1]!)).toBe(true);
+    expect(95 / 100).toBeGreaterThanOrEqual(KPI_MIN_FRESH_SHARE);
+    expect(isFreshCountWithinTolerance(95, 100)).toBe(true);
+    const npm = decideKpiFreshCoverage("npm", days, "2026-10-25");
+    expect(npm.held).toBe(false);
+    expect(npm.reason).toBe("ok");
+    expect(npm.baseline?.freshCount).toBe(100);
+  });
+
+  it("(e) today at 80% or more but more than 10% off the baseline is held", () => {
+    const days = [day("2026-10-24", 100, 100), day("2026-10-25", 80, 100)];
+    expect(80 / 100).toBeGreaterThanOrEqual(KPI_MIN_FRESH_SHARE);
+    expect(isGoodFreshCoverageDay(days[1]!)).toBe(true);
+    expect(isFreshCountWithinTolerance(80, 100)).toBe(false);
+    expect(isFreshCountWithinTolerance(80, 80)).toBe(true);
+    const npm = decideKpiFreshCoverage("npm", days, "2026-10-25");
+    expect(npm.held).toBe(true);
+    expect(npm.reason).toBe("low_fresh_coverage");
+    expect(npm.baseline?.freshCount).toBe(100);
+    expect(npm.today?.freshCount).toBe(80);
   });
 });
 
@@ -99,23 +143,18 @@ describe("Oct 25–27-style carried_forward coverage", () => {
 
 describe("GitHub stars minimum fresh share", () => {
   it("holds the stars KPI when fresh share is below 80%", () => {
-    expect(KPI_MIN_FRESH_SHARE.github).toBe(0.8);
+    expect(KPI_MIN_FRESH_SHARE).toBe(0.8);
     const days = [day("2026-10-24", 79, 100), day("2026-10-25", 79, 100)];
     const stars = decideKpiFreshCoverage("github", days, "2026-10-25");
     expect(stars.held).toBe(true);
-    expect(stars.reason).toBe("low_fresh_share");
-    expect(79 / 100).toBeLessThan(KPI_MIN_FRESH_SHARE.github);
+    expect(79 / 100).toBeLessThan(KPI_MIN_FRESH_SHARE);
     expect(isFreshCountWithinTolerance(79, 79)).toBe(true);
-
-    const npm = decideKpiFreshCoverage("npm", days, "2026-10-25");
-    expect(npm.held).toBe(false);
-    expect(npm.reason).toBe("ok");
   });
 
-  it("does not hold stars on the share rule at exactly 80% when the baseline is close", () => {
+  it("does not hold stars on the share rule at exactly 80% when the count is within 10%", () => {
     const days = [day("2026-10-24", 80, 100), day("2026-10-25", 80, 100)];
     const stars = decideKpiFreshCoverage("github", days, "2026-10-25");
-    expect(80 / 100).toBe(KPI_MIN_FRESH_SHARE.github);
+    expect(80 / 100).toBe(KPI_MIN_FRESH_SHARE);
     expect(stars.held).toBe(false);
     expect(stars.reason).toBe("ok");
   });
@@ -139,17 +178,21 @@ describe("countFreshCoverage", () => {
 });
 
 describe("guard source wiring (fails if reverted)", () => {
-  it("keeps selectFreshCoverageBaseline and the held label in the public KPI path", () => {
+  it("keeps the 80% own-share baseline and fetchedShare TODO in the public KPI path", () => {
     const coverage = readFileSync(join(repoRoot, "src/aggregate/kpi-coverage.ts"), "utf8");
     const build = readFileSync(join(repoRoot, "src/aggregate/build.ts"), "utf8");
     const config = readFileSync(join(repoRoot, "src/lib/config.ts"), "utf8");
     const kpis = readFileSync(join(repoRoot, "web/components/kpis.tsx"), "utf8");
-    expect(config).toContain("KPI_MIN_FRESH_SHARE");
-    expect(config).toMatch(/github:\s*0\.8/);
-    expect(config).toContain("KPI_BASELINE_MIN_RATIO = 0.9");
+    const tests = readFileSync(join(here, "kpi-coverage.test.ts"), "utf8");
+    expect(config).toContain("KPI_MIN_FRESH_SHARE = 0.8");
     expect(config).toContain("KPI_FRESH_COVERAGE_TOLERANCE = 0.1");
+    expect(config).not.toContain("KPI_BASELINE_MIN_RATIO");
     expect(coverage).toContain("export function selectFreshCoverageBaseline");
-    expect(coverage).toContain("prior *good* day");
+    expect(coverage).toContain("export function isGoodFreshCoverageDay");
+    expect(coverage).toContain("fresh share <= fetchedShare");
+    expect(coverage).toContain("Do not replace");
+    expect(coverage).toContain("fetchedShare counts frozen-but-fetched rows");
+    expect(coverage).not.toMatch(/minRatio \* baseline/);
     expect(build).toContain("decideKpiFreshCoverage");
     expect(build).toContain("coverageSeriesForSource");
     expect(build).toContain('kpiHeld("github")');
@@ -161,5 +204,9 @@ describe("guard source wiring (fails if reverted)", () => {
     expect(kpis).toContain("round2sf");
     expect(kpis).toContain("npmKpiHeld");
     expect(kpis).toContain("starsKpiHeld");
+    expect(tests).toContain("slow slide 100, 91, 82, 74");
+    expect(tests).toContain("0.4%");
+    expect(tests).toContain("no good day means every tile is held");
+    expect(tests).toContain("more than 10% off the baseline is held");
   });
 });
