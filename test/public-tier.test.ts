@@ -612,6 +612,10 @@ describe("hidden smithery chart and public use_count", () => {
     expect(kpis).not.toMatch(/use_count|useCount|totalUseCount/);
     expect(kpis).toContain("fresh on");
     expect(kpis).not.toContain("fresh today");
+    expect(kpis).toContain("held: low fresh coverage");
+    expect(kpis).toContain("fresh packages");
+    expect(kpis).toContain("npmKpiHeld");
+    expect(kpis).toContain("starsKpiHeld");
   });
 
   it("movers page keeps the complete-day window and layers the fixture source check", () => {

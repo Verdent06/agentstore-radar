@@ -155,5 +155,8 @@ export function roundHeadlineStats(stats: HeadlineStats): HeadlineStats {
     multiStoreCount: round2sf(stats.multiStoreCount),
     newArrivalCount: round2sf(stats.newArrivalCount),
     categoryCount: round2sf(stats.categoryCount),
+    starsFreshCount: round2sf(stats.starsFreshCount),
+    npmFreshCount: round2sf(stats.npmFreshCount),
+    pypiFreshCount: round2sf(stats.pypiFreshCount),
   };
 }

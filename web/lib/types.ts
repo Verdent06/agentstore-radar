@@ -95,6 +95,12 @@ export type HeadlineStats = {
   multiStoreCount: number;
   newArrivalCount: number;
   categoryCount: number;
+  starsKpiHeld?: boolean;
+  npmKpiHeld?: boolean;
+  pypiKpiHeld?: boolean;
+  starsFreshCount?: number;
+  npmFreshCount?: number;
+  pypiFreshCount?: number;
 };
 
 export type CoverageRow = {
