@@ -59,6 +59,7 @@ for (const result of results) {
     skipped: result.skipped,
     rows: result.rowCount,
     eligible: result.eligibleCount,
+    freshToday: result.freshTodayCount,
     freshWithin7d: result.freshWithin7dCount,
     fetchedThisRun: result.fetchedThisRunCount,
     coverage,

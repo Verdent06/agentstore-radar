@@ -20,6 +20,7 @@ export type CoverageFinding = {
   currentDate: string;
   coverage: number;
   eligibleCount: number;
+  freshTodayCount: number;
   freshWithin7dCount: number;
   threshold: number;
 };
@@ -140,6 +141,7 @@ export function collectCoverageFindings(
       currentDate,
       coverage: source.coverage ?? 0,
       eligibleCount: eligible,
+      freshTodayCount: source.freshTodayCount ?? sourceFreshWithin7dCount(source) ?? 0,
       freshWithin7dCount: sourceFreshWithin7dCount(source) ?? 0,
       threshold,
     });
@@ -202,8 +204,8 @@ export async function runHealth(options: HealthOptions = {}): Promise<HealthRepo
     const title = `[health] ${finding.source} coverage below ${Math.round(finding.threshold * 100)}%`;
     const body = [
       `Source \`${finding.source}\` coverage is ${formatCoveragePct(finding.coverage)}`,
-      `(${finding.freshWithin7dCount}/${finding.eligibleCount} fresh within 7d) on ${finding.currentDate}.`,
-      `Target is at least ${Math.round(finding.threshold * 100)}% fresh within the weekly refresh window.`,
+      `(${finding.freshTodayCount}/${finding.eligibleCount} fresh today) on ${finding.currentDate}.`,
+      `Target is at least ${Math.round(finding.threshold * 100)}% fetched on this UTC snapshot date.`,
       "",
       "Details stay in the private data repo. This alert is operational only.",
       `Collector: ${REPO_URL}`,
@@ -212,6 +214,7 @@ export async function runHealth(options: HealthOptions = {}): Promise<HealthRepo
       source: finding.source,
       coverage: formatCoveragePct(finding.coverage),
       eligible: finding.eligibleCount,
+      freshToday: finding.freshTodayCount,
       freshWithin7d: finding.freshWithin7dCount,
     });
     const issue = await opener({ title, body, labels: ["source-health"] });

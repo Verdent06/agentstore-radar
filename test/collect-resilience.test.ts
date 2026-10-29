@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,6 +35,11 @@ const silent = createLogger({
 const catalogs = [
   { match: "api.smithery.ai/servers", body: loadFixture("smithery-page.json") },
   { match: "geminicli.com/extensions.json", body: loadFixture("gemini.json") },
+  {
+    match: "api.npmjs.org/downloads/point/last-week/@example%2Fweather-mcp",
+    body: loadFixture<Record<string, unknown>>("npm-point.json")["@example/weather-mcp"],
+  },
+  { match: "pypistats.org/api/packages/example-files-mcp/recent", body: loadFixture("pypi-recent.json") },
 ];
 
 describe("collect resilience", () => {
@@ -244,6 +250,12 @@ describe("collect resilience", () => {
       },
       dataDir,
     );
+    execSync("git init && git add -A && git -c user.email=test@example.com -c user.name=test commit -m previous", {
+      cwd: dataDir,
+      encoding: "utf8",
+    });
+    const previousCommit = execSync("git rev-parse HEAD", { cwd: dataDir, encoding: "utf8" }).trim();
+    const newSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const catalogFetch = fixtureFetch(catalogs);
     const forced = await collect({
       date: "2026-10-24",
@@ -251,7 +263,7 @@ describe("collect resilience", () => {
       now: new Date("2026-10-24T19:48:02Z"),
       force: true,
       runId: "run-evening",
-      env: {},
+      env: { GITHUB_SHA: newSha },
       http: createHttpClient({
         fetchImpl: async (input, init) => {
           if (String(input).includes("registry.modelcontextprotocol.io")) {
@@ -272,7 +284,14 @@ describe("collect resilience", () => {
       overwrittenAt: "2026-10-24T19:48:02.000Z",
       previousCollectedAt: "2026-10-24T11:07:24.740Z",
       previousRunId: "run-morning",
+      previousCommit,
+      runId: "run-evening",
+      reason: "force overwrite of existing snapshot",
+      newSha,
     });
+    expect(next.overwrite?.previousCommit).toMatch(/^[0-9a-f]{7,40}$/i);
+    expect(next.overwrite?.reason).toBe("force overwrite of existing snapshot");
+    expect(next.overwrite?.newSha).toBe(newSha);
     const backupRel = next.overwrite?.previousBackupPath;
     expect(backupRel).toMatch(/^backups\/normalized\/2026-10-24\//);
     const backupDir = join(dataDir, backupRel!);

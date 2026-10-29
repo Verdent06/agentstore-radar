@@ -25,6 +25,64 @@ export function isStale(fetchedAt: string | undefined, now: Date, maxAgeMs = DEF
   return ts < now.getTime() - maxAgeMs;
 }
 
+/** Keys not fetched on this UTC snapshot date. Same-day cache hits are not due. */
+export function selectDailyDueKeys(allKeys: string[], lastFetched: LastFetchedMap, snapshotDate: string): string[] {
+  return allKeys.filter((key) => isCarriedForward(lastFetched[key], snapshotDate));
+}
+
+export function countFreshToday(allKeys: string[], lastFetched: LastFetchedMap, snapshotDate: string): number {
+  return allKeys.length - selectDailyDueKeys(allKeys, lastFetched, snapshotDate).length;
+}
+
+export function prioritizeKeys(keys: string[], scoreOf: (key: string) => number): string[] {
+  return keys
+    .map((key, index) => ({ key, index, score: scoreOf(key) }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((row) => row.key);
+}
+
+function fetchedAtMs(lastFetched: LastFetchedMap, key: string): number {
+  const raw = lastFetched[key];
+  if (!raw) {
+    return 0;
+  }
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+/** Oldest last_fetched first (missing first). Equal timestamps keep a higher score ahead. */
+export function prioritizeStalestFirst(
+  keys: string[],
+  lastFetched: LastFetchedMap,
+  scoreOf?: (key: string) => number,
+): string[] {
+  return keys
+    .map((key, index) => ({
+      key,
+      index,
+      fetchedAt: fetchedAtMs(lastFetched, key),
+      score: scoreOf?.(key) ?? 0,
+    }))
+    .sort((a, b) => a.fetchedAt - b.fetchedAt || b.score - a.score || a.index - b.index)
+    .map((row) => row.key);
+}
+
+export function takeRunBatch(keys: string[], limit: number): string[] {
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return keys;
+  }
+  return keys.slice(0, Math.floor(limit));
+}
+
+export function selectRunBatch(
+  dueKeys: string[],
+  lastFetched: LastFetchedMap,
+  limit: number,
+  scoreOf?: (key: string) => number,
+): string[] {
+  return takeRunBatch(prioritizeStalestFirst(dueKeys, lastFetched, scoreOf), limit);
+}
+
 /** True when the stored value was not fetched for this snapshot day (and is not this run's live fetch). */
 export function isCarriedForward(
   lastFetchedAt: string | null | undefined,
@@ -75,6 +133,24 @@ export function resumeDueKeys(
   maxAgeMs = DEFAULT_REFRESH_MAX_AGE_MS,
 ): { dueKeys: string[]; resumed: boolean } {
   const due = selectDueKeys(allKeys, lastFetched, now, maxAgeMs);
+  return resumeFromCheckpoint(due, snapshotDate, checkpoint);
+}
+
+export function resumeDailyDueKeys(
+  allKeys: string[],
+  lastFetched: LastFetchedMap,
+  snapshotDate: string,
+  checkpoint: Checkpoint | null,
+): { dueKeys: string[]; resumed: boolean } {
+  const due = selectDailyDueKeys(allKeys, lastFetched, snapshotDate);
+  return resumeFromCheckpoint(due, snapshotDate, checkpoint);
+}
+
+function resumeFromCheckpoint(
+  due: string[],
+  snapshotDate: string,
+  checkpoint: Checkpoint | null,
+): { dueKeys: string[]; resumed: boolean } {
   if (!checkpoint || checkpoint.snapshotDate !== snapshotDate) {
     return { dueKeys: due, resumed: false };
   }

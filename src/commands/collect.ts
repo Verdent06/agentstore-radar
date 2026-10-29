@@ -79,6 +79,7 @@ function failedResult(source: SourceName, collectedAt: string, error: unknown): 
     raw: { failed: true, error: stoppedAt.error, stoppedAt },
     records: [],
     eligibleCount: 0,
+    freshTodayCount: 0,
     freshWithin7dCount: 0,
     fetchedThisRunCount: 0,
   };
@@ -167,6 +168,7 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     log,
     discovered: createDiscoveredRefs(),
     maxPages: options.maxPages,
+    sleep,
   };
 
   const results: SourceResult[] = [];
@@ -227,12 +229,18 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     }
     const stamp = snapshotBackupStamp(previous?.collectedAt, previous?.runId);
     previousBackupPath = backupNormalizedSnapshot(snapshotDate, dataDir, stamp);
+    const previousCommit = tryGitHead(dataDir) ?? tryGitHead(dirname(dataDir));
+    const newSha = envGitSha(options.env) ?? tryGitHead(process.cwd());
     overwrite = {
       overwrittenAt: collectedAt,
       previousBackupPath,
       previousCollectedAt: previous?.collectedAt,
       previousRunId: previous?.runId,
-      previousGitSha: tryGitHead(dataDir) ?? tryGitHead(dirname(dataDir)),
+      previousGitSha: previousCommit,
+      previousCommit,
+      runId,
+      reason: "force overwrite of existing snapshot",
+      newSha,
     };
     log.warn("force overwrite of existing snapshot; previous day kept as backup", overwrite);
   }
@@ -282,11 +290,17 @@ function envRunId(env?: NodeJS.ProcessEnv): string | undefined {
   return value && value.length > 0 ? value : undefined;
 }
 
+function envGitSha(env?: NodeJS.ProcessEnv): string | undefined {
+  const value = (env ?? process.env).GITHUB_SHA?.trim();
+  return value && /^[0-9a-f]{7,40}$/i.test(value) ? value : undefined;
+}
+
 function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifest {
   const eligible = result.eligibleCount ?? (result.skipped ? 0 : result.rowCount);
-  const freshWithin7d = result.freshWithin7dCount ?? (result.skipped ? 0 : result.rowCount);
+  const freshToday = result.freshTodayCount ?? (result.skipped ? 0 : result.rowCount);
+  const freshWithin7d = result.freshWithin7dCount ?? freshToday;
   const fetchedThisRun = result.fetchedThisRunCount ?? (result.skipped || result.failed ? 0 : result.rowCount);
-  const { coverage } = computeCoverage(eligible, freshWithin7d);
+  const { coverage } = computeCoverage(eligible, freshToday);
   return {
     source: result.source,
     rowCount: result.rowCount,
@@ -295,10 +309,13 @@ function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifes
     rawFile,
     collectedAt: result.collectedAt,
     eligibleCount: eligible,
+    freshTodayCount: freshToday,
     freshWithin7dCount: freshWithin7d,
     fetchedThisRunCount: fetchedThisRun,
     coverage: result.skipped && eligible === 0 ? undefined : result.coverage ?? coverage,
     lastFetchedAt: result.lastFetchedAt,
+    unresolvedCount: result.unresolvedCount,
+    unresolvedRepos: result.unresolvedRepos,
     failed: result.failed,
     error: result.error,
     truncated: result.truncated,

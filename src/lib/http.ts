@@ -1,4 +1,12 @@
-import { HOST_MIN_INTERVAL_MS, HTTP_5XX_MAX_WAIT_MS, HTTP_MAX_RETRIES, MAX_RATE_LIMIT_WAIT_MS, USER_AGENT } from "./config.ts";
+import {
+  HOST_MIN_INTERVAL_MS,
+  HTTP_5XX_MAX_WAIT_MS,
+  HTTP_MAX_RETRIES,
+  MAX_RATE_LIMIT_WAIT_MS,
+  RATE_LIMIT_MIN_WAIT_MS,
+  USER_AGENT,
+} from "./config.ts";
+import type { SleepFn } from "./retry.ts";
 import { sleep } from "./util.ts";
 
 export class HttpError extends Error {
@@ -105,16 +113,64 @@ export function retryWaitMs(input: {
   rateLimited: boolean;
   cloudflare: boolean;
 }): number {
-  if (input.retryAfterMs != null) {
-    return Math.min(input.retryAfterMs, MAX_RATE_LIMIT_WAIT_MS);
-  }
+  const headerWait = input.retryAfterMs != null && input.retryAfterMs > 0 ? input.retryAfterMs : undefined;
   if (input.cloudflare) {
-    return Math.min(180_000, 15_000 * 2 ** input.attempt);
+    const backoff = Math.min(180_000, RATE_LIMIT_MIN_WAIT_MS * 2 ** input.attempt);
+    return Math.min(headerWait ?? backoff, MAX_RATE_LIMIT_WAIT_MS);
   }
   if (input.rateLimited) {
-    return Math.min(180_000, 30_000 * 2 ** input.attempt);
+    const backoff = Math.min(180_000, 30_000 * 2 ** input.attempt);
+    return Math.min(Math.max(headerWait ?? backoff, RATE_LIMIT_MIN_WAIT_MS), MAX_RATE_LIMIT_WAIT_MS);
+  }
+  if (headerWait != null) {
+    return Math.min(headerWait, MAX_RATE_LIMIT_WAIT_MS);
   }
   return Math.min(HTTP_5XX_MAX_WAIT_MS, 1_000 * 2 ** input.attempt);
+}
+
+export function isHttpRateLimit(error: unknown): error is HttpError {
+  if (!(error instanceof HttpError)) {
+    return false;
+  }
+  return isRateLimited(error.status, error.body) || Boolean(error.cloudflare);
+}
+
+export async function fetchJsonWithRateLimitWait<T>(
+  http: HttpClient,
+  url: string,
+  options?: {
+    init?: HttpRequestInit;
+    sleep?: SleepFn;
+    onWait?: (waitMs: number, attempt: number, error: HttpError) => void;
+    maxWaitMs?: number;
+  },
+): Promise<T> {
+  const sleepFn = options?.sleep ?? sleep;
+  const maxWaitMs = options?.maxWaitMs ?? MAX_RATE_LIMIT_WAIT_MS;
+  let waitedMs = 0;
+  let attempt = 0;
+  while (true) {
+    try {
+      return await http.fetchJson<T>(url, options?.init);
+    } catch (error) {
+      if (!isHttpRateLimit(error)) {
+        throw error;
+      }
+      const waitMs = retryWaitMs({
+        attempt,
+        retryAfterMs: error.retryAfterMs,
+        rateLimited: true,
+        cloudflare: Boolean(error.cloudflare),
+      });
+      if (waitedMs + waitMs > maxWaitMs) {
+        throw error;
+      }
+      options?.onWait?.(waitMs, attempt, error);
+      await sleepFn(waitMs);
+      waitedMs += waitMs;
+      attempt += 1;
+    }
+  }
 }
 
 function retryAfterFromBody(body: string): number | undefined {

@@ -20,6 +20,10 @@ on:
         description: "Re-collect even if today's snapshot is already complete (overwrites that day)"
         type: boolean
         default: false
+      skip_push:
+        description: "Collect without pushing to the private data repo (branch verification)"
+        type: boolean
+        default: false
 
 concurrency:
   group: collect-snapshots
@@ -87,12 +91,12 @@ jobs:
           npm run collect -- "${ARGS[@]}"
 
       - name: Commit snapshot to private data repo
-        if: ${{ always() && inputs.seed_only != true && steps.collect.outcome != 'skipped' }}
+        if: ${{ always() && github.ref == 'refs/heads/main' && inputs.seed_only != true && inputs.skip_push != true && steps.collect.outcome != 'skipped' }}
         working-directory: .radar-data
         run: bash "$GITHUB_WORKSPACE/scripts/push-data-repo.sh" "$GITHUB_WORKSPACE/.radar-data"
 
       - name: Health check
-        if: ${{ inputs.seed_only != true && steps.collect.outcome == 'success' }}
+        if: ${{ inputs.seed_only != true && inputs.skip_push != true && steps.collect.outcome == 'success' }}
         continue-on-error: true
         env:
           DATA_DIR: ${{ env.DATA_DIR }}
@@ -100,7 +104,7 @@ jobs:
         run: npm run health -- --data "$DATA_DIR"
 
       - name: Alert if today's snapshot is still missing
-        if: ${{ always() && inputs.seed_only != true }}
+        if: ${{ always() && inputs.seed_only != true && inputs.skip_push != true }}
         env:
           DATA_DIR: ${{ env.DATA_DIR }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
