@@ -73,11 +73,7 @@ jobs:
           MANIFEST="${MANIFEST_DIR}/${DATE}/manifest.json"
           SKIP=false
           if [[ "${IS_BACKSTOP}" == "true" && -f "$MANIFEST" ]]; then
-            if python3 -c 'import json, sys
-m = json.load(open(sys.argv[1]))
-incomplete = m.get("partial") is True or any(s.get("failed") or s.get("truncated") for s in (m.get("sources") or []))
-sys.exit(1 if incomplete else 0)' "$MANIFEST"
-            then
+            if python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); sys.exit(1 if m.get("partial") is True or any(s.get("failed") or s.get("truncated") for s in (m.get("sources") or [])) else 0)' "$MANIFEST"; then
               SKIP=true
               echo "Today's snapshot ${DATE} is already complete; skipping backstop collect"
             else
