@@ -123,10 +123,9 @@ export function isGoodFreshCoverageDay(
 }
 
 /**
- * Most recent complete day whose own fresh share is at least 80%.
- * When `todayDate` is set, use the latest good day strictly before today so
- * today's count can be checked against that baseline; a good today with no
- * prior good day is its own baseline.
+ * Most recent complete day whose own fresh share is at least 80%, strictly
+ * before `todayDate`. Today is never a baseline candidate. No prior good day
+ * means no baseline — even when today itself is at 80% or more.
  */
 export function selectFreshCoverageBaseline(
   days: readonly DailyFreshCoverage[],
@@ -134,14 +133,10 @@ export function selectFreshCoverageBaseline(
   minShare = KPI_MIN_FRESH_SHARE,
 ): DailyFreshCoverage | null {
   const ordered = [...days].sort((a, b) => a.date.localeCompare(b.date));
-  const good = ordered.filter((day) => isGoodFreshCoverageDay(day, minShare));
-  if (todayDate) {
-    const prior = good.filter((day) => day.date < todayDate);
-    if (prior.length > 0) {
-      return prior.at(-1) ?? null;
-    }
-    return good.find((day) => day.date === todayDate) ?? null;
-  }
+  const cutoff = todayDate ?? ordered.at(-1)?.date;
+  const good = ordered.filter(
+    (day) => isGoodFreshCoverageDay(day, minShare) && (cutoff == null || day.date < cutoff),
+  );
   return good.at(-1) ?? null;
 }
 

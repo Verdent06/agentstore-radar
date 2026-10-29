@@ -46,7 +46,7 @@ describe("selectFreshCoverageBaseline", () => {
     ];
     expect(isGoodFreshCoverageDay(days[0]!)).toBe(false);
     expect(isGoodFreshCoverageDay(days[1]!)).toBe(true);
-    const baseline = selectFreshCoverageBaseline(days);
+    const baseline = selectFreshCoverageBaseline(days, "2026-10-22");
     expect(baseline?.date).toBe("2026-10-21");
     expect(baseline?.freshCount).toBe(4_535);
     expect(baseline?.date).not.toBe("2026-10-20");
@@ -107,6 +107,24 @@ describe("absolute 80% fresh-share baseline (fails if the relative walk returns)
     expect(npm.held).toBe(false);
     expect(npm.reason).toBe("ok");
     expect(npm.baseline?.freshCount).toBe(100);
+  });
+
+  it("holds when today is the only good day, even at 80% or more", () => {
+    const days = [day("2026-10-24", 10, 100), day("2026-10-25", 100, 100)];
+    expect(isGoodFreshCoverageDay(days[0]!)).toBe(false);
+    expect(isGoodFreshCoverageDay(days[1]!)).toBe(true);
+    expect(100 / 100).toBeGreaterThanOrEqual(KPI_MIN_FRESH_SHARE);
+    expect(selectFreshCoverageBaseline(days, "2026-10-25")).toBeNull();
+    for (const source of KPI_SOURCES) {
+      const decision = decideKpiFreshCoverage(source, days, "2026-10-25");
+      expect(decision.held, source).toBe(true);
+      expect(decision.baseline, source).toBeNull();
+      expect(decision.reason, source).toBe("no_baseline");
+      expect(decision.today?.freshCount, source).toBe(100);
+    }
+    const onlyToday = decideKpiFreshCoverage("npm", [day("2026-10-25", 100, 100)], "2026-10-25");
+    expect(onlyToday.held).toBe(true);
+    expect(onlyToday.baseline).toBeNull();
   });
 
   it("(e) today at 80% or more but more than 10% off the baseline is held", () => {
@@ -208,5 +226,8 @@ describe("guard source wiring (fails if reverted)", () => {
     expect(tests).toContain("0.4%");
     expect(tests).toContain("no good day means every tile is held");
     expect(tests).toContain("more than 10% off the baseline is held");
+    expect(tests).toContain("today is the only good day");
+    expect(coverage).toContain("Today is never a baseline candidate");
+    expect(coverage).not.toContain("own baseline");
   });
 });

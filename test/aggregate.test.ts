@@ -321,7 +321,7 @@ describe("home KPI freshness", () => {
       { date: "2026-10-21", freshCount: 4_535, eligibleCount: 4_535 },
       { date: "2026-10-22", freshCount: 610, eligibleCount: 4_535 },
     ];
-    const baseline = selectFreshCoverageBaseline(series);
+    const baseline = selectFreshCoverageBaseline(series, "2026-10-22");
     expect(baseline?.date).toBe("2026-10-21");
     expect(baseline?.freshCount).toBe(4_535);
     expect(baseline?.freshCount).not.toBe(603);
@@ -376,6 +376,17 @@ describe("home KPI freshness", () => {
     expect(agg.stats.npmKpiHeld).toBe(true);
     expect(agg.stats.pypiKpiHeld).toBe(true);
     expect(agg.stats.npmFreshCount).toBe(7);
+  });
+
+  it("holds every KPI when today is the only good day", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-kpi-only-today-"));
+    writeKpiSnapshot(dataDir, "2026-10-24", coverageApps("2026-10-24", 1, 9));
+    writeKpiSnapshot(dataDir, "2026-10-25", coverageApps("2026-10-25", 10, 0));
+    const agg = buildAggregate(dataDir, "data_dir");
+    expect(agg.stats.npmFreshCount).toBe(10);
+    expect(agg.stats.npmKpiHeld).toBe(true);
+    expect(agg.stats.starsKpiHeld).toBe(true);
+    expect(agg.stats.pypiKpiHeld).toBe(true);
   });
 
   it("shows npm and stars when a good 80% day is followed by today within 10%", () => {
