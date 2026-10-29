@@ -112,6 +112,7 @@ export type CoverageRow = {
   freshTodayCount?: number;
   freshWithin7dCount?: number;
   fetchedThisRunCount?: number;
+  fetchedShare?: number;
   fetchedCount?: number;
   skipped: boolean;
   rowCount?: number;

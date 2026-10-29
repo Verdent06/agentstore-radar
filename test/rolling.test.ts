@@ -6,11 +6,14 @@ import {
   countFresh,
   countFreshToday,
   isCarriedForward,
+  isDueUnresolved,
   loadCheckpoint,
   loadLastFetched,
+  loadUnresolved,
   mergeLastFetched,
   persistCheckpoint,
   persistLastFetched,
+  persistUnresolved,
   prioritizeKeys,
   prioritizeStalestFirst,
   resumeDailyDueKeys,
@@ -132,5 +135,14 @@ describe("rolling last_fetched", () => {
     });
     expect(loadLastFetched(dataDir, "github")["example/weather"]).toBe("2026-10-15T00:00:00Z");
     expect(loadCheckpoint(dataDir, "github")?.dueKeys).toEqual(["example/weather"]);
+  });
+
+  it("persists unresolved GitHub keys and retries only after the 7-day window", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-unresolved-"));
+    persistUnresolved(dataDir, "github", { "deleted/gone": "2026-10-24T12:00:00Z" });
+    expect(loadUnresolved(dataDir, "github")["deleted/gone"]).toBe("2026-10-24T12:00:00Z");
+    expect(isDueUnresolved("2026-10-24T12:00:00Z", new Date("2026-10-25T12:00:00Z"))).toBe(false);
+    expect(isDueUnresolved("2026-10-01T12:00:00Z", new Date("2026-10-25T12:00:00Z"))).toBe(true);
+    expect(isDueUnresolved(undefined, new Date("2026-10-25T12:00:00Z"))).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeCoverage, formatCoveragePct, isLowCoverage } from "../src/lib/coverage.ts";
+import { computeCoverage, computeFetchedShare, formatCoveragePct, isLowCoverage } from "../src/lib/coverage.ts";
 
 describe("coverage", () => {
   it("is 1 when nothing is eligible", () => {
@@ -17,5 +17,23 @@ describe("coverage", () => {
     expect(isLowCoverage(0.7, 100)).toBe(false);
     expect(isLowCoverage(0, 0)).toBe(false);
     expect(isLowCoverage(undefined, 50)).toBe(false);
+  });
+});
+
+describe("fetchedShare", () => {
+  it("is fetchedThisRun / (eligible - unresolved)", () => {
+    expect(computeFetchedShare(136, 31_799, 3_864)).toBeCloseTo(136 / (31_799 - 3_864));
+    expect(computeFetchedShare(1_412, 13_835)).toBeCloseTo(1_412 / 13_835);
+    expect(computeFetchedShare(22_348, 27_935)).toBeCloseTo(0.8);
+  });
+
+  it("is 1 when the resolvable set is empty", () => {
+    expect(computeFetchedShare(0, 0)).toBe(1);
+    expect(computeFetchedShare(0, 3_864, 3_864)).toBe(1);
+  });
+
+  it("does not count unresolved GitHub repos as fetched", () => {
+    expect(computeFetchedShare(0, 1, 1)).toBe(1);
+    expect(computeFetchedShare(100, 200, 50)).toBeCloseTo(100 / 150);
   });
 });

@@ -10,7 +10,7 @@ import { GITHUB_GRAPHQL_BATCH, NPM_BULK_LIMIT, SOURCE_FREEZE_RATIO } from "../sr
 import { createHttpClient } from "../src/lib/http.ts";
 import { writeNormalized } from "../src/lib/io.ts";
 import { mergeApps } from "../src/lib/merge.ts";
-import { loadLastFetched, persistEntityCache, persistLastFetched } from "../src/lib/rolling.ts";
+import { loadLastFetched, loadUnresolved, persistEntityCache, persistLastFetched, persistUnresolved } from "../src/lib/rolling.ts";
 import { emptySourceRow, type SnapshotManifest, type SourceRow } from "../src/lib/schema.ts";
 import { chunk } from "../src/lib/util.ts";
 import { fixtureFetch, loadFixture } from "./helpers.ts";
@@ -30,15 +30,15 @@ function ctx(partial: Partial<CollectContext> & Pick<CollectContext, "http" | "d
 }
 
 describe("github growth adapter", () => {
-  it("prefers GH_STATS_TOKEN and builds 50-wide GraphQL batches", () => {
+  it("prefers GH_STATS_TOKEN and builds 100-wide GraphQL batches", () => {
     expect(githubStatsToken({ GH_STATS_TOKEN: "stats", GITHUB_TOKEN: "actions" })).toBe("stats");
     expect(githubStatsToken({ GITHUB_TOKEN: "actions" })).toBe("actions");
-    expect(GITHUB_GRAPHQL_BATCH).toBe(50);
-    const refs = Array.from({ length: 50 }, (_, index) => ({ owner: "org", repo: `r${index}` }));
+    expect(GITHUB_GRAPHQL_BATCH).toBe(100);
+    const refs = Array.from({ length: 100 }, (_, index) => ({ owner: "org", repo: `r${index}` }));
     const query = buildGithubGraphqlQuery(refs);
-    expect(query).toContain("r49: repository");
+    expect(query).toContain("r99: repository");
     expect(query).toContain("rateLimit { remaining resetAt cost }");
-    expect(query).not.toContain("r50:");
+    expect(query).not.toContain("r100:");
   });
 
   it("fetches due repos, checkpoints, and reports full coverage", async () => {
@@ -176,7 +176,7 @@ describe("github growth adapter", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-gh-"));
     const discovered = createDiscoveredRefs();
     discovered.githubRepos.set("example/weather", { owner: "example", repo: "weather" });
-    for (let index = 0; index < 50; index += 1) {
+    for (let index = 0; index < 100; index += 1) {
       discovered.githubRepos.set(`example/extra-${index}`, { owner: "example", repo: `extra-${index}` });
     }
     let calls = 0;
@@ -204,9 +204,9 @@ describe("github growth adapter", () => {
     expect(calls).toBe(2);
     expect(result.truncated).toBe(true);
     expect(result.rowCount).toBe(1);
-    expect(result.eligibleCount).toBe(51);
+    expect(result.eligibleCount).toBe(101);
     expect(result.freshTodayCount).toBe(1);
-    expect(result.coverage).toBeCloseTo(1 / 51);
+    expect(result.coverage).toBeCloseTo(1 / 101);
   });
 
   it("logs deleted/renamed repos per-app and does not fail the GitHub source", async () => {
@@ -251,6 +251,7 @@ describe("github growth adapter", () => {
     expect(result.skipped).toBe(false);
     expect(result.rowCount).toBe(1);
     expect(result.unresolvedCount).toBe(1);
+    expect(result.fetchedShare).toBe(1);
     expect(result.freshTodayCount).toBe(1);
     expect(result.records[0]?.carried_forward).toBe(false);
     expect(loadLastFetched(dataDir, "github")["deleted/gone"]).toBeUndefined();
@@ -350,6 +351,107 @@ describe("github growth adapter", () => {
     });
     expect(result.records[0]?.carried_forward).toBe(true);
     expect(loadLastFetched(dataDir, "github")["example/weather"]).toBe(originalFetchedAt);
+  });
+
+  it("carries forward a repo fetched yesterday that is NOT_FOUND today and does not count it as fetched", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-gh-yesterday-gone-"));
+    const yesterday = "2026-10-24T12:00:00Z";
+    persistLastFetched(dataDir, "github", { "example/weather": yesterday });
+    persistEntityCache(dataDir, "github", {
+      "example/weather": {
+        nameWithOwner: "example/weather",
+        url: "https://github.com/example/weather",
+        stargazerCount: 17,
+        forkCount: 2,
+        pushedAt: "2026-10-01T00:00:00Z",
+        isArchived: false,
+        issues: { totalCount: 0 },
+      },
+    });
+    const discovered = createDiscoveredRefs();
+    discovered.githubRepos.set("example/weather", { owner: "example", repo: "weather" });
+    let calls = 0;
+    const result = await githubAdapter.collect(
+      ctx({
+        snapshotDate: "2026-10-25",
+        collectedAt: "2026-10-25T12:00:00Z",
+        now: new Date("2026-10-25T12:00:00Z"),
+        dataDir,
+        http: createHttpClient({
+          fetchImpl: async () => {
+            calls += 1;
+            return new Response(
+              JSON.stringify({
+                data: { r0: null },
+                errors: [
+                  {
+                    type: "NOT_FOUND",
+                    path: ["r0"],
+                    message: "Could not resolve to a Repository with the name 'example/weather'.",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            );
+          },
+          maxRetries: 0,
+        }),
+        env: { GITHUB_TOKEN: "test-token" },
+        discovered,
+      }),
+    );
+    expect(calls).toBe(1);
+    expect(result.fetchedThisRunCount).toBe(0);
+    expect(result.unresolvedCount).toBe(1);
+    expect(result.fetchedShare).toBe(1);
+    expect(result.records[0]).toMatchObject({
+      stars: 17,
+      carried_forward: true,
+      fetched_at: yesterday,
+    });
+    expect(loadLastFetched(dataDir, "github")["example/weather"]).toBe(yesterday);
+    expect(loadUnresolved(dataDir, "github")["example/weather"]).toBe("2026-10-25T12:00:00Z");
+  });
+
+  it("skips known unresolved repos on later days and excludes them from fetchedShare", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-gh-known-unresolved-"));
+    persistLastFetched(dataDir, "github", { "example/weather": "2026-10-24T12:00:00Z" });
+    persistEntityCache(dataDir, "github", {
+      "example/weather": loadFixture<{ data: { r0: unknown } }>("github-graphql.json").data.r0,
+    });
+    persistUnresolved(dataDir, "github", { "deleted/gone": "2026-10-24T12:00:00Z" });
+    const discovered = createDiscoveredRefs();
+    discovered.githubRepos.set("example/weather", { owner: "example", repo: "weather" });
+    discovered.githubRepos.set("deleted/gone", { owner: "deleted", repo: "gone" });
+    let queries = 0;
+    const result = await githubAdapter.collect(
+      ctx({
+        snapshotDate: "2026-10-25",
+        collectedAt: "2026-10-25T12:00:00Z",
+        now: new Date("2026-10-25T12:00:00Z"),
+        dataDir,
+        http: createHttpClient({
+          fetchImpl: async (_input, init) => {
+            queries += 1;
+            const raw = String(init?.body ?? "");
+            expect(raw).not.toMatch(/deleted/);
+            return new Response(JSON.stringify(loadFixture("github-graphql.json")), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          },
+          maxRetries: 0,
+        }),
+        env: { GITHUB_TOKEN: "test-token" },
+        discovered,
+      }),
+    );
+    expect(queries).toBe(1);
+    expect(result.fetchedThisRunCount).toBe(1);
+    expect(result.unresolvedCount).toBe(1);
+    expect(result.eligibleCount).toBe(2);
+    expect(result.fetchedShare).toBe(1);
+    expect(result.records.find((row) => row.source_id === "example/weather")?.carried_forward).toBe(false);
   });
 });
 
@@ -550,6 +652,7 @@ describe("npm growth adapter", () => {
     expect(waits.some((ms) => ms >= 30_000)).toBe(true);
     expect(result.truncated).toBe(false);
     expect(result.fetchedThisRunCount).toBe(1);
+    expect(result.fetchedShare).toBe(1);
     expect(result.rowCount).toBe(1);
   });
 
@@ -856,5 +959,89 @@ describe("pypi growth adapter", () => {
           app.pypi_last_month_downloads_carried_forward === false,
       ),
     ).toBe(true);
+  });
+
+  it("does not source-freeze a live PyPI fetch because carried-forward cache last_month is stuck", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-pypi-live-vs-cache-"));
+    const names = Array.from({ length: 20 }, (_, index) => `pkg-${String(index).padStart(2, "0")}`);
+    const writeDay = (date: string) => {
+      const rows: SourceRow[] = names.map((name) =>
+        emptySourceRow({
+          snapshot_date: date,
+          source: "pypi",
+          source_id: name,
+          name,
+          pypi_package: name,
+          pypi_last_week_downloads: 10,
+          pypi_last_month_downloads: 100,
+          app_id: `pypi:${name}`,
+          fetched_at: `${date}T12:00:00Z`,
+        }),
+      );
+      const manifest: SnapshotManifest = {
+        snapshotDate: date,
+        collectedAt: `${date}T12:00:00Z`,
+        appCount: rows.length,
+        sourceRowCount: rows.length,
+        partial: false,
+        completedSources: ["pypi"],
+        sources: [{ source: "pypi", rowCount: rows.length, skipped: false, collectedAt: `${date}T12:00:00Z` }],
+      };
+      writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
+    };
+    writeDay("2026-10-22");
+    writeDay("2026-10-24");
+    persistLastFetched(dataDir, "pypi", Object.fromEntries(names.map((name) => [name, "2026-10-24T12:00:00Z"])));
+    persistEntityCache(
+      dataDir,
+      "pypi",
+      Object.fromEntries(
+        names.map((name) => [name, { data: { last_week: 10, last_month: 100 }, package: name, type: "recent_downloads" }]),
+      ),
+    );
+    const live = names[0]!;
+    persistLastFetched(dataDir, "pypi", {
+      ...Object.fromEntries(names.map((name) => [name, "2026-10-24T12:00:00Z"])),
+      [live]: "2026-10-20T12:00:00Z",
+    });
+    const discovered = createDiscoveredRefs();
+    for (const name of names) {
+      discovered.pypiPackages.add(name);
+    }
+    const result = await pypiAdapter.collect(
+      ctx({
+        snapshotDate: "2026-10-25",
+        collectedAt: "2026-10-25T12:00:00Z",
+        now: new Date("2026-10-25T12:00:00Z"),
+        dataDir,
+        env: { RADAR_PYPI_BATCH: "1" },
+        sleep: async () => {},
+        http: createHttpClient({
+          fetchImpl: fixtureFetch([
+            {
+              match: `pypistats.org/api/packages/${live}/recent`,
+              body: {
+                data: { last_day: 2, last_week: 12, last_month: 110 },
+                package: live,
+                type: "recent_downloads",
+              },
+            },
+          ]),
+          maxRetries: 0,
+          sleep: async () => {},
+        }),
+        discovered,
+      }),
+    );
+    const liveRow = result.records.find((row) => row.source_id === live);
+    expect(liveRow).toMatchObject({
+      carried_forward: false,
+      frozen: false,
+      pypi_last_week_downloads: 12,
+      pypi_last_month_downloads: 110,
+    });
+    const carried = result.records.filter((row) => row.source_id !== live);
+    expect(carried.length).toBe(19);
+    expect(carried.every((row) => row.carried_forward === true)).toBe(true);
   });
 });

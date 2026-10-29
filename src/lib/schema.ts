@@ -105,6 +105,11 @@ export const SourceManifestSchema = z.object({
   freshWithin7dCount: z.number().int().nonnegative().optional(),
   /** Keys actually requested from the live API during this collect. */
   fetchedThisRunCount: z.number().int().nonnegative().optional(),
+  /**
+   * Live fetches this run / eligible keys. Unresolved GitHub repos are excluded
+   * from the denominator. Separate from `coverage` (fresh today / eligible).
+   */
+  fetchedShare: z.number().min(0).max(1).optional(),
   /** @deprecated Legacy alias of freshWithin7dCount, kept so older snapshots still parse. */
   fetchedCount: z.number().int().nonnegative().optional(),
   coverage: z.number().min(0).max(1).optional(),
