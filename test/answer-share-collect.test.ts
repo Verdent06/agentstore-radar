@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { collectAnswerShare } from "../src/commands/answer-share.ts";
+import { buildAnswerShareReport, collectAnswerShare } from "../src/commands/answer-share.ts";
 import {
   answerSharePaths,
   assertNotOverwritingPastAnswerShare,
@@ -124,22 +124,158 @@ describe("collectAnswerShare", () => {
     expect(manifest.ran).toEqual(expect.arrayContaining(["openai", "gemini"]));
   });
 
-  it("writes a skipped-only manifest when no keys are present and never hits the network", async () => {
+  it("fails with no providers configured, writes nothing, and never hits the network", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "answer-share-none-"));
+    const errors: string[] = [];
+    await expect(
+      collectAnswerShare({
+        date: "2026-10-16",
+        dataDir,
+        now: new Date("2026-10-16T12:00:00Z"),
+        prompts,
+        apps,
+        env: {},
+        http: createHttpClient({ fetchImpl: denyNetworkFetch(), maxRetries: 0 }),
+        log: {
+          info() {},
+          warn() {},
+          error(message) {
+            errors.push(message);
+          },
+        },
+      }),
+    ).rejects.toThrow(/no providers configured/);
+    expect(errors).toContain("no providers configured");
+    const paths = answerSharePaths("2026-10-16", dataDir);
+    expect(existsSync(paths.rawDir)).toBe(false);
+    expect(existsSync(paths.normalizedDir)).toBe(false);
+    expect(existsSync(paths.manifestPath)).toBe(false);
+    expect(existsSync(paths.sharesPath)).toBe(false);
+    expect(existsSync(paths.responsesPath)).toBe(false);
+  });
+
+  it("fails and writes nothing when keys are set but every provider call errors", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "answer-share-all-fail-"));
+    const errors: string[] = [];
+    const fetchImpl = async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("api.openai.com")) {
+        return new Response("invalid api key", { status: 401 });
+      }
+      if (url.includes("api.anthropic.com")) {
+        return new Response("rate limited", { status: 429 });
+      }
+      if (url.includes("generativelanguage.googleapis.com")) {
+        return new Response("no credits", { status: 402 });
+      }
+      if (url.includes("api.x.ai")) {
+        throw new Error("network down");
+      }
+      throw new Error(`Unexpected fetch in test: ${url}`);
+    };
+    await expect(
+      collectAnswerShare({
+        date: "2026-10-16",
+        dataDir,
+        now: new Date("2026-10-16T12:00:00Z"),
+        n: 1,
+        prompts: [prompts[0]!],
+        apps,
+        env: {
+          OPENAI_API_KEY: "sk-test",
+          ANTHROPIC_API_KEY: "sk-ant",
+          GEMINI_API_KEY: "gem",
+          XAI_API_KEY: "xai",
+        },
+        http: createHttpClient({ fetchImpl, maxRetries: 0 }),
+        log: {
+          info() {},
+          warn() {},
+          error(message) {
+            errors.push(message);
+          },
+        },
+      }),
+    ).rejects.toThrow(/no provider calls succeeded/);
+    expect(errors).toContain("no provider calls succeeded");
+    const paths = answerSharePaths("2026-10-16", dataDir);
+    expect(existsSync(paths.rawDir)).toBe(false);
+    expect(existsSync(paths.normalizedDir)).toBe(false);
+    expect(existsSync(paths.manifestPath)).toBe(false);
+    expect(existsSync(paths.sharesPath)).toBe(false);
+    expect(existsSync(paths.responsesPath)).toBe(false);
+  });
+
+  it("marks anthropic skipped when openai succeeds and anthropic returns 401", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "answer-share-mixed-"));
+    const fetchImpl = async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("api.openai.com")) {
+        return new Response(JSON.stringify(loadFixture("answer-share/openai-response.json")), { status: 200 });
+      }
+      if (url.includes("api.anthropic.com")) {
+        return new Response("invalid api key", { status: 401 });
+      }
+      throw new Error(`Unexpected fetch in test: ${url}`);
+    };
     const manifest = await collectAnswerShare({
       date: "2026-10-16",
       dataDir,
       now: new Date("2026-10-16T12:00:00Z"),
-      prompts,
+      n: 2,
+      prompts: [prompts[0]!],
       apps,
-      env: {},
-      http: createHttpClient({ fetchImpl: denyNetworkFetch(), maxRetries: 0 }),
+      env: { OPENAI_API_KEY: "sk-test", ANTHROPIC_API_KEY: "sk-ant" },
+      http: createHttpClient({ fetchImpl, maxRetries: 0 }),
       log: silent,
     });
-    expect(manifest.ran).toEqual([]);
-    expect(manifest.skipped).toHaveLength(4);
-    expect(manifest.callsMade).toBe(0);
-    expect(readAnswerShareResponses("2026-10-16", dataDir)).toEqual([]);
+    expect(manifest.ran).toEqual(["openai"]);
+    const anthropic = manifest.providers.find((row) => row.provider === "anthropic");
+    expect(anthropic?.ran).toBe(false);
+    expect(anthropic?.skipped).toBe(true);
+    expect(anthropic?.skipReason).toMatch(/all calls failed: 401/);
+    expect(manifest.skipped).toContain("anthropic");
+    const text = buildAnswerShareReport({ date: "2026-10-16", dataDir, limit: 5 });
+    const ranLine = text.split("\n").find((line) => line.startsWith("Providers ran:"));
+    expect(ranLine).toBe("Providers ran: openai");
+    expect(ranLine).not.toContain("anthropic");
+  });
+
+  it("runs all four providers and writes results when every key is set", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "answer-share-all-"));
+    let calls = 0;
+    const fetchImpl = async (input: string | URL) => {
+      calls += 1;
+      return providerFetch()(input);
+    };
+    const manifest = await collectAnswerShare({
+      date: "2026-10-16",
+      dataDir,
+      now: new Date("2026-10-16T12:00:00Z"),
+      n: 1,
+      prompts,
+      apps,
+      env: {
+        OPENAI_API_KEY: "sk-test",
+        ANTHROPIC_API_KEY: "sk-ant",
+        GEMINI_API_KEY: "gem",
+        XAI_API_KEY: "xai",
+      },
+      http: createHttpClient({ fetchImpl, maxRetries: 0 }),
+      log: silent,
+    });
+    expect(manifest.ran).toEqual(["openai", "anthropic", "gemini", "xai"]);
+    expect(manifest.skipped).toEqual([]);
+    expect(manifest.callsMade).toBe(8);
+    expect(calls).toBe(8);
+    const responses = readAnswerShareResponses("2026-10-16", dataDir);
+    expect(responses).toHaveLength(8);
+    expect(new Set(responses.map((row) => row.provider))).toEqual(
+      new Set(["openai", "anthropic", "gemini", "xai"]),
+    );
+    const paths = answerSharePaths("2026-10-16", dataDir);
+    expect(existsSync(paths.manifestPath)).toBe(true);
+    expect(existsSync(paths.sharesPath)).toBe(true);
   });
 
   it("refuses to overwrite a past day's probe", async () => {
@@ -148,10 +284,11 @@ describe("collectAnswerShare", () => {
       date: "2026-10-14",
       dataDir,
       now: new Date("2026-10-14T12:00:00Z"),
-      prompts,
+      n: 1,
+      prompts: [prompts[0]!],
       apps,
-      env: {},
-      http: createHttpClient({ fetchImpl: denyNetworkFetch(), maxRetries: 0 }),
+      env: { OPENAI_API_KEY: "sk" },
+      http: createHttpClient({ fetchImpl: providerFetch(), maxRetries: 0 }),
       log: silent,
     });
     expect(() => assertNotOverwritingPastAnswerShare("2026-10-14", "2026-10-16", dataDir)).toThrow(/past answer-share/);
