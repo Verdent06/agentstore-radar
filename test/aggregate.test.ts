@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildAggregate, isFreshKpiValue } from "../src/aggregate/build.ts";
+import { buildAggregate, computeHeadlineStats, isFreshKpiValue } from "../src/aggregate/build.ts";
 import { writeDemoSnapshots } from "../src/aggregate/demo.ts";
 import { writeAggregateFiles } from "../src/aggregate/write.ts";
 import { writeNormalized } from "../src/lib/io.ts";
@@ -25,9 +25,11 @@ describe("buildAggregate", () => {
     expect(agg.stats.multiStoreCount).toBeGreaterThan(0);
 
     const brave = agg.apps.find((app) => app.id === "github:brave/brave-search-mcp");
-    expect(brave?.useCount).toBe(88000);
+    expect(brave).toBeDefined();
+    expect(brave).not.toHaveProperty("useCount");
     expect(brave?.category).toBe("search");
-    expect(agg.series[brave!.id]?.u).toEqual([72000, 85000, 88000]);
+    expect(agg.series[brave!.id]).not.toHaveProperty("u");
+    expect(agg.series[brave!.id]).not.toHaveProperty("uc");
 
     const linear = agg.apps.find((app) => app.id === "github:example/linear-mcp");
     if (linear) {
@@ -136,7 +138,7 @@ function kpiApp(
   return row;
 }
 
-function writeKpiSnapshot(dataDir: string, date: string, apps: AppRow[]): void {
+function writeKpiSnapshot(dataDir: string, date: string, apps: AppRow[], partial = false): void {
   const sourceRows = apps.flatMap((app) => [
     emptySourceRow({
       snapshot_date: date,
@@ -161,7 +163,7 @@ function writeKpiSnapshot(dataDir: string, date: string, apps: AppRow[]): void {
     appCount: apps.length,
     sourceRowCount: sourceRows.length,
     sources: [],
-    partial: false,
+    partial,
   };
   writeNormalized(date, sourceRows, apps, manifest, dataDir);
 }
@@ -220,5 +222,52 @@ describe("home KPI freshness", () => {
       expect(agg.stats.totalStars, testCase.id).toBe(7);
       expect(agg.stats.totalNpmWeekly, testCase.id).toBe(9);
     }
+  });
+
+  it("sums only latestCompleteDate rows and ignores a partial latest day", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-kpi-partial-"));
+    writeKpiSnapshot(dataDir, "2026-10-23", [
+      kpiApp("2026-10-23", "github:example/fresh", { stars: 100, npmWeekly: 200 }),
+      kpiApp("2026-10-23", "github:example/leftover", { stars: 50_000, npmWeekly: 80_000 }),
+    ]);
+    writeKpiSnapshot(dataDir, "2026-10-24", [
+      kpiApp("2026-10-24", "github:example/fresh", { stars: 110, npmWeekly: 220 }),
+    ]);
+    writeKpiSnapshot(
+      dataDir,
+      "2026-10-25",
+      [
+        kpiApp("2026-10-25", "github:example/fresh", { stars: 99_000, npmWeekly: 88_000 }),
+        kpiApp("2026-10-25", "github:example/partial-only", { stars: 70_000, npmWeekly: 60_000 }),
+      ],
+      true,
+    );
+
+    const agg = buildAggregate(dataDir, "data_dir");
+    expect(agg.meta.latestCompleteDate).toBe("2026-10-24");
+    expect(agg.meta.latestDate).toBe("2026-10-24");
+    expect(agg.stats.totalStars).toBe(110);
+    expect(agg.stats.totalNpmWeekly).toBe(220);
+    expect(agg.stats.totalStars).not.toBe(50_110);
+    expect(agg.stats.totalStars).not.toBe(99_000);
+    expect(agg.stats.totalNpmWeekly).not.toBe(88_000);
+  });
+
+  it("computeHeadlineStats skips rows whose snapshot_date is not latestCompleteDate", () => {
+    const stats = computeHeadlineStats(
+      [],
+      ["2026-10-23", "2026-10-24", "2026-10-25"],
+      "2026-10-25",
+      "2026-10-24",
+      null,
+      "2026-10-24",
+      [
+        kpiApp("2026-10-23", "github:example/old", { stars: 50_000, npmWeekly: 80_000 }),
+        kpiApp("2026-10-24", "github:example/complete", { stars: 110, npmWeekly: 220 }),
+        kpiApp("2026-10-25", "github:example/partial", { stars: 99_000, npmWeekly: 88_000 }),
+      ],
+    );
+    expect(stats.totalStars).toBe(110);
+    expect(stats.totalNpmWeekly).toBe(220);
   });
 });

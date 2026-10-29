@@ -4,7 +4,6 @@ export const CHART_IDS = ["npm", "github", "gemini"] as const;
 export type ChartId = (typeof CHART_IDS)[number];
 
 export const METRIC_KEYS = [
-  "use_count",
   "stars",
   "npm_weekly_downloads",
   "pypi_last_week_downloads",
@@ -63,7 +62,6 @@ export type AppSummary = {
   forks: number | null;
   openIssues: number | null;
   pushedAt: string | null;
-  useCount: number | null;
   npmWeeklyDownloads: number | null;
   pypiLastWeekDownloads: number | null;
   geminiStars: number | null;
@@ -89,16 +87,15 @@ export type HistoryPoint = {
   geminiGrowth?: string | null;
 };
 
-/** Parallel arrays aligned to `meta.snapshotDates`. Omitted when every value is null. */
+/** Parallel arrays aligned to `meta.snapshotDates`. Omitted when every value is null.
+ * Smithery `use_count` (`u` / `uc`) is frozen at the source and never published. */
 export type CompactSeries = {
   s?: Array<number | null>;
-  u?: Array<number | null>;
   n?: Array<number | null>;
   p?: Array<number | null>;
   g?: Array<number | null>;
   /** 1 when the aligned metric was carried forward from an older fetch. */
   sc?: Array<0 | 1 | null>;
-  uc?: Array<0 | 1 | null>;
   nc?: Array<0 | 1 | null>;
   pc?: Array<0 | 1 | null>;
   /** Stars source (`github`, `gemini-cli`, …) aligned to `meta.snapshotDates`. */
@@ -256,7 +253,6 @@ export const CATEGORY_LABELS: Record<CategorySlug, string> = {
 };
 
 export const METRIC_LABELS: Record<MetricKey, string> = {
-  use_count: "Smithery use count",
   stars: "GitHub stars",
   npm_weekly_downloads: "npm weekly downloads",
   pypi_last_week_downloads: "PyPI weekly downloads",
