@@ -146,8 +146,6 @@ export function seriesToPoints(agg: Aggregate, id: string): HistoryPoint[] {
 
 export function metricFromApp(app: AppSummary, metric: MetricKey): number | null {
   switch (metric) {
-    case "use_count":
-      return app.useCount;
     case "stars":
       return app.stars;
     case "npm_weekly_downloads":
@@ -161,8 +159,6 @@ export function metricFromApp(app: AppSummary, metric: MetricKey): number | null
 
 export function metricFromPoint(point: HistoryPoint, metric: MetricKey): number | null {
   switch (metric) {
-    case "use_count":
-      return null;
     case "stars":
       return point.stars;
     case "npm_weekly_downloads":
@@ -179,15 +175,13 @@ export function metricFromSeries(series: CompactSeries | undefined, metric: Metr
     return null;
   }
   const column =
-    metric === "use_count"
-      ? series.u
-      : metric === "stars"
-        ? series.s
-        : metric === "npm_weekly_downloads"
-          ? series.n
-          : metric === "pypi_last_week_downloads"
-            ? series.p
-            : series.g;
+    metric === "stars"
+      ? series.s
+      : metric === "npm_weekly_downloads"
+        ? series.n
+        : metric === "pypi_last_week_downloads"
+          ? series.p
+          : series.g;
   return column?.[index] ?? null;
 }
 
@@ -196,15 +190,13 @@ export function metricCarriedForward(series: CompactSeries | undefined, metric: 
     return false;
   }
   const column =
-    metric === "use_count"
-      ? series.uc
-      : metric === "stars"
-        ? series.sc
-        : metric === "npm_weekly_downloads"
-          ? series.nc
-          : metric === "pypi_last_week_downloads"
-            ? series.pc
-            : undefined;
+    metric === "stars"
+      ? series.sc
+      : metric === "npm_weekly_downloads"
+        ? series.nc
+        : metric === "pypi_last_week_downloads"
+          ? series.pc
+          : undefined;
   return column?.[index] === 1;
 }
 
@@ -533,7 +525,6 @@ export function categoryTrends(agg: Aggregate, slug?: CategorySlug): CategoryTre
       const appeared =
         series &&
         (series.s?.[index] != null ||
-          series.u?.[index] != null ||
           series.n?.[index] != null ||
           series.p?.[index] != null ||
           series.g?.[index] != null);
@@ -620,24 +611,19 @@ export function competitors(agg: Aggregate, id: string, limit?: number): Array<A
   return scored.slice(0, clampLimit(limit, COMPETITORS_CAP));
 }
 
-function omitUseCount<T extends { useCount?: unknown }>(row: T): Omit<T, "useCount"> {
-  const { useCount: _omitted, ...rest } = row;
-  return rest;
-}
-
 export function appDetail(agg: Aggregate, id: string) {
   const app = findApp(agg, id);
   if (!app) {
     return null;
   }
   return {
-    app: omitUseCount(app),
+    app,
     history: seriesToPoints(agg, app.id),
     ranks: {
       npm_weekly_downloads: rankHistory(agg, app.id, "npm_weekly_downloads"),
       stars: rankHistory(agg, app.id, "stars"),
     },
-    competitors: competitors(agg, app.id, COMPETITORS_CAP).map(omitUseCount),
+    competitors: competitors(agg, app.id, COMPETITORS_CAP),
     answerShare: answerShareForApp(agg.answerShare, app.id),
   };
 }

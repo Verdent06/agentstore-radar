@@ -37,7 +37,7 @@ export default function HomePage() {
         <DemoBanner origin={agg.meta.origin} source={agg.meta.source} latestDate={agg.meta.latestDate} />
       </div>
 
-      <KpiGrid items={formatKpis(agg.stats)} />
+      <KpiGrid items={formatKpis({ ...agg.stats, latestCompleteDate: agg.meta.latestCompleteDate })} />
 
       <div className="mt-8 grid gap-3 md:grid-cols-3">
         {charts.map((card) => (

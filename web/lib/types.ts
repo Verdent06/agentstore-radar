@@ -2,7 +2,6 @@ export const CHART_IDS = ["npm", "github", "gemini"] as const;
 export type ChartId = (typeof CHART_IDS)[number];
 
 export type MetricKey =
-  | "use_count"
   | "stars"
   | "npm_weekly_downloads"
   | "pypi_last_week_downloads"
@@ -48,7 +47,6 @@ export type AppSummary = {
   forks: number | null;
   openIssues: number | null;
   pushedAt: string | null;
-  useCount: number | null;
   npmWeeklyDownloads: number | null;
   pypiLastWeekDownloads: number | null;
   geminiStars: number | null;
@@ -58,12 +56,10 @@ export type AppSummary = {
 
 export type CompactSeries = {
   s?: Array<number | null>;
-  u?: Array<number | null>;
   n?: Array<number | null>;
   p?: Array<number | null>;
   g?: Array<number | null>;
   sc?: Array<0 | 1 | null>;
-  uc?: Array<0 | 1 | null>;
   nc?: Array<0 | 1 | null>;
   pc?: Array<0 | 1 | null>;
   ss?: Array<string | null>;
@@ -211,7 +207,6 @@ export const CATEGORY_LABELS: Record<CategorySlug, string> = {
 };
 
 export const METRIC_LABELS: Record<MetricKey, string> = {
-  use_count: "Smithery use count",
   stars: "GitHub stars",
   npm_weekly_downloads: "npm weekly downloads",
   pypi_last_week_downloads: "PyPI weekly downloads",

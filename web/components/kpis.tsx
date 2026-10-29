@@ -49,11 +49,14 @@ export function formatKpis(stats: {
   totalStars: number;
   snapshotCount: number;
   latestDate: string | null;
+  latestCompleteDate?: string | null;
 }) {
+  const dataDate = stats.latestCompleteDate ?? null;
+  const freshHint = dataDate ? `fresh on ${dataDate}` : "";
   return [
     { label: "Apps tracked", value: formatNumber(stats.appCount), hint: `${stats.snapshotCount} snapshots` },
     { label: "Stores", value: formatNumber(stats.storeCount), hint: stats.latestDate ?? "" },
-    { label: "npm / week", value: formatCount(stats.totalNpmWeekly), hint: "fresh today" },
-    { label: "GitHub stars", value: formatCount(stats.totalStars), hint: "fresh today" },
+    { label: "npm / week", value: formatCount(stats.totalNpmWeekly), hint: freshHint },
+    { label: "GitHub stars", value: formatCount(stats.totalStars), hint: freshHint },
   ];
 }
