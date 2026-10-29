@@ -1,4 +1,33 @@
-import { formatCount, formatNumber } from "@/lib/format";
+import { formatCount, formatNumber, round2sf } from "@/lib/format";
+
+/** Plain homepage state when today's fresh row count fails the coverage guard. */
+export const KPI_HELD_LOW_FRESH_COVERAGE = "held: low fresh coverage";
+
+function acrossFreshPackages(n: number | undefined): string | null {
+  if (n == null || !Number.isFinite(n)) {
+    return null;
+  }
+  return `across ${formatNumber(round2sf(n))} fresh packages`;
+}
+
+function metricHint(dataDate: string | null, freshCount: number | undefined, held: boolean): string {
+  if (held) {
+    return "";
+  }
+  const parts: string[] = [];
+  if (dataDate) {
+    parts.push(`fresh on ${dataDate}`);
+  }
+  const across = acrossFreshPackages(freshCount);
+  if (across) {
+    parts.push(across);
+  }
+  return parts.join(" · ");
+}
+
+function metricValue(held: boolean, total: number): string {
+  return held ? KPI_HELD_LOW_FRESH_COVERAGE : formatCount(total);
+}
 
 export function KpiGrid({
   items,
@@ -50,13 +79,26 @@ export function formatKpis(stats: {
   snapshotCount: number;
   latestDate: string | null;
   latestCompleteDate?: string | null;
+  npmKpiHeld?: boolean;
+  starsKpiHeld?: boolean;
+  npmFreshCount?: number;
+  starsFreshCount?: number;
 }) {
   const dataDate = stats.latestCompleteDate ?? null;
-  const freshHint = dataDate ? `fresh on ${dataDate}` : "";
+  const npmHeld = stats.npmKpiHeld === true;
+  const starsHeld = stats.starsKpiHeld === true;
   return [
     { label: "Apps tracked", value: formatNumber(stats.appCount), hint: `${stats.snapshotCount} snapshots` },
     { label: "Stores", value: formatNumber(stats.storeCount), hint: stats.latestDate ?? "" },
-    { label: "npm / week", value: formatCount(stats.totalNpmWeekly), hint: freshHint },
-    { label: "GitHub stars", value: formatCount(stats.totalStars), hint: freshHint },
+    {
+      label: "npm / week",
+      value: metricValue(npmHeld, stats.totalNpmWeekly),
+      hint: metricHint(dataDate, stats.npmFreshCount, npmHeld),
+    },
+    {
+      label: "GitHub stars",
+      value: metricValue(starsHeld, stats.totalStars),
+      hint: metricHint(dataDate, stats.starsFreshCount, starsHeld),
+    },
   ];
 }
