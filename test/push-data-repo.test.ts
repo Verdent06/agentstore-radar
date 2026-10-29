@@ -50,11 +50,49 @@ describe("push-data-repo.sh", () => {
 
     execFileSync("bash", [script, second, "2026-10-24"], {
       stdio: "pipe",
-      env: { ...process.env, GIT_PUSH_ATTEMPTS: "3", GIT_PUSH_SLEEP_SECONDS: "0" },
+      env: {
+        ...process.env,
+        GITHUB_REF: "refs/heads/main",
+        GIT_PUSH_ATTEMPTS: "3",
+        GIT_PUSH_SLEEP_SECONDS: "0",
+      },
     });
     const log = git(second, "log --oneline origin/main");
     expect(log).toMatch(/snapshot 2026-10-24/);
     expect(log).toMatch(/remote/);
+  });
+
+  it("refuses to push to data main from a collector branch ref", () => {
+    const root = mkdtempSync(join(tmpdir(), "radar-push-block-"));
+    const origin = join(root, "origin.git");
+    execSync(`git init --bare "${origin}"`, { encoding: "utf8" });
+    const checkout = join(root, "checkout");
+    initRepo(checkout);
+    writeFileSync(join(checkout, "README.md"), "data\n");
+    git(checkout, "add README.md");
+    git(checkout, "commit -m init");
+    git(checkout, `remote add origin "${origin}"`);
+    git(checkout, "branch -M main");
+    git(checkout, "push -u origin main");
+    execSync(`git -C "${origin}" symbolic-ref HEAD refs/heads/main`);
+
+    mkdirSync(join(checkout, "data/normalized/2026-10-27"), { recursive: true });
+    writeFileSync(join(checkout, "data/normalized/2026-10-27/manifest.json"), '{"snapshotDate":"2026-10-27"}\n');
+    writeFileSync(join(checkout, "data/normalized/2026-10-27/apps.ndjson"), "{}\n");
+    writeFileSync(join(checkout, "data/normalized/2026-10-27/source_rows.ndjson"), "{}\n");
+
+    expect(() =>
+      execFileSync("bash", [script, checkout, "2026-10-27"], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GITHUB_REF: "refs/heads/cursor/daily-metric-freshness-d9ee",
+          GIT_PUSH_ATTEMPTS: "1",
+          GIT_PUSH_SLEEP_SECONDS: "0",
+        },
+      }),
+    ).toThrow(/refusing to push to data main/);
+    expect(git(checkout, "log --oneline origin/main")).not.toMatch(/snapshot 2026-10-27/);
   });
 
   it("drops a zero-size snapshot file instead of committing it", () => {
@@ -73,7 +111,10 @@ describe("push-data-repo.sh", () => {
 
     mkdirSync(join(checkout, "data/normalized"), { recursive: true });
     writeFileSync(join(checkout, "data/normalized/2026-10-19"), "");
-    const output = execFileSync("bash", [script, checkout, "2026-10-19"], { encoding: "utf8" });
+    const output = execFileSync("bash", [script, checkout, "2026-10-19"], {
+      encoding: "utf8",
+      env: { ...process.env, GITHUB_REF: "refs/heads/main" },
+    });
     expect(output).toMatch(/No snapshot changes|removing broken snapshot file/);
     expect(git(checkout, "log --oneline")).not.toMatch(/2026-10-19/);
   });

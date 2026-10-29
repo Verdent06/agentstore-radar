@@ -54,14 +54,15 @@ describe("report", () => {
           source: "github",
           coverage: 0.86,
           eligibleCount: 30746,
-          freshWithin7dCount: 26558,
-          fetchedThisRunCount: 992,
+          freshTodayCount: 30746,
+          freshWithin7dCount: 30746,
+          fetchedThisRunCount: 30836,
           skipped: false,
         },
       ],
     });
-    expect(withCoverage).toContain("26558/30746 fresh within 7d");
-    expect(withCoverage).toContain("992 this run");
-    expect(withCoverage).not.toMatch(/26558\/30746 eligible/);
+    expect(withCoverage).toContain("30746/30746 fresh today");
+    expect(withCoverage).toContain("30836 this run");
+    expect(withCoverage).not.toMatch(/30746\/30746 eligible/);
   });
 });

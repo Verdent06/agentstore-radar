@@ -1,6 +1,7 @@
 import { HttpError, type HttpClient } from "../lib/http.ts";
 import type { Logger } from "../lib/logger.ts";
 import type { GithubRepoRef } from "../lib/matching.ts";
+import type { SleepFn } from "../lib/retry.ts";
 import type { SourceName, SourceRow, SourceStoppedAt } from "../lib/schema.ts";
 import { errorMessage } from "../lib/util.ts";
 
@@ -28,6 +29,7 @@ export type CollectContext = {
   log: Logger;
   discovered: DiscoveredRefs;
   maxPages?: number;
+  sleep?: SleepFn;
 };
 
 export type SourceResult = {
@@ -39,10 +41,13 @@ export type SourceResult = {
   raw: unknown;
   records: SourceRow[];
   eligibleCount?: number;
+  freshTodayCount?: number;
   freshWithin7dCount?: number;
   fetchedThisRunCount?: number;
   coverage?: number;
   lastFetchedAt?: string;
+  unresolvedCount?: number;
+  unresolvedRepos?: string[];
   truncated?: boolean;
   failed?: boolean;
   error?: string;

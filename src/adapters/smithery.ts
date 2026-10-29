@@ -1,8 +1,31 @@
 import { z } from "zod";
-import { SMITHERY_SERVERS_URL, SMITHERY_STABLE_SEED } from "../lib/config.ts";
-import { HttpError } from "../lib/http.ts";
+import {
+  SMITHERY_FROZEN_DAYS,
+  SMITHERY_SERVERS_URL,
+  SMITHERY_STABLE_SEED,
+  SMITHERY_USECOUNT_PAGE_SIZE,
+  SMITHERY_USECOUNT_RUN_BATCH,
+  SOURCE_FREEZE_RATIO,
+  runBatchSize,
+} from "../lib/config.ts";
+import { computeCoverage } from "../lib/coverage.ts";
+import { evaluateSourceFreeze, isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../lib/frozen.ts";
+import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, githubRepoUrl, parseGithubRepo } from "../lib/matching.ts";
+import {
+  clearCheckpoint,
+  isCarriedForward,
+  loadCheckpoint,
+  loadEntityCache,
+  loadLastFetched,
+  persistCheckpoint,
+  persistEntityCache,
+  persistLastFetched,
+  resumeDailyDueKeys,
+  selectRunBatch,
+} from "../lib/rolling.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
+import { errorMessage, sleep as defaultSleep } from "../lib/util.ts";
 import { CollectSourceError, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "./types.ts";
 
 const ServerSchema = z
@@ -44,7 +67,56 @@ export type SmitheryRawSnapshot = {
   pages: number;
   totalCount?: number;
   servers: unknown[];
+  useCountRefresh?: {
+    endpoint: string;
+    attempted: number;
+    updated: number;
+    unchanged: number;
+    missed: number;
+    frozen: number;
+    truncated: boolean;
+    frozenDays: number;
+    sourceFrozen: boolean;
+    freezeRatio: number;
+  };
 };
+
+export type SmitheryUseCountCache = {
+  useCount: number | null;
+};
+
+export function smitheryUseCountSearchUrl(qualifiedName: string): string {
+  const url = new URL(SMITHERY_SERVERS_URL);
+  url.searchParams.set("q", qualifiedName);
+  url.searchParams.set("pageSize", String(SMITHERY_USECOUNT_PAGE_SIZE));
+  return url.toString();
+}
+
+function listUseCount(item: unknown): number {
+  const parsed = ServerSchema.safeParse(item);
+  return parsed.success && typeof parsed.data.useCount === "number" ? parsed.data.useCount : 0;
+}
+
+function overlayUseCount(item: unknown, useCount: number | null): unknown {
+  if (!item || typeof item !== "object") {
+    return item;
+  }
+  return { ...item, useCount };
+}
+
+function searchUseCount(payload: unknown, qualifiedName: string): number | null | undefined {
+  const parsed = ListResponseSchema.safeParse(payload);
+  if (!parsed.success) {
+    return undefined;
+  }
+  const match = parsed.data.servers
+    .map((item) => ServerSchema.safeParse(item))
+    .find((item) => item.success && item.data.qualifiedName === qualifiedName);
+  if (!match?.success) {
+    return undefined;
+  }
+  return match.data.useCount ?? null;
+}
 
 export function normalizeSmitheryServer(snapshotDate: string, item: unknown): SourceRow | null {
   const parsed = ServerSchema.safeParse(item);
@@ -138,15 +210,182 @@ export const smitheryAdapter: SourceAdapter = {
       });
     }
 
+    const lastFetched = loadLastFetched(ctx.dataDir, "smithery");
+    const cache = loadEntityCache<SmitheryUseCountCache>(ctx.dataDir, "smithery");
+    const checkpoint = loadCheckpoint(ctx.dataDir, "smithery");
+    const sleepFn = ctx.sleep ?? defaultSleep;
+    const fetchedAt = ctx.collectedAt;
+    const frozenDays = smitheryFrozenDays(ctx.env, SMITHERY_FROZEN_DAYS);
+    const previous = loadPreviousMetricHistory(ctx.dataDir, ctx.snapshotDate, "smithery", "use_count", frozenDays);
+
+    const parsedServers = servers.map((item, index) => ({ item, index, parsed: ServerSchema.safeParse(item) }));
+    const indexesByName = new Map<string, number[]>();
+    const listCountByName = new Map<string, number>();
+    const allKeys: string[] = [];
+    for (const row of parsedServers) {
+      if (!row.parsed.success) {
+        continue;
+      }
+      const name = row.parsed.data.qualifiedName;
+      if (!indexesByName.has(name)) {
+        allKeys.push(name);
+        listCountByName.set(name, listUseCount(row.item));
+      }
+      const indexes = indexesByName.get(name) ?? [];
+      indexes.push(row.index);
+      indexesByName.set(name, indexes);
+    }
+    const { dueKeys: unorderedDue, resumed } = resumeDailyDueKeys(allKeys, lastFetched, ctx.snapshotDate, checkpoint);
+    const dueKeys = selectRunBatch(
+      unorderedDue,
+      lastFetched,
+      runBatchSize(ctx.env, "RADAR_SMITHERY_BATCH", SMITHERY_USECOUNT_RUN_BATCH),
+      (key) => {
+        const cached = cache[key]?.useCount;
+        if (typeof cached === "number") {
+          return cached;
+        }
+        return listCountByName.get(key) ?? 0;
+      },
+    );
+
+    let useCountAttempted = 0;
+    let useCountUpdated = 0;
+    let useCountUnchanged = 0;
+    let useCountMissed = 0;
+    let useCountTruncated = false;
+    let processed = 0;
+    const fetchedThisRunNames = new Set<string>();
+
+    ctx.log.info("smithery refreshing useCount via search", {
+      catalog: allKeys.length,
+      due: unorderedDue.length,
+      batch: dueKeys.length,
+      resumed,
+    });
+
+    try {
+      for (const [index, name] of dueKeys.entries()) {
+        persistCheckpoint(ctx.dataDir, "smithery", {
+          snapshotDate: ctx.snapshotDate,
+          dueKeys,
+          nextIndex: index,
+          startedAt: checkpoint?.startedAt ?? fetchedAt,
+        });
+        useCountAttempted += 1;
+        try {
+          const payload = await fetchJsonWithRateLimitWait<unknown>(ctx.http, smitheryUseCountSearchUrl(name), {
+            sleep: sleepFn,
+            init: { headers },
+            onWait(waitMs, attempt, error) {
+              ctx.log.warn("smithery waiting out rate limit", { waitMs, attempt, status: error.status, name });
+            },
+          });
+          const live = searchUseCount(payload, name);
+          if (live === undefined) {
+            useCountMissed += 1;
+          } else {
+            const previousValue = cache[name]?.useCount;
+            cache[name] = { useCount: live };
+            lastFetched[name] = fetchedAt;
+            fetchedThisRunNames.add(name);
+            if (previousValue === live) {
+              useCountUnchanged += 1;
+            } else {
+              useCountUpdated += 1;
+            }
+            for (const serverIndex of indexesByName.get(name) ?? []) {
+              servers[serverIndex] = overlayUseCount(servers[serverIndex], live);
+            }
+          }
+        } catch (error) {
+          if (error instanceof HttpError && (error.status === 429 || error.status === 403 || error.cloudflare)) {
+            throw error;
+          }
+          useCountMissed += 1;
+          ctx.log.warn("smithery useCount search failed", { name, error: String(error) });
+        }
+        processed = index + 1;
+        persistLastFetched(ctx.dataDir, "smithery", lastFetched);
+        persistEntityCache(ctx.dataDir, "smithery", cache);
+        if ((index + 1) % 500 === 0 || index + 1 === dueKeys.length) {
+          ctx.log.info("smithery useCount progress", {
+            done: index + 1,
+            total: dueKeys.length,
+            updated: useCountUpdated,
+            missed: useCountMissed,
+          });
+        }
+      }
+      clearCheckpoint(ctx.dataDir, "smithery");
+    } catch (error) {
+      const rateLimited =
+        error instanceof HttpError && (error.status === 429 || error.status === 403 || error.cloudflare);
+      if (rateLimited || useCountAttempted > 0) {
+        useCountTruncated = true;
+        persistCheckpoint(ctx.dataDir, "smithery", {
+          snapshotDate: ctx.snapshotDate,
+          dueKeys,
+          nextIndex: processed,
+          startedAt: checkpoint?.startedAt ?? fetchedAt,
+        });
+        ctx.log.warn(
+          rateLimited
+            ? "smithery useCount refresh stopped after rate limit; keeping search hits and list fallback"
+            : "smithery useCount refresh stopped; keeping search hits and list fallback",
+          {
+            attempted: useCountAttempted,
+            updated: useCountUpdated,
+            error: rateLimited ? errorMessage(error) : String(error),
+          },
+        );
+      } else {
+        ctx.log.warn("smithery useCount refresh failed; stamping list useCount as not live", { error: String(error) });
+      }
+    }
+
+    const unchangedByName = new Map<string, boolean>();
+    for (const name of allKeys) {
+      const useCount = cache[name]?.useCount ?? listCountByName.get(name) ?? null;
+      unchangedByName.set(
+        name,
+        isUnchangedForDays(useCount, previous.byId.get(name) ?? [], previous.dates, frozenDays),
+      );
+    }
+    const freeze = evaluateSourceFreeze(
+      allKeys.map((name) => unchangedByName.get(name) === true),
+      SOURCE_FREEZE_RATIO,
+    );
+    const frozenByName = new Map(allKeys.map((name, index) => [name, freeze.freezeRow[index] === true]));
+
     const records: SourceRow[] = [];
     let invalid = 0;
+    let frozenCount = 0;
     for (const item of servers) {
-      const row = normalizeSmitheryServer(ctx.snapshotDate, item);
+      const parsed = ServerSchema.safeParse(item);
+      if (!parsed.success) {
+        invalid += 1;
+        continue;
+      }
+      const name = parsed.data.qualifiedName;
+      const cached = cache[name];
+      const fetched = lastFetched[name];
+      const useCount = cached?.useCount ?? parsed.data.useCount ?? null;
+      const frozen = frozenByName.get(name) === true;
+      // Search hits are not fresh while the catalog is source-frozen.
+      const liveToday =
+        Boolean(fetched && !isCarriedForward(fetched, ctx.snapshotDate, fetchedAt) && cached) && !frozen;
+      const row = normalizeSmitheryServer(ctx.snapshotDate, overlayUseCount(item, useCount));
       if (!row) {
         invalid += 1;
         continue;
       }
-      records.push(withObservation(row, ctx.collectedAt, false));
+      const previousFetchedAt = previous.byId.get(name)?.at(-1)?.fetchedAt ?? null;
+      const observationAt = liveToday ? fetchedAt : frozen ? (previousFetchedAt ?? fetched ?? null) : (fetched ?? null);
+      if (frozen) {
+        frozenCount += 1;
+      }
+      records.push(withObservation(row, observationAt, !liveToday, frozen));
       if (row.repo_url) {
         const ref = parseGithubRepo(row.repo_url);
         if (ref) {
@@ -161,7 +400,31 @@ export const smitheryAdapter: SourceAdapter = {
       throw new Error(`smithery validation failed for ${invalid}/${servers.length} rows`);
     }
 
-    ctx.log.info("smithery collected", { pages, rows: records.length, totalCount, truncated });
+    const fetchedThisRunCount = [...fetchedThisRunNames].filter((name) => frozenByName.get(name) !== true).length;
+    const freshTodayCount = records.filter((row) => row.carried_forward !== true).length;
+    const { coverage } = computeCoverage(records.length, freshTodayCount);
+    if (freeze.sourceFrozen) {
+      ctx.log.warn("smithery useCount source-frozen; stamping unchanged rows frozen/carried_forward, not fresh", {
+        frozen: frozenCount,
+        rows: records.length,
+        frozenDays,
+        unchanged: freeze.unchangedCount,
+        ratio: freeze.ratio,
+      });
+    }
+    ctx.log.info("smithery collected", {
+      pages,
+      rows: records.length,
+      totalCount,
+      truncated: truncated || useCountTruncated,
+      useCountAttempted,
+      useCountUpdated,
+      useCountUnchanged,
+      fetchedThisRunCount,
+      frozenCount,
+      sourceFrozen: freeze.sourceFrozen,
+      useCountTruncated,
+    });
     const raw: SmitheryRawSnapshot = {
       endpoint: SMITHERY_SERVERS_URL,
       fetchedAt: ctx.collectedAt,
@@ -169,16 +432,32 @@ export const smitheryAdapter: SourceAdapter = {
       pages,
       totalCount,
       servers,
+      useCountRefresh: {
+        endpoint: `${SMITHERY_SERVERS_URL}?q=`,
+        attempted: useCountAttempted,
+        updated: useCountUpdated,
+        unchanged: useCountUnchanged,
+        missed: useCountMissed,
+        frozen: frozenCount,
+        truncated: useCountTruncated,
+        frozenDays,
+        sourceFrozen: freeze.sourceFrozen,
+        freezeRatio: freeze.ratio,
+      },
     };
     return {
       source: "smithery",
       collectedAt: ctx.collectedAt,
       rowCount: records.length,
       skipped: false,
-      truncated,
+      truncated: truncated || useCountTruncated,
       failed: false,
       error: stoppedAt?.error,
       stoppedAt,
+      eligibleCount: records.length,
+      fetchedThisRunCount,
+      freshTodayCount,
+      coverage,
       raw,
       records,
     };

@@ -62,6 +62,14 @@ if ! git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
   fi
 fi
 
+COLLECTOR_REF="${GITHUB_REF:-}"
+if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
+  if [[ -n "$COLLECTOR_REF" && "$COLLECTOR_REF" != "refs/heads/main" && "$COLLECTOR_REF" != "refs/heads/master" ]]; then
+    echo "push: refusing to push to data ${BRANCH} from collector ref ${COLLECTOR_REF}" >&2
+    exit 1
+  fi
+fi
+
 push_failed=0
 for attempt in $(seq 1 "$ATTEMPTS"); do
   git fetch origin "$BRANCH" --quiet || git fetch origin --quiet

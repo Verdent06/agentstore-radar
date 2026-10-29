@@ -1,5 +1,7 @@
 import { z } from "zod";
-import { GEMINI_EXTENSIONS_URL } from "../lib/config.ts";
+import { GEMINI_EXTENSIONS_URL, SMITHERY_FROZEN_DAYS, SOURCE_FREEZE_RATIO } from "../lib/config.ts";
+import { computeCoverage } from "../lib/coverage.ts";
+import { evaluateSourceFreeze, isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../lib/frozen.ts";
 import { appIdFromIdentity, githubRepoUrl, parseGithubRepo } from "../lib/matching.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
 import type { CollectContext, SourceAdapter, SourceResult } from "./types.ts";
@@ -25,6 +27,13 @@ export type GeminiRawSnapshot = {
   endpoint: string;
   fetchedAt: string;
   extensions: unknown[];
+  freeze?: {
+    frozen: number;
+    sourceFrozen: boolean;
+    unchanged: number;
+    frozenDays: number;
+    freezeRatio: number;
+  };
 };
 
 export function normalizeGeminiExtension(snapshotDate: string, item: unknown): SourceRow | null {
@@ -64,8 +73,10 @@ export const geminiAdapter: SourceAdapter = {
       throw new Error("gemini-cli extensions.json was not a JSON array");
     }
     const extensions = ctx.maxPages ? payload.slice(0, ctx.maxPages) : payload;
+    const frozenDays = smitheryFrozenDays(ctx.env, SMITHERY_FROZEN_DAYS);
+    const previous = loadPreviousMetricHistory(ctx.dataDir, ctx.snapshotDate, "gemini-cli", "stars", frozenDays);
 
-    const records: SourceRow[] = [];
+    const pending: Array<{ row: SourceRow; unchanged: boolean }> = [];
     let invalid = 0;
     for (const item of extensions) {
       const row = normalizeGeminiExtension(ctx.snapshotDate, item);
@@ -73,13 +84,16 @@ export const geminiAdapter: SourceAdapter = {
         invalid += 1;
         continue;
       }
-      records.push(withObservation(row, ctx.collectedAt, false));
       if (row.repo_url) {
         const ref = parseGithubRepo(row.repo_url);
         if (ref) {
           ctx.discovered.githubRepos.set(`${ref.owner}/${ref.repo}`, ref);
         }
       }
+      pending.push({
+        row,
+        unchanged: isUnchangedForDays(row.stars, previous.byId.get(row.source_id) ?? [], previous.dates, frozenDays),
+      });
     }
     if (invalid > 0) {
       ctx.log.warn("gemini-cli dropped invalid rows", { invalid, total: extensions.length });
@@ -88,17 +102,55 @@ export const geminiAdapter: SourceAdapter = {
       throw new Error(`gemini-cli validation failed for ${invalid}/${extensions.length} rows`);
     }
 
-    ctx.log.info("gemini-cli collected", { rows: records.length });
+    const freeze = evaluateSourceFreeze(
+      pending.map((row) => row.unchanged),
+      SOURCE_FREEZE_RATIO,
+    );
+    const records: SourceRow[] = [];
+    let frozenCount = 0;
+    for (const [index, item] of pending.entries()) {
+      const frozen = freeze.freezeRow[index] === true;
+      const history = previous.byId.get(item.row.source_id) ?? [];
+      const previousFetchedAt = history.at(-1)?.fetchedAt ?? history.at(-1)?.date ?? null;
+      if (frozen) {
+        frozenCount += 1;
+      }
+      records.push(withObservation(item.row, frozen ? previousFetchedAt : ctx.collectedAt, frozen, frozen));
+    }
+    const freshTodayCount = records.filter((row) => row.carried_forward !== true).length;
+    const fetchedThisRunCount = records.length - frozenCount;
+    const { coverage } = computeCoverage(records.length, freshTodayCount);
+    if (freeze.sourceFrozen) {
+      ctx.log.warn("gemini-cli stars source-frozen; stamping unchanged rows frozen/carried_forward, not fresh", {
+        frozen: frozenCount,
+        rows: records.length,
+        frozenDays,
+        unchanged: freeze.unchangedCount,
+      });
+    }
+
+    ctx.log.info("gemini-cli collected", { rows: records.length, frozenCount, sourceFrozen: freeze.sourceFrozen });
     const raw: GeminiRawSnapshot = {
       endpoint: GEMINI_EXTENSIONS_URL,
       fetchedAt: ctx.collectedAt,
       extensions,
+      freeze: {
+        frozen: frozenCount,
+        sourceFrozen: freeze.sourceFrozen,
+        unchanged: freeze.unchangedCount,
+        frozenDays,
+        freezeRatio: freeze.ratio,
+      },
     };
     return {
       source: "gemini-cli",
       collectedAt: ctx.collectedAt,
       rowCount: records.length,
       skipped: false,
+      eligibleCount: records.length,
+      fetchedThisRunCount,
+      freshTodayCount,
+      coverage,
       raw,
       records,
     };

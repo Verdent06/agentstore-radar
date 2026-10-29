@@ -38,6 +38,8 @@ export const SourceRowSchema = z.object({
   verified: z.boolean().nullable(),
   fetched_at: z.string().nullable().optional().default(null),
   carried_forward: z.boolean().optional().default(false),
+  /** True when the live upstream value has not moved for N snapshot days. */
+  frozen: z.boolean().optional().default(false),
 });
 
 export type SourceRow = z.infer<typeof SourceRowSchema>;
@@ -97,6 +99,8 @@ export const SourceManifestSchema = z.object({
   rawFile: z.string().optional(),
   collectedAt: z.string(),
   eligibleCount: z.number().int().nonnegative().optional(),
+  /** Keys whose last fetch is on this UTC snapshot date. Used for daily coverage. */
+  freshTodayCount: z.number().int().nonnegative().optional(),
   /** Keys whose last fetch is within the 7-day rolling window. Not "fetched this run". */
   freshWithin7dCount: z.number().int().nonnegative().optional(),
   /** Keys actually requested from the live API during this collect. */
@@ -105,6 +109,9 @@ export const SourceManifestSchema = z.object({
   fetchedCount: z.number().int().nonnegative().optional(),
   coverage: z.number().min(0).max(1).optional(),
   lastFetchedAt: z.string().optional(),
+  /** GraphQL NOT_FOUND / unresolved aliases. Excluded from freshTodayCount. */
+  unresolvedCount: z.number().int().nonnegative().optional(),
+  unresolvedRepos: z.array(z.string()).optional(),
   failed: z.boolean().optional(),
   error: z.string().optional(),
   truncated: z.boolean().optional(),
@@ -133,6 +140,10 @@ export const SnapshotManifestSchema = z.object({
       previousCollectedAt: z.string().optional(),
       previousRunId: z.string().optional(),
       previousGitSha: z.string().optional(),
+      previousCommit: z.string().optional(),
+      runId: z.string().optional(),
+      reason: z.string().optional(),
+      newSha: z.string().optional(),
     })
     .optional(),
 });
@@ -160,6 +171,7 @@ export function emptySourceRow(partial: Partial<SourceRow> & Pick<SourceRow, "sn
     verified: null,
     fetched_at: null,
     carried_forward: false,
+    frozen: false,
     ...partial,
   };
 }
@@ -168,11 +180,13 @@ export function withObservation(
   row: SourceRow,
   fetchedAt: string | null | undefined,
   carriedForward: boolean,
+  frozen = false,
 ): SourceRow {
   return {
     ...row,
     fetched_at: fetchedAt ?? null,
     carried_forward: carriedForward,
+    frozen,
   };
 }
 

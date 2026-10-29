@@ -16,10 +16,10 @@ export const COLLECTOR_MISSED_LABEL = "collector-missed";
 
 export const HOST_MIN_INTERVAL_MS: Record<string, number> = {
   "registry.modelcontextprotocol.io": 150,
-  "api.smithery.ai": 150,
-  "api.github.com": 250,
-  "api.npmjs.org": 400,
-  "pypistats.org": 500,
+  "api.smithery.ai": 120,
+  "api.github.com": 200,
+  "api.npmjs.org": 1000,
+  "pypistats.org": 400,
   "geminicli.com": 200,
   "api.openai.com": 250,
   "api.anthropic.com": 250,
@@ -37,6 +37,34 @@ export const PYPISTATS_BASE = "https://pypistats.org/api/packages";
 export const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 
 export const NPM_BULK_LIMIT = 128;
+export const NPM_SCOPED_MIN_INTERVAL_MS = 1200;
+export const NPM_BULK_MIN_INTERVAL_MS = 500;
+export const PYPI_MIN_INTERVAL_MS = 400;
+/** Per-run enrichment caps so one collect finishes inside the Actions time limit. */
+export const GITHUB_RUN_BATCH = 4000;
+export const NPM_RUN_BATCH = 1500;
+export const PYPI_RUN_BATCH = 800;
+export const SMITHERY_USECOUNT_RUN_BATCH = 400;
+
+export function runBatchSize(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
+  const raw = env[key]?.trim();
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
+export const SMITHERY_USECOUNT_PAGE_SIZE = 10;
+/** Snapshot days of identical catalog metrics (including today) before a value can be frozen. */
+export const SMITHERY_FROZEN_DAYS = 3;
+/** Treat the whole source as frozen when at least this share of rows is unchanged for N days. */
+export const SOURCE_FREEZE_RATIO = 0.95;
+/** Mark npm truncated/partial when more than this share of due keys fail in a completed pass. */
+export const NPM_PARTIAL_FAILURE_RATIO = 0.2;
+export const RATE_LIMIT_MIN_WAIT_MS = 15_000;
 export const GITHUB_GRAPHQL_BATCH = 50;
 
 export const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";

@@ -20,6 +20,7 @@ export type ReportResult = {
     source: string;
     coverage?: number;
     eligibleCount?: number;
+    freshTodayCount?: number;
     freshWithin7dCount?: number;
     fetchedThisRunCount?: number;
     skipped: boolean;
@@ -114,6 +115,7 @@ export function coverageFromManifest(manifest: SnapshotManifest): ReportResult["
     source: source.source,
     coverage: source.coverage,
     eligibleCount: source.eligibleCount,
+    freshTodayCount: source.freshTodayCount,
     freshWithin7dCount: sourceFreshWithin7dCount(source),
     fetchedThisRunCount: source.fetchedThisRunCount,
     skipped: source.skipped,
@@ -162,7 +164,7 @@ export function formatReport(report: ReportResult): string {
     for (const source of report.coverage) {
       const window =
         source.eligibleCount != null
-          ? `  ${source.freshWithin7dCount ?? 0}/${source.eligibleCount} fresh within 7d`
+          ? `  ${source.freshTodayCount ?? source.freshWithin7dCount ?? 0}/${source.eligibleCount} fresh today`
           : "";
       const thisRun = source.fetchedThisRunCount != null ? `  ${source.fetchedThisRunCount} this run` : "";
       const skipped = source.skipped ? "  (skipped)" : "";

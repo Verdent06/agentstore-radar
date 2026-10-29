@@ -82,6 +82,7 @@ describe("health", () => {
       source: "github",
       coverage: 0.2,
       eligibleCount: 100,
+      freshTodayCount: 20,
       freshWithin7dCount: 20,
     });
   });
