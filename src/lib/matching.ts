@@ -8,7 +8,8 @@ const IO_GITHUB_NAME_RE = /^io\.github\.([^/]+)\/(.+)$/i;
 const RESERVED_GITHUB_OWNERS = new Set(["orgs", "users", "settings", "explore"]);
 
 /**
- * Tie-break for package ownership and duplicate Gemini rows.
+ * Last resort when package backing, fork status, and repo-name match all tie,
+ * and the order for duplicate Gemini rows.
  * `github:` identities win, then UTF-16 code-unit order (not locale order).
  * Documented in README "Entity matching".
  */
@@ -26,8 +27,29 @@ function compareAppId(a: string, b: string): number {
   return 0;
 }
 
-function pickOwner(ids: string[]): string {
-  return ids.slice().sort(compareAppId)[0]!;
+type PackageEcosystem = "npm" | "pypi";
+
+function unscopedPackageName(pkg: string, ecosystem: PackageEcosystem): string {
+  const lower = pkg.toLowerCase();
+  const bare = lower.startsWith("@") ? (lower.split("/")[1] ?? lower.slice(1)) : lower;
+  return ecosystem === "pypi" ? bare.replace(/_/g, "-") : bare;
+}
+
+function repoNameOf(appId: string): string | null {
+  if (!appId.startsWith("github:")) {
+    return null;
+  }
+  const name = appId.slice("github:".length).split("/")[1]?.toLowerCase();
+  return name && name.length > 0 ? name : null;
+}
+
+function repoMatchesPackage(appId: string, pkg: string, ecosystem: PackageEcosystem): boolean {
+  const repo = repoNameOf(appId);
+  if (!repo) {
+    return false;
+  }
+  const repoNorm = ecosystem === "pypi" ? repo.replace(/_/g, "-") : repo;
+  return repoNorm === unscopedPackageName(pkg, ecosystem);
 }
 
 function parseGithubPath(ownerRaw: string, repoRaw: string): GithubRepoRef | null {
@@ -137,6 +159,7 @@ type LinkableRow = {
   repo_url?: string | null;
   npm_package?: string | null;
   pypi_package?: string | null;
+  fork?: boolean | null;
 };
 
 function canonicalizeIdentity<T extends LinkableRow>(row: T): T {
@@ -230,8 +253,78 @@ function claimantAppId(appId: string, ecosystem: "npm" | "pypi", pkg: string): s
   return appId;
 }
 
-function packageField(ecosystem: "npm" | "pypi"): "npm_package" | "pypi_package" {
+function packageField(ecosystem: PackageEcosystem): "npm_package" | "pypi_package" {
   return ecosystem === "npm" ? "npm_package" : "pypi_package";
+}
+
+function supportScore(appId: string, pkg: string, ecosystem: PackageEcosystem, rows: LinkableRow[]): number {
+  const field = packageField(ecosystem);
+  let registry = 0;
+  let github = false;
+  for (const row of rows) {
+    if (row.source === "npm" || row.source === "pypi") {
+      continue;
+    }
+    if (row.source === "github") {
+      if (row.app_id === appId) {
+        github = true;
+      }
+      continue;
+    }
+    const named = canonicalPackageName(row[field], ecosystem);
+    if (named === pkg && claimantAppId(row.app_id, ecosystem, pkg) === appId) {
+      registry += 1;
+    }
+  }
+  return registry + (github ? 1 : 0);
+}
+
+function isKnownFork(appId: string, pkg: string, ecosystem: PackageEcosystem, rows: LinkableRow[]): boolean {
+  const field = packageField(ecosystem);
+  for (const row of rows) {
+    if (row.fork !== true) {
+      continue;
+    }
+    if (row.app_id === appId) {
+      return true;
+    }
+    if (row.source === "npm" || row.source === "pypi" || row.source === "github") {
+      continue;
+    }
+    const named = canonicalPackageName(row[field], ecosystem);
+    if (named === pkg && claimantAppId(row.app_id, ecosystem, pkg) === appId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function comparePackageOwners(
+  a: string,
+  b: string,
+  pkg: string,
+  ecosystem: PackageEcosystem,
+  rows: LinkableRow[],
+): number {
+  const bySupport = supportScore(b, pkg, ecosystem, rows) - supportScore(a, pkg, ecosystem, rows);
+  if (bySupport !== 0) {
+    return bySupport;
+  }
+  const forkA = isKnownFork(a, pkg, ecosystem, rows) ? 1 : 0;
+  const forkB = isKnownFork(b, pkg, ecosystem, rows) ? 1 : 0;
+  if (forkA !== forkB) {
+    return forkA - forkB;
+  }
+  const nameA = repoMatchesPackage(a, pkg, ecosystem) ? 0 : 1;
+  const nameB = repoMatchesPackage(b, pkg, ecosystem) ? 0 : 1;
+  if (nameA !== nameB) {
+    return nameA - nameB;
+  }
+  return compareAppId(a, b);
+}
+
+function pickPackageOwner(ids: string[], pkg: string, ecosystem: PackageEcosystem, rows: LinkableRow[]): string {
+  return ids.slice().sort((a, b) => comparePackageOwners(a, b, pkg, ecosystem, rows))[0]!;
 }
 
 export function relinkPackageAppIds<T extends LinkableRow>(rows: T[]): T[] {
@@ -252,7 +345,7 @@ export function relinkPackageAppIds<T extends LinkableRow>(rows: T[]): T[] {
     }
     const chosen = new Map<string, string>();
     for (const [pkg, ids] of claims) {
-      chosen.set(pkg, pickOwner([...ids]));
+      chosen.set(pkg, pickPackageOwner([...ids], pkg, ecosystem, rows));
     }
     owners.set(ecosystem, chosen);
   }

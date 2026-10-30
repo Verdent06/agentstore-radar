@@ -15,6 +15,7 @@ function row(partial: {
   npm_package?: string | null;
   pypi_package?: string | null;
   npm_weekly_downloads?: number | null;
+  fork?: boolean | null;
 }): SourceRow {
   return emptySourceRow({
     snapshot_date: DATE,
@@ -108,6 +109,147 @@ describe("npm package ownership", () => {
 
     const packageOnly = appsFrom(scenarios[42]!).map((app) => app.app_id);
     expect(packageOnly.sort()).toEqual(["github:example/only", "mcp-registry:com.example/only"]);
+  });
+
+  it("gives xcodebuildmcp to getsentry rather than the fork", () => {
+    const apps = appsFrom([
+      row({
+        source: "mcp-registry",
+        app_id: "github:cameroncooke/xcodebuildmcp",
+        source_id: "io.github.cameroncooke/XcodeBuildMCP",
+        name: "XcodeBuildMCP",
+        repo_url: "https://github.com/cameroncooke/XcodeBuildMCP",
+        npm_package: "xcodebuildmcp",
+        fork: true,
+      }),
+      row({
+        source: "github",
+        app_id: "github:cameroncooke/xcodebuildmcp",
+        source_id: "cameroncooke/xcodebuildmcp",
+        name: "cameroncooke/XcodeBuildMCP",
+        repo_url: "https://github.com/cameroncooke/XcodeBuildMCP",
+        fork: true,
+      }),
+      row({
+        source: "mcp-registry",
+        app_id: "github:getsentry/xcodebuildmcp",
+        source_id: "com.xcodebuildmcp/XcodeBuildMCP",
+        name: "XcodeBuildMCP",
+        repo_url: "https://github.com/getsentry/XcodeBuildMCP",
+        npm_package: "xcodebuildmcp",
+        fork: false,
+      }),
+      row({
+        source: "github",
+        app_id: "github:getsentry/xcodebuildmcp",
+        source_id: "getsentry/xcodebuildmcp",
+        name: "getsentry/XcodeBuildMCP",
+        repo_url: "https://github.com/getsentry/XcodeBuildMCP",
+        fork: false,
+      }),
+      row({
+        source: "npm",
+        app_id: "npm:xcodebuildmcp",
+        npm_package: "xcodebuildmcp",
+        npm_weekly_downloads: 4200,
+      }),
+    ]);
+    expect(apps.find((app) => app.app_id === "github:getsentry/xcodebuildmcp")).toMatchObject({
+      npm_package: "xcodebuildmcp",
+      npm_weekly_downloads: 4200,
+    });
+    expect(apps.find((app) => app.app_id === "github:cameroncooke/xcodebuildmcp")?.npm_package).toBeNull();
+  });
+
+  it("gives lithtrix-mcp to the repo with more registry rows and a GitHub row", () => {
+    const apps = appsFrom([
+      row({
+        source: "mcp-registry",
+        app_id: "github:lithtrix/api",
+        source_id: "io.github.learningloons-hash/lithtrix",
+        name: "lithtrix",
+        repo_url: "https://github.com/lithtrix/api",
+        npm_package: "lithtrix-mcp",
+      }),
+      row({
+        source: "mcp-registry",
+        app_id: "github:lithtrix/lithtrix-mcp",
+        source_id: "ai.lithtrix/lithtrix-mcp",
+        name: "Lithtrix",
+        repo_url: "https://github.com/lithtrix/lithtrix-mcp",
+        npm_package: "lithtrix-mcp",
+      }),
+      row({
+        source: "mcp-registry",
+        app_id: "github:lithtrix/lithtrix-mcp",
+        source_id: "io.github.lithtrix/lithtrix",
+        name: "lithtrix",
+        repo_url: "https://github.com/lithtrix/lithtrix-mcp",
+        npm_package: "lithtrix-mcp",
+      }),
+      row({
+        source: "github",
+        app_id: "github:lithtrix/lithtrix-mcp",
+        source_id: "lithtrix/lithtrix-mcp",
+        name: "lithtrix/lithtrix-mcp",
+        repo_url: "https://github.com/lithtrix/lithtrix-mcp",
+      }),
+      row({
+        source: "npm",
+        app_id: "npm:lithtrix-mcp",
+        npm_package: "lithtrix-mcp",
+        npm_weekly_downloads: 80,
+      }),
+    ]);
+    expect(apps.find((app) => app.app_id === "github:lithtrix/lithtrix-mcp")).toMatchObject({
+      npm_package: "lithtrix-mcp",
+      npm_weekly_downloads: 80,
+    });
+    expect(apps.find((app) => app.app_id === "github:lithtrix/api")?.npm_package).toBeNull();
+  });
+
+  it("lets a higher support count beat a non-fork whose repo name matches", () => {
+    const apps = appsFrom([
+      row({
+        source: "mcp-registry",
+        app_id: "github:aaa/widget",
+        source_id: "com.example/widget",
+        repo_url: "https://github.com/aaa/widget",
+        npm_package: "widget",
+        fork: false,
+      }),
+      row({
+        source: "github",
+        app_id: "github:aaa/widget",
+        source_id: "aaa/widget",
+        repo_url: "https://github.com/aaa/widget",
+        fork: false,
+      }),
+      row({
+        source: "mcp-registry",
+        app_id: "github:zzz/other",
+        source_id: "com.example/other-a",
+        repo_url: "https://github.com/zzz/other",
+        npm_package: "widget",
+        fork: true,
+      }),
+      row({
+        source: "mcp-registry",
+        app_id: "github:zzz/other",
+        source_id: "com.example/other-b",
+        repo_url: "https://github.com/zzz/other",
+        npm_package: "widget",
+        fork: true,
+      }),
+      row({
+        source: "github",
+        app_id: "github:zzz/other",
+        source_id: "zzz/other",
+        repo_url: "https://github.com/zzz/other",
+        fork: true,
+      }),
+    ]);
+    expect(apps.find((app) => app.npm_package === "widget")?.app_id).toBe("github:zzz/other");
   });
 });
 
