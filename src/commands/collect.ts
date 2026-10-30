@@ -20,7 +20,7 @@ import {
   writeNormalized,
 } from "../lib/io.ts";
 import { createLogger, type Logger } from "../lib/logger.ts";
-import { relinkPackageAppIds } from "../lib/matching.ts";
+import { linkSourceRows } from "../lib/matching.ts";
 import { mergeApps } from "../lib/merge.ts";
 import { retryAsync, type SleepFn } from "../lib/retry.ts";
 import type { SnapshotManifest, SourceManifest, SourceName, SourceRow } from "../lib/schema.ts";
@@ -185,7 +185,7 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
   const failedSources = results.filter((result) => result.failed).map((result) => result.source);
   const incompleteSources = results.filter(sourceIncomplete).map((result) => result.source);
   const completedSources = results.filter(sourceCompleted).map((result) => result.source);
-  const sourceRows: SourceRow[] = relinkPackageAppIds(results.flatMap((result) => result.records));
+  const sourceRows: SourceRow[] = linkSourceRows(results.flatMap((result) => result.records));
   if (sourceRows.length === 0) {
     log.error("all sources failed or produced no rows; not writing an empty snapshot", {
       date: snapshotDate,

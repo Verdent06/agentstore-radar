@@ -3,26 +3,87 @@ export type GithubRepoRef = {
   repo: string;
 };
 
-const GITHUB_REPO_RE =
-  /(?:https?:\/\/)?(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/i;
-const GITHUB_SSH_RE = /git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/i;
+const GITHUB_SCP_RE = /^(?:ssh:\/\/)?git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/i;
 const IO_GITHUB_NAME_RE = /^io\.github\.([^/]+)\/(.+)$/i;
+const RESERVED_GITHUB_OWNERS = new Set(["orgs", "users", "settings", "explore"]);
+
+/**
+ * Tie-break for package ownership and duplicate Gemini rows.
+ * `github:` identities win, then UTF-16 code-unit order (not locale order).
+ * Documented in README "Entity matching".
+ */
+function compareAppId(a: string, b: string): number {
+  const rank = (a.startsWith("github:") ? 0 : 1) - (b.startsWith("github:") ? 0 : 1);
+  if (rank !== 0) {
+    return rank;
+  }
+  if (a < b) {
+    return -1;
+  }
+  if (a > b) {
+    return 1;
+  }
+  return 0;
+}
+
+function pickOwner(ids: string[]): string {
+  return ids.slice().sort(compareAppId)[0]!;
+}
+
+function parseGithubPath(ownerRaw: string, repoRaw: string): GithubRepoRef | null {
+  let owner: string;
+  let repo: string;
+  try {
+    owner = decodeURIComponent(ownerRaw).toLowerCase();
+    repo = decodeURIComponent(repoRaw).replace(/\.git$/i, "").toLowerCase();
+  } catch {
+    return null;
+  }
+  if (!owner || !repo || RESERVED_GITHUB_OWNERS.has(owner)) {
+    return null;
+  }
+  if (!/^[a-z0-9_.-]+$/.test(owner) || !/^[a-z0-9_.-]+$/.test(repo)) {
+    return null;
+  }
+  return { owner, repo };
+}
 
 export function parseGithubRepo(value: string | undefined | null): GithubRepoRef | null {
   if (!value) {
     return null;
   }
   const trimmed = value.trim();
-  const match = GITHUB_SSH_RE.exec(trimmed) ?? GITHUB_REPO_RE.exec(trimmed);
-  if (!match?.[1] || !match[2]) {
+  const scp = GITHUB_SCP_RE.exec(trimmed);
+  if (scp?.[1] && scp[2]) {
+    return parseGithubPath(scp[1], scp[2]);
+  }
+
+  let candidate = trimmed;
+  if (/^git\+/i.test(candidate)) {
+    candidate = candidate.slice(4);
+  }
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) {
+    if (/^(?:www\.)?github\.com\//i.test(candidate)) {
+      candidate = `https://${candidate}`;
+    } else {
+      return null;
+    }
+  }
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
     return null;
   }
-  const owner = match[1].toLowerCase();
-  const repo = match[2].replace(/\.git$/i, "").toLowerCase();
-  if (owner === "orgs" || owner === "users" || owner === "settings" || owner === "explore") {
+  const host = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (host !== "github.com" && host !== "www.github.com") {
     return null;
   }
-  return { owner, repo };
+  const parts = url.pathname.split("/").filter((part) => part.length > 0);
+  if (!parts[0] || !parts[1]) {
+    return null;
+  }
+  return parseGithubPath(parts[0], parts[1]);
 }
 
 export function githubRepoSlug(ref: GithubRepoRef): string {
@@ -49,45 +110,184 @@ export function normalizePackageName(name: string, ecosystem: "npm" | "pypi"): s
   return ecosystem === "pypi" ? trimmed.toLowerCase().replace(/_/g, "-") : trimmed.toLowerCase();
 }
 
-export function relinkPackageAppIds<T extends { source: string; app_id: string; npm_package?: string | null; pypi_package?: string | null }>(
-  rows: T[],
-): T[] {
-  const npmToApp = new Map<string, string>();
-  const pypiToApp = new Map<string, string>();
+export function normalizeGeminiExtensionId(id: string | null | undefined): string | null {
+  if (!id) {
+    return null;
+  }
+  const normalized = id.trim().replace(/\/+$/g, "").toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
 
-  const remember = (map: Map<string, string>, key: string | null | undefined, appId: string): void => {
-    if (!key || map.has(key)) {
+function canonicalPackageName(name: string | null | undefined, ecosystem: "npm" | "pypi"): string | null {
+  if (!name) {
+    return null;
+  }
+  const stripped = name.trim().replace(/\/+$/g, "");
+  if (!stripped) {
+    return null;
+  }
+  return normalizePackageName(stripped, ecosystem);
+}
+
+type LinkableRow = {
+  source: string;
+  app_id: string;
+  source_id?: string;
+  name?: string;
+  repo_url?: string | null;
+  npm_package?: string | null;
+  pypi_package?: string | null;
+};
+
+function canonicalizeIdentity<T extends LinkableRow>(row: T): T {
+  if (row.source === "npm" || row.source === "pypi") {
+    return row;
+  }
+  const repoUrl = row.repo_url?.trim();
+  if (!repoUrl) {
+    return row;
+  }
+  const repo = parseGithubRepo(repoUrl);
+  if (repo) {
+    const app_id = `github:${githubRepoSlug(repo)}`;
+    const canonicalUrl = githubRepoUrl(repo);
+    if (row.app_id === app_id && row.repo_url === canonicalUrl) {
+      return row;
+    }
+    return { ...row, app_id, repo_url: canonicalUrl };
+  }
+  if (row.app_id.startsWith("github:") && row.source && row.source_id) {
+    const app_id = `${row.source}:${row.source_id}`.toLowerCase();
+    if (row.app_id === app_id) {
+      return row;
+    }
+    return { ...row, app_id };
+  }
+  return row;
+}
+
+function compareGeminiRow(a: LinkableRow, b: LinkableRow, indexA: number, indexB: number): number {
+  const byApp = compareAppId(a.app_id, b.app_id);
+  if (byApp !== 0) {
+    return byApp;
+  }
+  const repoA = a.repo_url ?? "";
+  const repoB = b.repo_url ?? "";
+  if (repoA !== repoB) {
+    if (!repoA) {
+      return 1;
+    }
+    if (!repoB) {
+      return -1;
+    }
+    return repoA < repoB ? -1 : 1;
+  }
+  const nameA = a.name ?? "";
+  const nameB = b.name ?? "";
+  if (nameA !== nameB) {
+    return nameA < nameB ? -1 : 1;
+  }
+  return indexA - indexB;
+}
+
+function dedupeGeminiExtensions<T extends LinkableRow>(rows: T[]): T[] {
+  const groups = new Map<string, number[]>();
+  rows.forEach((row, index) => {
+    if (row.source !== "gemini-cli") {
       return;
     }
-    map.set(key, appId);
-  };
-
-  for (const row of rows) {
-    if (row.source === "npm" || row.source === "pypi") {
+    const id = normalizeGeminiExtensionId(row.source_id);
+    if (!id) {
+      return;
+    }
+    const list = groups.get(id) ?? [];
+    list.push(index);
+    groups.set(id, list);
+  });
+  const drop = new Set<number>();
+  for (const indexes of groups.values()) {
+    if (indexes.length < 2) {
       continue;
     }
-    if (row.app_id.startsWith("github:")) {
-      remember(npmToApp, row.npm_package, row.app_id);
-      remember(pypiToApp, row.pypi_package, row.app_id);
+    const ranked = indexes.slice().sort((left, right) => compareGeminiRow(rows[left]!, rows[right]!, left, right));
+    const winner = ranked[0]!;
+    for (const index of indexes) {
+      if (index !== winner) {
+        drop.add(index);
+      }
     }
   }
-  for (const row of rows) {
-    if (row.source === "npm" || row.source === "pypi") {
-      continue;
+  if (drop.size === 0) {
+    return rows;
+  }
+  return rows.filter((_, index) => !drop.has(index));
+}
+
+function claimantAppId(appId: string, ecosystem: "npm" | "pypi", pkg: string): string {
+  if (appId.toLowerCase().startsWith(`${ecosystem}:`)) {
+    return `${ecosystem}:${pkg}`;
+  }
+  return appId;
+}
+
+function packageField(ecosystem: "npm" | "pypi"): "npm_package" | "pypi_package" {
+  return ecosystem === "npm" ? "npm_package" : "pypi_package";
+}
+
+export function relinkPackageAppIds<T extends LinkableRow>(rows: T[]): T[] {
+  const owners = new Map<"npm" | "pypi", Map<string, string>>();
+  for (const ecosystem of ["npm", "pypi"] as const) {
+    const claims = new Map<string, Set<string>>();
+    for (const row of rows) {
+      if (row.source === ecosystem) {
+        continue;
+      }
+      const pkg = canonicalPackageName(row[packageField(ecosystem)], ecosystem);
+      if (!pkg) {
+        continue;
+      }
+      const set = claims.get(pkg) ?? new Set<string>();
+      set.add(claimantAppId(row.app_id, ecosystem, pkg));
+      claims.set(pkg, set);
     }
-    remember(npmToApp, row.npm_package, row.app_id);
-    remember(pypiToApp, row.pypi_package, row.app_id);
+    const chosen = new Map<string, string>();
+    for (const [pkg, ids] of claims) {
+      chosen.set(pkg, pickOwner([...ids]));
+    }
+    owners.set(ecosystem, chosen);
   }
 
   return rows.map((row) => {
-    if (row.source === "npm" && row.npm_package && npmToApp.has(row.npm_package)) {
-      return { ...row, app_id: npmToApp.get(row.npm_package)! };
+    let next = row;
+    for (const ecosystem of ["npm", "pypi"] as const) {
+      const field = packageField(ecosystem);
+      const pkg = canonicalPackageName(next[field], ecosystem);
+      if (!pkg) {
+        continue;
+      }
+      const owner = owners.get(ecosystem)?.get(pkg) ?? `${ecosystem}:${pkg}`;
+      if (next.source === ecosystem) {
+        next = { ...next, app_id: owner, [field]: pkg };
+        continue;
+      }
+      if (claimantAppId(next.app_id, ecosystem, pkg) !== owner) {
+        const packageWasIdentity = next.app_id.toLowerCase().startsWith(`${ecosystem}:`);
+        const app_id =
+          packageWasIdentity && next.source_id
+            ? `${next.source}:${next.source_id}`.toLowerCase()
+            : next.app_id;
+        next = { ...next, app_id, [field]: null };
+        continue;
+      }
+      const app_id = next.app_id.toLowerCase().startsWith(`${ecosystem}:`) ? owner : next.app_id;
+      next = { ...next, app_id, [field]: pkg };
     }
-    if (row.source === "pypi" && row.pypi_package && pypiToApp.has(row.pypi_package)) {
-      return { ...row, app_id: pypiToApp.get(row.pypi_package)! };
-    }
-    return row;
+    return next;
   });
+}
+
+export function linkSourceRows<T extends LinkableRow>(rows: T[]): T[] {
+  return relinkPackageAppIds(dedupeGeminiExtensions(rows.map((row) => canonicalizeIdentity(row))));
 }
 
 export function appIdFromIdentity(input: {
