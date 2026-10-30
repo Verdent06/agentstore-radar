@@ -4,6 +4,16 @@ export const USER_AGENT = `agentstore-radar/0.1 (+${REPO_URL})`;
 export const RAW_GZIP_THRESHOLD_BYTES = 256 * 1024;
 export const HEALTH_DROP_THRESHOLD = 0.3;
 export const LOW_COVERAGE_THRESHOLD = 0.7;
+
+/** Show a KPI only when today's fresh row count is within this fraction of the baseline. */
+export const KPI_FRESH_COVERAGE_TOLERANCE = 0.1;
+
+/**
+ * Per-source minimum fresh share (fresh / eligible) for a complete day to be
+ * a KPI baseline candidate, and for today's tile to show. Applied independently
+ * to GitHub, npm, and PyPI — not a walk versus the previous day.
+ */
+export const KPI_MIN_FRESH_SHARE = 0.8;
 export const MAX_RATE_LIMIT_WAIT_MS = 70 * 60 * 1000;
 export const HTTP_MAX_RETRIES = 6;
 export const HTTP_5XX_MAX_WAIT_MS = 60_000;

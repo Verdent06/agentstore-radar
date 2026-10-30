@@ -127,6 +127,15 @@ export type HeadlineStats = {
   multiStoreCount: number;
   newArrivalCount: number;
   categoryCount: number;
+  /** True when GitHub stars must not be shown (low fresh coverage or fresh share). */
+  starsKpiHeld: boolean;
+  /** True when npm weekly must not be shown (low fresh coverage vs baseline). */
+  npmKpiHeld: boolean;
+  /** True when PyPI weekly would not be shown; homepage does not tile it today. */
+  pypiKpiHeld: boolean;
+  starsFreshCount: number;
+  npmFreshCount: number;
+  pypiFreshCount: number;
 };
 
 export type RankedApp = {

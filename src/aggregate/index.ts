@@ -1,5 +1,14 @@
 export { answerShareForApp, loadPublicAnswerShare } from "./answer-share.ts";
-export { buildAggregate, computeHeadlineStats, isFreshKpiValue } from "./build.ts";
+export { buildAggregate, computeHeadlineStats } from "./build.ts";
+export {
+  KPI_HELD_LOW_FRESH_COVERAGE,
+  KPI_SOURCES,
+  countFreshCoverage,
+  decideKpiFreshCoverage,
+  isFreshCountWithinTolerance,
+  isFreshKpiValue,
+  selectFreshCoverageBaseline,
+} from "./kpi-coverage.ts";
 export {
   COMPETITORS_CAP,
   HISTORY_CAP_DAYS,

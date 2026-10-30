@@ -12,6 +12,12 @@ import {
 } from "./public.ts";
 import { publicAppIds } from "./query.ts";
 import {
+  coverageSeriesForSource,
+  decideKpiFreshCoverage,
+  isFreshKpiValue,
+  type KpiSource,
+} from "./kpi-coverage.ts";
+import {
   STORE_SOURCES,
   type Aggregate,
   type AppSummary,
@@ -22,6 +28,8 @@ import {
   type StoreSource,
   sourceFromOrigin,
 } from "./types.ts";
+
+export { isFreshKpiValue } from "./kpi-coverage.ts";
 
 type PackedPoint = {
   date: string;
@@ -132,6 +140,7 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
   const history = new Map<string, PackedPoint[]>();
   const latestApps = new Map<string, AppRow>();
   const latestSourceRows = new Map<string, SourceRow[]>();
+  const appsByDate = new Map<string, AppRow[]>();
   let latestCompleteRows: AppRow[] = [];
 
   for (const date of snapshotDates) {
@@ -143,6 +152,7 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
       list.push(row);
       rowsByApp.set(row.app_id, list);
     }
+    appsByDate.set(date, apps);
     if (date === latestCompleteDate) {
       latestCompleteRows = apps;
     }
@@ -229,6 +239,8 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
     week,
     latestCompleteDate,
     latestCompleteRows,
+    completeDates,
+    appsByDate,
   );
   const draft: Aggregate = {
     meta: {
@@ -270,15 +282,6 @@ function applyPublicTier(agg: Aggregate): Aggregate {
   };
 }
 
-/**
- * Home KPIs count a metric only when `*_carried_forward` is explicitly false
- * and `*_frozen` is not true. A missing `*_frozen` is fine (PR #11 has not
- * landed yet). A missing `*_carried_forward` is not fresh.
- */
-export function isFreshKpiValue(carriedForward: unknown, frozen: unknown): boolean {
-  return carriedForward === false && frozen !== true;
-}
-
 export function computeHeadlineStats(
   apps: AppSummary[],
   snapshotDates: string[],
@@ -287,6 +290,8 @@ export function computeHeadlineStats(
   weekAgoDate: string | null,
   latestCompleteDate: string | null = null,
   latestRows: AppRow[] = [],
+  completeDates: string[] = [],
+  rowsByCompleteDate: Map<string, AppRow[]> | Record<string, AppRow[]> = new Map(),
 ): HeadlineStats {
   const storeSet = new Set<string>();
   let totalStars = 0;
@@ -321,6 +326,24 @@ export function computeHeadlineStats(
       totalNpmWeekly += row.npm_weekly_downloads;
     }
   }
+  const datesForCoverage = completeDates.length > 0 ? completeDates : latestCompleteDate ? [latestCompleteDate] : [];
+  const rowsForCoverage: Map<string, AppRow[]> | Record<string, AppRow[]> =
+    rowsByCompleteDate instanceof Map
+      ? rowsByCompleteDate.size > 0
+        ? rowsByCompleteDate
+        : new Map(latestCompleteDate ? [[latestCompleteDate, latestRows]] : [])
+      : Object.keys(rowsByCompleteDate).length > 0
+        ? rowsByCompleteDate
+        : latestCompleteDate
+          ? { [latestCompleteDate]: latestRows }
+          : {};
+  const kpiHeld = (source: KpiSource) => {
+    const series = coverageSeriesForSource(datesForCoverage, rowsForCoverage, source);
+    return decideKpiFreshCoverage(source, series, latestCompleteDate);
+  };
+  const starsDecision = kpiHeld("github");
+  const npmDecision = kpiHeld("npm");
+  const pypiDecision = kpiHeld("pypi");
   return {
     appCount: apps.length,
     storeCount: storeSet.size,
@@ -333,5 +356,11 @@ export function computeHeadlineStats(
     multiStoreCount,
     newArrivalCount,
     categoryCount: categories.size,
+    starsKpiHeld: starsDecision.held,
+    npmKpiHeld: npmDecision.held,
+    pypiKpiHeld: pypiDecision.held,
+    starsFreshCount: starsDecision.today?.freshCount ?? 0,
+    npmFreshCount: npmDecision.today?.freshCount ?? 0,
+    pypiFreshCount: pypiDecision.today?.freshCount ?? 0,
   };
 }
