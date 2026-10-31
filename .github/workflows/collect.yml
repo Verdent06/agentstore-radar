@@ -2,10 +2,11 @@ name: Collect snapshots
 
 on:
   schedule:
-    # Primary daily collect (UTC morning).
-    - cron: "17 6 * * *"
+    # Primary daily collect (UTC morning). Off the :00/:15/:17/:30 cluster that
+    # GitHub Actions delays under load (the 06:17 job was starting ~13:08).
+    - cron: "41 5 * * *"
     # Same-day backstop: only collects if today's snapshot is missing or incomplete.
-    - cron: "17 18 * * *"
+    - cron: "23 19 * * *"
   workflow_dispatch:
     inputs:
       seed_only:
@@ -39,7 +40,7 @@ env:
   DATA_REPO: Verdent06/agentstore-radar-data
   DATA_DIR: ${{ github.workspace }}/.radar-data/data
   COLLECTOR_ISSUE_REPO: Verdent06/agentstore-radar
-  IS_BACKSTOP: ${{ github.event.schedule == '17 18 * * *' }}
+  IS_BACKSTOP: ${{ github.event.schedule == '23 19 * * *' }}
 
 jobs:
   collect:
@@ -63,18 +64,36 @@ jobs:
       - name: Seed private repo from public data/ history
         run: bash scripts/seed-data-repo.sh "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/.radar-data"
 
+      - name: Skip backstop when today's snapshot is already complete
+        id: gate
+        env:
+          MANIFEST_DIR: ${{ github.workspace }}/.radar-data/data/normalized
+        run: |
+          DATE=$(date -u +%F)
+          MANIFEST="${MANIFEST_DIR}/${DATE}/manifest.json"
+          SKIP=false
+          if [[ "${IS_BACKSTOP}" == "true" && -f "$MANIFEST" ]]; then
+            if python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); sys.exit(1 if m.get("partial") is True or any(s.get("failed") or s.get("truncated") for s in (m.get("sources") or [])) else 0)' "$MANIFEST"; then
+              SKIP=true
+              echo "Today's snapshot ${DATE} is already complete; skipping backstop collect"
+            else
+              echo "Today's snapshot ${DATE} exists but is incomplete; backstop will collect"
+            fi
+          fi
+          echo "skip=${SKIP}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@v4
-        if: ${{ inputs.seed_only != true }}
+        if: ${{ inputs.seed_only != true && steps.gate.outputs.skip != 'true' }}
         with:
           node-version: "22"
           cache: npm
 
       - run: npm ci
-        if: ${{ inputs.seed_only != true }}
+        if: ${{ inputs.seed_only != true && steps.gate.outputs.skip != 'true' }}
 
       - name: Collect sanctioned public snapshots
         id: collect
-        if: ${{ inputs.seed_only != true }}
+        if: ${{ inputs.seed_only != true && steps.gate.outputs.skip != 'true' }}
         timeout-minutes: 330
         env:
           DATA_DIR: ${{ env.DATA_DIR }}
@@ -91,12 +110,12 @@ jobs:
           npm run collect -- "${ARGS[@]}"
 
       - name: Commit snapshot to private data repo
-        if: ${{ always() && github.ref == 'refs/heads/main' && inputs.seed_only != true && inputs.skip_push != true && steps.collect.outcome != 'skipped' }}
+        if: ${{ always() && github.ref == 'refs/heads/main' && inputs.seed_only != true && inputs.skip_push != true && steps.gate.outputs.skip != 'true' && steps.collect.outcome != 'skipped' }}
         working-directory: .radar-data
         run: bash "$GITHUB_WORKSPACE/scripts/push-data-repo.sh" "$GITHUB_WORKSPACE/.radar-data"
 
       - name: Health check
-        if: ${{ inputs.seed_only != true && inputs.skip_push != true && steps.collect.outcome == 'success' }}
+        if: ${{ inputs.seed_only != true && inputs.skip_push != true && steps.gate.outputs.skip != 'true' && steps.collect.outcome == 'success' }}
         continue-on-error: true
         env:
           DATA_DIR: ${{ env.DATA_DIR }}
@@ -104,7 +123,7 @@ jobs:
         run: npm run health -- --data "$DATA_DIR"
 
       - name: Alert if today's snapshot is still missing
-        if: ${{ always() && inputs.seed_only != true && inputs.skip_push != true }}
+        if: ${{ always() && inputs.seed_only != true && inputs.skip_push != true && steps.gate.outputs.skip != 'true' }}
         env:
           DATA_DIR: ${{ env.DATA_DIR }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -7,7 +7,7 @@ import {
   SOURCE_FREEZE_RATIO,
   runBatchSize,
 } from "../lib/config.ts";
-import { computeCoverage } from "../lib/coverage.ts";
+import { computeCoverage, computeFetchedShare } from "../lib/coverage.ts";
 import { evaluateSourceFreeze, isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../lib/frozen.ts";
 import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
@@ -136,13 +136,17 @@ function recordsFromCache(
       inconsistent: pypiMonthlyInconsistent(row.pypi_last_week_downloads, row.pypi_last_month_downloads),
     });
   }
+  // Source-freeze only on live-fetched rows. Carried cache values stay identical
+  // by definition and must not push a 95% freeze onto packages fetched today.
+  const live = pending.filter((item) => !item.fetchedCarried);
   const freeze = evaluateSourceFreeze(
-    pending.map((item) => item.monthUnchanged),
+    live.map((item) => item.monthUnchanged),
     SOURCE_FREEZE_RATIO,
   );
-  return pending.map((item, index) => {
+  const liveFrozen = new Map(live.map((item, index) => [item.row.source_id, freeze.freezeRow[index] === true]));
+  return pending.map((item) => {
     const monthlyStale = item.monthUnchanged && (freeze.sourceFrozen || item.weekMoved);
-    const frozen = item.inconsistent || monthlyStale || freeze.freezeRow[index] === true;
+    const frozen = item.inconsistent || monthlyStale || liveFrozen.get(item.row.source_id) === true;
     const carried = item.fetchedCarried || item.inconsistent;
     return withObservation(item.row, item.fetchedAt, carried, frozen);
   });
@@ -200,6 +204,7 @@ export const pypiAdapter: SourceAdapter = {
       const freshTodayCount = countFreshToday(allKeys, lastFetched, ctx.snapshotDate);
       const freshWithin7dCount = countFresh(allKeys, lastFetched, ctx.now);
       const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
+      const fetchedShare = computeFetchedShare(input.fetchedThisRun, allKeys.length);
       persistLastFetched(ctx.dataDir, "pypi", lastFetched);
       persistEntityCache(ctx.dataDir, "pypi", cache);
       if (input.truncated) {
@@ -222,6 +227,7 @@ export const pypiAdapter: SourceAdapter = {
         freshTodayCount,
         freshWithin7dCount,
         fetchedThisRunCount: input.fetchedThisRun,
+        fetchedShare,
         coverage,
         lastFetchedAt: Object.values(lastFetched).sort().at(-1),
         stoppedAt: input.stoppedAt,
@@ -319,7 +325,13 @@ export const pypiAdapter: SourceAdapter = {
       }
     }
 
-    ctx.log.info("pypi collected", { requested: allKeys.length, due: dueKeys.length, fetchedThisRun, truncated });
+    ctx.log.info("pypi collected", {
+      requested: allKeys.length,
+      due: dueKeys.length,
+      fetchedThisRun,
+      fetchedShare: computeFetchedShare(fetchedThisRun, allKeys.length),
+      truncated,
+    });
     return finish({ truncated, fetchedThisRun, processed, stoppedAt });
   },
 };

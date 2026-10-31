@@ -8,7 +8,7 @@ import {
   NPM_SCOPED_MIN_INTERVAL_MS,
   runBatchSize,
 } from "../lib/config.ts";
-import { computeCoverage } from "../lib/coverage.ts";
+import { computeCoverage, computeFetchedShare } from "../lib/coverage.ts";
 import { fetchJsonWithRateLimitWait, isHttpRateLimit } from "../lib/http.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import {
@@ -149,6 +149,7 @@ export const npmAdapter: SourceAdapter = {
       const freshTodayCount = countFreshToday(allKeys, lastFetched, ctx.snapshotDate);
       const freshWithin7dCount = countFresh(allKeys, lastFetched, ctx.now);
       const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
+      const fetchedShare = computeFetchedShare(input.fetchedThisRun, allKeys.length);
       persistLastFetched(ctx.dataDir, "npm", lastFetched);
       persistEntityCache(ctx.dataDir, "npm", cache);
       const processed = input.processed ?? input.fetchedThisRun;
@@ -172,6 +173,7 @@ export const npmAdapter: SourceAdapter = {
         freshTodayCount,
         freshWithin7dCount,
         fetchedThisRunCount: input.fetchedThisRun,
+        fetchedShare,
         coverage,
         lastFetchedAt: Object.values(lastFetched).sort().at(-1),
         stoppedAt: input.stoppedAt,
@@ -322,7 +324,13 @@ export const npmAdapter: SourceAdapter = {
       }
     }
 
-    ctx.log.info("npm collected", { requested: allKeys.length, due: dueKeys.length, fetchedThisRun, truncated });
+    ctx.log.info("npm collected", {
+      requested: allKeys.length,
+      due: dueKeys.length,
+      fetchedThisRun,
+      fetchedShare: computeFetchedShare(fetchedThisRun, allKeys.length),
+      truncated,
+    });
     return finish({ truncated, fetchedThisRun, processed, stoppedAt });
   },
 };
