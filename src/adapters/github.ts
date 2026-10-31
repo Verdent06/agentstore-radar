@@ -32,6 +32,7 @@ const RepoNodeSchema = z
     updatedAt: z.string().nullable().optional(),
     issues: z.object({ totalCount: z.number() }).nullable().optional(),
     isArchived: z.boolean().optional(),
+    isFork: z.boolean().optional(),
   })
   .passthrough();
 
@@ -103,6 +104,7 @@ export function buildGithubGraphqlQuery(batch: GithubRepoRef[]): string {
     pushedAt
     updatedAt
     isArchived
+    isFork
     issues(states: OPEN) { totalCount }
   `;
   const selections = batch.map((ref, index) => {
@@ -138,6 +140,7 @@ export function normalizeGithubRepo(snapshotDate: string, item: unknown, request
     open_issues: repo.issues?.totalCount ?? null,
     pushed_at: repo.pushedAt ?? repo.updatedAt ?? null,
     status: repo.isArchived ? "archived" : "active",
+    fork: typeof repo.isFork === "boolean" ? repo.isFork : null,
     app_id: appIdFromIdentity({
       repoUrl,
       source: "github",

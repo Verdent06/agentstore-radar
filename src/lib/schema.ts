@@ -36,6 +36,8 @@ export const SourceRowSchema = z.object({
   pypi_last_week_downloads: z.number().int().nullable(),
   pypi_last_month_downloads: z.number().int().nullable(),
   verified: z.boolean().nullable(),
+  /** GitHub `isFork` when the collector saw it. Null means unknown. */
+  fork: z.boolean().nullable().default(null),
   fetched_at: z.string().nullable().optional().default(null),
   carried_forward: z.boolean().optional().default(false),
   /** True when the live upstream value has not moved for N snapshot days. */
@@ -169,6 +171,7 @@ export function emptySourceRow(partial: Partial<SourceRow> & Pick<SourceRow, "sn
     pypi_last_week_downloads: null,
     pypi_last_month_downloads: null,
     verified: null,
+    fork: null,
     fetched_at: null,
     carried_forward: false,
     frozen: false,

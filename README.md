@@ -67,7 +67,24 @@ Each `source_rows` record has `fetched_at` (when that source actually returned t
 3. `pypi:{package}`
 4. `{source}:{source_id}`
 
-The same GitHub repo listed on the MCP registry, Smithery, and the Gemini gallery collapses to one app.
+A GitHub URL counts only when the host is `github.com` or `www.github.com` (`git@github.com:owner/repo` and `git+https://` too). Case is folded, a trailing `.git` or slash is removed, and `tree` / `blob` suffixes are ignored. A `github.com/owner/repo` path on any other host is left as `{source}:{source_id}` so it does not collapse onto that repository. The same canonical repo listed on the MCP registry, Smithery, and the Gemini gallery collapses to one app.
+
+Package names are trimmed, stripped of trailing slashes, and lowercased. PyPI `_` becomes `-`. The npm scope stays. Each normalized name belongs to one app. When several apps claim it, the owner is chosen in this order:
+
+1. The app with the most supporting rows: each non-enrichment row that names this package (its `npm_package` or `pypi_package`), plus one if the app has a GitHub row.
+2. When a row says whether the repo is a fork (`fork` from GitHub `isFork`), prefer the app that is not a fork.
+3. Prefer the app whose GitHub repo name matches the package name after normalization (lowercase; the unscoped npm name; PyPI `_` becomes `-`).
+4. Prefer an app id that starts with `github:`, then the smallest app id in UTF-16 code-unit order.
+
+Other claimants keep their own app id. Their package field is cleared, and the npm or PyPI enrichment row is attached to the owner. A loser whose app id existed only as `npm:{package}` or `pypi:{package}` falls back to `{source}:{source_id}`. Apps are not merged only because they declared the same package.
+
+A Gemini extension id is `source_id` trimmed, lowercased, and stripped of trailing slashes. The gallery sometimes lists one id on two repositories; the linker keeps one row (the collector still records both upstream entries):
+
+1. Prefer a `github:` app id.
+2. Then the smallest app id in UTF-16 code-unit order.
+3. Then a non-empty `repo_url`, the smallest `repo_url`, the smallest `name`, and finally the earlier input row.
+
+A different extension id stays a different app when the display name matches.
 
 ## Collect locally
 

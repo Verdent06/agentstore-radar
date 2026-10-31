@@ -25,6 +25,8 @@ describe("parseGithubRepo", () => {
 
   it("rejects non-github values", () => {
     expect(parseGithubRepo("https://gitlab.com/example/weather")).toBeNull();
+    expect(parseGithubRepo("https://mygithub.com/acme/widget")).toBeNull();
+    expect(parseGithubRepo("https://example.com/docs?ref=github.com/unrelated/other")).toBeNull();
     expect(parseGithubRepo(undefined)).toBeNull();
   });
 });
