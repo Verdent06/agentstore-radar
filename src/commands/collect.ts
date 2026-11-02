@@ -20,7 +20,7 @@ import {
   writeNormalized,
 } from "../lib/io.ts";
 import { createLogger, type Logger } from "../lib/logger.ts";
-import { linkSourceRows } from "../lib/matching.ts";
+import { linkCrossStore, linkSourceRows, ownerDecisionCounts, tieDecidedPackageOwners } from "../lib/matching.ts";
 import { mergeApps } from "../lib/merge.ts";
 import { retryAsync, type SleepFn } from "../lib/retry.ts";
 import type { SnapshotManifest, SourceManifest, SourceName, SourceRow } from "../lib/schema.ts";
@@ -257,6 +257,16 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     runId,
     overwrite,
   };
+  try {
+    const packageOwners = linkCrossStore(results.flatMap((result) => result.records)).packageOwners;
+    const counts = ownerDecisionCounts(packageOwners);
+    const tieDecided = tieDecidedPackageOwners(packageOwners);
+    manifest.owner_decided_by = packageOwners;
+    manifest.ownerDecisionCounts = counts;
+    manifest.tieDecidedPackageOwners = tieDecided;
+  } catch (error) {
+    log.warn(errorMessage(error));
+  }
 
   try {
     writeNormalized(snapshotDate, sourceRows, apps, manifest, dataDir);

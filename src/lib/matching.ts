@@ -29,6 +29,76 @@ function compareAppId(a: string, b: string): number {
 
 type PackageEcosystem = "npm" | "pypi";
 
+/**
+ * How an npm package owner was chosen.
+ * `github_id_fallback` and `smallest_id_fallback` are the tie-decided reasons.
+ */
+export const OWNER_DECISION_REASONS = [
+  "sole_claimant",
+  "scope_matches_github_org",
+  "most_supporting_rows",
+  "non_fork",
+  "repo_name_matches_package",
+  "github_id_fallback",
+  "smallest_id_fallback",
+] as const;
+
+export type OwnerDecisionReason = (typeof OWNER_DECISION_REASONS)[number];
+
+/** Substantive rules tied; the owner is the `github:` id, or the smallest id. */
+export const TIE_DECIDED_OWNER_REASONS = ["github_id_fallback", "smallest_id_fallback"] as const;
+
+export type TieDecidedOwnerReason = (typeof TIE_DECIDED_OWNER_REASONS)[number];
+
+export function isTieDecidedOwnerReason(reason: OwnerDecisionReason): reason is TieDecidedOwnerReason {
+  return (TIE_DECIDED_OWNER_REASONS as readonly string[]).includes(reason);
+}
+
+export type PackageOwnerDecision = {
+  npm_package: string;
+  app_id: string;
+  owner_decided_by: OwnerDecisionReason;
+  claimants: string[];
+};
+
+export type OwnerDecisionCounts = Record<OwnerDecisionReason, number>;
+
+/** Counts of npm packages by `owner_decided_by`. Every reason key is present. */
+export type LinkerManifest = {
+  ownerDecisionCounts: OwnerDecisionCounts;
+};
+
+export type LinkerOutput<T> = {
+  rows: T[];
+  /** One record per npm package that at least one app claimed. */
+  packageOwners: PackageOwnerDecision[];
+  manifest: LinkerManifest;
+};
+
+function emptyOwnerDecisionCounts(): OwnerDecisionCounts {
+  return {
+    sole_claimant: 0,
+    scope_matches_github_org: 0,
+    most_supporting_rows: 0,
+    non_fork: 0,
+    repo_name_matches_package: 0,
+    github_id_fallback: 0,
+    smallest_id_fallback: 0,
+  };
+}
+
+export function ownerDecisionCounts(decisions: readonly PackageOwnerDecision[]): OwnerDecisionCounts {
+  const counts = emptyOwnerDecisionCounts();
+  for (const decision of decisions) {
+    counts[decision.owner_decided_by] += 1;
+  }
+  return counts;
+}
+
+export function tieDecidedPackageOwners(decisions: readonly PackageOwnerDecision[]): PackageOwnerDecision[] {
+  return decisions.filter((decision) => isTieDecidedOwnerReason(decision.owner_decided_by));
+}
+
 function unscopedPackageName(pkg: string, ecosystem: PackageEcosystem): string {
   const lower = pkg.toLowerCase();
   const bare = lower.startsWith("@") ? (lower.split("/")[1] ?? lower.slice(1)) : lower;
@@ -299,36 +369,108 @@ function isKnownFork(appId: string, pkg: string, ecosystem: PackageEcosystem, ro
   return false;
 }
 
-function comparePackageOwners(
-  a: string,
-  b: string,
+function sortUtf16(ids: readonly string[]): string[] {
+  return ids.slice().sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/** GitHub owner from `github:{owner}/{repo}`, compared case-insensitively. */
+function githubOwnerOf(appId: string): string | null {
+  const lower = appId.toLowerCase();
+  if (!lower.startsWith("github:")) {
+    return null;
+  }
+  const owner = lower.slice("github:".length).split("/")[0] ?? "";
+  return owner.length > 0 ? owner : null;
+}
+
+/** Scope from `@scope/name`, without the leading `@`. Unscoped names return null. */
+function npmPackageScope(pkg: string): string | null {
+  if (!pkg.startsWith("@")) {
+    return null;
+  }
+  const slash = pkg.indexOf("/");
+  if (slash <= 1) {
+    return null;
+  }
+  const scope = pkg.slice(1, slash).toLowerCase();
+  return scope.length > 0 ? scope : null;
+}
+
+/**
+ * The one candidate whose GitHub owner equals the npm scope.
+ * Null when the package is unscoped, or when the number of matches is not exactly one.
+ */
+function uniqueScopeOwner(ids: readonly string[], pkg: string): string | null {
+  const scope = npmPackageScope(pkg);
+  if (!scope) {
+    return null;
+  }
+  const matches = ids.filter((id) => githubOwnerOf(id) === scope);
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+/**
+ * First rule that uniquely selects the owner.
+ * Scope applies to npm only and outranks support, fork, and name.
+ * Fork and id rules match the #20 order: a known fork loses to an app that is not a known fork;
+ * `github:` wins over other ids; otherwise the smallest UTF-16 id.
+ */
+function decidePackageOwner(
+  ids: readonly string[],
   pkg: string,
   ecosystem: PackageEcosystem,
   rows: LinkableRow[],
-): number {
-  const bySupport = supportScore(b, pkg, ecosystem, rows) - supportScore(a, pkg, ecosystem, rows);
-  if (bySupport !== 0) {
-    return bySupport;
+): { owner: string; reason: OwnerDecisionReason } {
+  if (ids.length === 0) {
+    throw new Error(`no claimants for ${ecosystem} package ${pkg}`);
   }
-  const forkA = isKnownFork(a, pkg, ecosystem, rows) ? 1 : 0;
-  const forkB = isKnownFork(b, pkg, ecosystem, rows) ? 1 : 0;
-  if (forkA !== forkB) {
-    return forkA - forkB;
+  if (ids.length === 1) {
+    return { owner: ids[0]!, reason: "sole_claimant" };
   }
-  const nameA = repoMatchesPackage(a, pkg, ecosystem) ? 0 : 1;
-  const nameB = repoMatchesPackage(b, pkg, ecosystem) ? 0 : 1;
-  if (nameA !== nameB) {
-    return nameA - nameB;
+  if (ecosystem === "npm") {
+    const scoped = uniqueScopeOwner(ids, pkg);
+    if (scoped) {
+      return { owner: scoped, reason: "scope_matches_github_org" };
+    }
   }
-  return compareAppId(a, b);
+
+  const scores = new Map(ids.map((id) => [id, supportScore(id, pkg, ecosystem, rows)]));
+  const bestSupport = Math.max(...scores.values());
+  let remaining = ids.filter((id) => scores.get(id) === bestSupport);
+  if (remaining.length === 1) {
+    return { owner: remaining[0]!, reason: "most_supporting_rows" };
+  }
+
+  const notFork = remaining.filter((id) => !isKnownFork(id, pkg, ecosystem, rows));
+  if (notFork.length > 0 && notFork.length < remaining.length) {
+    if (notFork.length === 1) {
+      return { owner: notFork[0]!, reason: "non_fork" };
+    }
+    remaining = notFork;
+  }
+
+  const nameMatches = remaining.filter((id) => repoMatchesPackage(id, pkg, ecosystem));
+  if (nameMatches.length === 1) {
+    return { owner: nameMatches[0]!, reason: "repo_name_matches_package" };
+  }
+  if (nameMatches.length > 1) {
+    remaining = nameMatches;
+  }
+
+  const githubIds = remaining.filter((id) => id.startsWith("github:"));
+  if (githubIds.length === 1 && githubIds.length < remaining.length) {
+    return { owner: githubIds[0]!, reason: "github_id_fallback" };
+  }
+  if (githubIds.length > 1) {
+    remaining = githubIds;
+  }
+
+  return { owner: sortUtf16(remaining)[0]!, reason: "smallest_id_fallback" };
 }
 
-function pickPackageOwner(ids: string[], pkg: string, ecosystem: PackageEcosystem, rows: LinkableRow[]): string {
-  return ids.slice().sort((a, b) => comparePackageOwners(a, b, pkg, ecosystem, rows))[0]!;
-}
-
-export function relinkPackageAppIds<T extends LinkableRow>(rows: T[]): T[] {
+function relinkPackages<T extends LinkableRow>(rows: T[]): { rows: T[]; packageOwners: PackageOwnerDecision[] } {
   const owners = new Map<"npm" | "pypi", Map<string, string>>();
+  const packageOwners: PackageOwnerDecision[] = [];
   for (const ecosystem of ["npm", "pypi"] as const) {
     const claims = new Map<string, Set<string>>();
     for (const row of rows) {
@@ -345,12 +487,22 @@ export function relinkPackageAppIds<T extends LinkableRow>(rows: T[]): T[] {
     }
     const chosen = new Map<string, string>();
     for (const [pkg, ids] of claims) {
-      chosen.set(pkg, pickPackageOwner([...ids], pkg, ecosystem, rows));
+      const decision = decidePackageOwner([...ids], pkg, ecosystem, rows);
+      chosen.set(pkg, decision.owner);
+      if (ecosystem === "npm") {
+        packageOwners.push({
+          npm_package: pkg,
+          app_id: decision.owner,
+          owner_decided_by: decision.reason,
+          claimants: sortUtf16([...ids]),
+        });
+      }
     }
     owners.set(ecosystem, chosen);
   }
+  packageOwners.sort((a, b) => (a.npm_package < b.npm_package ? -1 : a.npm_package > b.npm_package ? 1 : 0));
 
-  return rows.map((row) => {
+  const linked = rows.map((row) => {
     let next = row;
     for (const ecosystem of ["npm", "pypi"] as const) {
       const field = packageField(ecosystem);
@@ -377,10 +529,25 @@ export function relinkPackageAppIds<T extends LinkableRow>(rows: T[]): T[] {
     }
     return next;
   });
+  return { rows: linked, packageOwners };
+}
+
+export function relinkPackageAppIds<T extends LinkableRow>(rows: T[]): T[] {
+  return relinkPackages(rows).rows;
+}
+
+/** Rows, per-package `owner_decided_by`, and `manifest.ownerDecisionCounts`. */
+export function linkCrossStore<T extends LinkableRow>(rows: T[]): LinkerOutput<T> {
+  const linked = relinkPackages(dedupeGeminiExtensions(rows.map((row) => canonicalizeIdentity(row))));
+  return {
+    rows: linked.rows,
+    packageOwners: linked.packageOwners,
+    manifest: { ownerDecisionCounts: ownerDecisionCounts(linked.packageOwners) },
+  };
 }
 
 export function linkSourceRows<T extends LinkableRow>(rows: T[]): T[] {
-  return relinkPackageAppIds(dedupeGeminiExtensions(rows.map((row) => canonicalizeIdentity(row))));
+  return linkCrossStore(rows).rows;
 }
 
 export function appIdFromIdentity(input: {

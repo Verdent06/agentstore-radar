@@ -87,6 +87,44 @@ describe("health", () => {
     });
   });
 
+  it("keeps the same row-count finding when owner-decision keys are on the manifest", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-health-owners-"));
+    const decision = {
+      npm_package: "plain-widget",
+      app_id: "github:aaa/repo",
+      owner_decided_by: "smallest_id_fallback" as const,
+      claimants: ["github:aaa/repo", "github:bbb/repo"],
+    };
+    const ownerFields = {
+      owner_decided_by: [decision],
+      ownerDecisionCounts: {
+        sole_claimant: 0,
+        scope_matches_github_org: 0,
+        most_supporting_rows: 0,
+        non_fork: 0,
+        repo_name_matches_package: 0,
+        github_id_fallback: 0,
+        smallest_id_fallback: 1,
+      },
+      tieDecidedPackageOwners: [decision],
+    };
+    writeNormalized("2026-10-15", [], [], { ...manifest("2026-10-15", [source("mcp-registry", 100)]), ...ownerFields }, dataDir);
+    writeNormalized("2026-10-16", [], [], { ...manifest("2026-10-16", [source("mcp-registry", 50)]), ...ownerFields }, dataDir);
+    const report = evaluateHealth({ date: "2026-10-16", dataDir });
+    expect(report.ok).toBe(false);
+    expect(report.findings).toEqual([
+      {
+        source: "mcp-registry",
+        previousDate: "2026-10-15",
+        currentDate: "2026-10-16",
+        previousCount: 100,
+        currentCount: 50,
+        dropRatio: 0.5,
+      },
+    ]);
+    expect(report.coverageFindings).toEqual([]);
+  });
+
   it("does not flag skipped sources or coverage at/above 70%", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-health-ok-"));
     writeNormalized(

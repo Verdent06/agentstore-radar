@@ -71,10 +71,14 @@ A GitHub URL counts only when the host is `github.com` or `www.github.com` (`git
 
 Package names are trimmed, stripped of trailing slashes, and lowercased. PyPI `_` becomes `-`. The npm scope stays. Each normalized name belongs to one app. When several apps claim it, the owner is chosen in this order:
 
-1. The app with the most supporting rows: each non-enrichment row that names this package (its `npm_package` or `pypi_package`), plus one if the app has a GitHub row.
-2. When a row says whether the repo is a fork (`fork` from GitHub `isFork`), prefer the app that is not a fork.
-3. Prefer the app whose GitHub repo name matches the package name after normalization (lowercase; the unscoped npm name; PyPI `_` becomes `-`).
-4. Prefer an app id that starts with `github:`, then the smallest app id in UTF-16 code-unit order.
+1. **npm scope.** If the package is scoped (`@scope/name`) and exactly one candidate's GitHub owner equals `scope` (case-insensitive; the leading `@` is stripped), that app wins. npm only. The rule does not apply when no candidate matches, or when two or more candidates share that org.
+2. The app with the most supporting rows: each non-enrichment row that names this package (its `npm_package` or `pypi_package`), plus one if the app has a GitHub row.
+3. When a row says whether the repo is a fork (`fork` from GitHub `isFork`), prefer the app that is not a fork.
+4. Prefer the app whose GitHub repo name matches the package name after normalization (lowercase; the unscoped npm name; PyPI `_` becomes `-`).
+5. Prefer an app id that starts with `github:`.
+6. The smallest app id in UTF-16 code-unit order.
+
+`linkCrossStore` records `owner_decided_by` for every npm package with at least one claimant. One claimant is `sole_claimant`. A contested package uses the first rule above that leaves a single app: `scope_matches_github_org`, `most_supporting_rows`, `non_fork`, `repo_name_matches_package`, `github_id_fallback`, `smallest_id_fallback`. The last two are the tie-decided reasons (`TIE_DECIDED_OWNER_REASONS`); `isTieDecidedOwnerReason` and `tieDecidedPackageOwners` filter them. `manifest.ownerDecisionCounts` counts npm packages per reason, including zeros. PyPI owners follow rules 2–6 and stay out of that manifest. Collect appends `owner_decided_by`, `ownerDecisionCounts`, and `tieDecidedPackageOwners` to the private snapshot `manifest.json` only. The public web and MCP aggregates do not include them.
 
 Other claimants keep their own app id. Their package field is cleared, and the npm or PyPI enrichment row is attached to the owner. A loser whose app id existed only as `npm:{package}` or `pypi:{package}` falls back to `{source}:{source_id}`. Apps are not merged only because they declared the same package.
 
