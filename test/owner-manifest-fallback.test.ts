@@ -74,7 +74,17 @@ describe("owner decision manifest fallback", () => {
     expect(outcome.wrote).toBe(true);
     expect(warn).toHaveBeenCalledWith(LINKER_ERROR);
 
-    const written = JSON.parse(readFileSync(dataPaths(dataDir).manifestPath(DATE), "utf8")) as Record<string, unknown>;
+    const paths = dataPaths(dataDir);
+    const sourceRowsText = readFileSync(paths.sourceRowsPath(DATE), "utf8");
+    const appsText = readFileSync(paths.appsPath(DATE), "utf8");
+    expect(sourceRowsText).toContain("github:example/weather");
+    expect(appsText).toContain("@example/weather-mcp");
+    for (const key of ["owner_decided_by", "ownerDecisionCounts", "tieDecidedPackageOwners"] as const) {
+      expect(sourceRowsText).not.toContain(`"${key}"`);
+      expect(appsText).not.toContain(`"${key}"`);
+    }
+
+    const written = JSON.parse(readFileSync(paths.manifestPath(DATE), "utf8")) as Record<string, unknown>;
     expect(Object.keys(written)).toEqual([
       "snapshotDate",
       "collectedAt",
