@@ -68,7 +68,7 @@ Each `source_rows` record has `fetched_at` (when that source actually returned t
 3. `pypi:{package}`
 4. `{source}:{source_id}`
 
-A GitHub URL counts only when the host is `github.com` or `www.github.com` (`git@github.com:owner/repo` and `git+https://` too). Case is folded, a trailing `.git` or slash is removed, and `tree` / `blob` suffixes are ignored. A `github.com/owner/repo` path on any other host is left as `{source}:{source_id}` so it does not collapse onto that repository. The same canonical repo listed on the MCP registry, Smithery, and the Gemini gallery collapses to one app.
+A GitHub URL counts only when the host is `github.com` or `www.github.com` (`git@github.com:owner/repo` and `git+https://` too). Case is folded, a trailing `.git` or slash is removed, and `tree` / `blob` suffixes are ignored. A `github.com/owner/repo` path on any other host is left as `{source}:{source_id}` so it does not collapse onto that repository. The same canonical repo listed on the MCP registry, Smithery, the Gemini gallery, and a Claude plugin marketplace collapses to one app. Claude plugin app ids come from that repository (`github:{owner}/{repo}` for a GitHub source, a git URL on github.com, or the marketplace repo for a relative path). They are not per plugin. A collect on 2026-11-02 wrote 443 plugin rows that folded into 245 apps. `plugin_name`, `marketplace_name`, and the source path stay on the source row; that is the only per-plugin split.
 
 Package names are trimmed, stripped of trailing slashes, and lowercased. PyPI `_` becomes `-`. The npm scope stays. Each normalized name belongs to one app. When several apps claim it, the owner is chosen in this order:
 

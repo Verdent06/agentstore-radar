@@ -345,10 +345,11 @@ export function topChart(agg: Aggregate, chart: ChartId, limit?: number): Ranked
   }
 
   return rows.slice(0, clampLimit(limit, PUBLIC_TOP_N)).map((row, index) => {
+    const hostRepoStars = metric === "stars" && row.app.starsScope === "host_repo";
     const previousValue =
-      prevIndex >= 0 && !metricCarriedForward(agg.series[row.app.id], metric, prevIndex)
-        ? metricFromSeries(agg.series[row.app.id], metric, prevIndex)
-        : null;
+      hostRepoStars || prevIndex < 0 || metricCarriedForward(agg.series[row.app.id], metric, prevIndex)
+        ? null
+        : metricFromSeries(agg.series[row.app.id], metric, prevIndex);
     return {
       rank: index + 1,
       previousRank: prevRank.get(row.app.id) ?? null,

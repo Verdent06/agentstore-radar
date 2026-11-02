@@ -18,7 +18,8 @@ export default async function Image({ params }: { params: Promise<{ chart: strin
     rank: row.rank,
     name: row.app.displayName,
     value: formatCompact(row.value),
-    delta: formatSigned(row.delta),
+    // Null delta (host-repo stars) is omitted so the image does not draw a growth figure.
+    delta: row.delta == null ? undefined : formatSigned(row.delta),
   }));
   return new ImageResponse(
     <OgFrame eyebrow={spec.unit} title={spec.title} rows={rows} footnote={`${agg.meta.latestDate ?? ""} · AgentStore Radar`} />,

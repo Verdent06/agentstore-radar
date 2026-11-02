@@ -237,10 +237,11 @@ export function topChart(agg: Aggregate, chart: ChartId, limit = PUBLIC_TOP_N): 
       .forEach((row, index) => prevRank.set(row.id, index + 1));
   }
   return rows.slice(0, clamp(limit, PUBLIC_TOP_N)).map((row, index) => {
+    const hostRepoStars = metric === "stars" && row.app.starsScope === "host_repo";
     const previousValue =
-      prevIndex >= 0 && !seriesCarried(agg, row.app.id, metric, prevIndex)
-        ? seriesValue(agg, row.app.id, metric, prevIndex)
-        : null;
+      hostRepoStars || prevIndex < 0 || seriesCarried(agg, row.app.id, metric, prevIndex)
+        ? null
+        : seriesValue(agg, row.app.id, metric, prevIndex);
     return {
       rank: index + 1,
       previousRank: prevRank.get(row.app.id) ?? null,

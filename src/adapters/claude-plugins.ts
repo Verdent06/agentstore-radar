@@ -259,6 +259,9 @@ function draftPlugins(
         plugin_name: plugin.name,
         marketplace_name: marketplace.name,
         commit_sha: pinnedSha(plugin.source),
+        // App id is the GitHub repo, not the plugin. A 2026-11-02 fetch wrote
+        // 443 plugin rows that folded into 245 apps. plugin_name, marketplace_name,
+        // and source_id stay on the row so a shared repo can be split later.
         app_id: appIdFromIdentity({
           repoUrl,
           source: "claude-plugins",

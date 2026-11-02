@@ -17,6 +17,7 @@ export function StorePills({ stores }: { stores: string[] }) {
 }
 
 export function Delta({ value }: { value: number | null | undefined }) {
+  // Host-repo star charts pass null. That is not a growth bucket; show a blank.
   if (value == null) return <span className="text-muted">—</span>;
   const cls = value > 0 ? "rank-up" : value < 0 ? "rank-down" : "text-muted";
   return <span className={`tabular font-mono text-xs ${cls}`}>{formatSigned(value)}</span>;

@@ -86,7 +86,7 @@ Anthropic publishes plugin catalogs as `.claude-plugin/marketplace.json`. One GE
 
 The skills and knowledge-work files use the same document shape as the official catalog (`name`, `owner`, `plugins`, and a string or object `source`). Other Anthropic topic repos also ship a marketplace file; this collector follows the two topic marketplaces named in Claude Code's marketplace docs.
 
-- One row per plugin. `plugin_name` and `marketplace_name` stay on the row so a repo that hosts many plugins (for example `adobe/skills`) can be split later.
+- One row per plugin. `plugin_name` and `marketplace_name` stay on the row so a repo that hosts many plugins (for example `adobe/skills`) can be split later. The merged `app_id` is the repository, not the plugin: the 2026-11-02 collect wrote 443 plugin rows that folded into 245 apps. Per-plugin identity exists only on the source row.
 - The row id is the marketplace name plus the source path or repo, not the display name. The marketplace `renames` map keeps a shared-path id on the pre-rename slug.
 - `github` and git URLs that point at GitHub become `github:{owner}/{repo}` and merge with existing apps. A relative path resolves inside that marketplace's repo. A `git-subdir` path stays on the host repo's id.
 - `commit_sha` stores `source.sha` when the entry has one.

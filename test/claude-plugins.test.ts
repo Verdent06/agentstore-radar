@@ -11,7 +11,9 @@ import {
 } from "../src/adapters/claude-plugins.ts";
 import { createDiscoveredRefs } from "../src/adapters/types.ts";
 import { buildAggregate } from "../src/aggregate/build.ts";
-import { movers, publicMetricSeries } from "../src/aggregate/query.ts";
+import { movers, publicMetricSeries, topChart } from "../src/aggregate/query.ts";
+import { runTool } from "../src/aggregate/tools.ts";
+import type { Aggregate, AppSummary } from "../src/aggregate/types.ts";
 import { PUBLIC_TOP_N } from "../src/aggregate/public.ts";
 import { evaluateHealth } from "../src/commands/health.ts";
 import { computeMovers } from "../src/commands/report.ts";
@@ -305,7 +307,92 @@ describe("claude plugin star growth", () => {
     expect(agg.apps.find((app) => app.id === "github:adobe/skills")?.stars).toBe(8000);
     expect(agg.apps.find((app) => app.id === "github:adobe/skills")?.starsScope).toBe("host_repo");
   });
+
+  it("nulls previousValue and delta for a host_repo app on the stars chart", () => {
+    const agg = starChartAggregate();
+    const rows = topChart(agg, "github", 10);
+    const host = rows.find((row) => row.app.id === "github:adobe/skills");
+    const own = rows.find((row) => row.app.id === "github:example/only-plugin");
+    expect(host).toMatchObject({ value: 8000, previousValue: null, delta: null });
+    expect(own?.previousValue).toBe(10);
+    expect(own?.delta).toBe(30);
+    const tool = JSON.parse(runTool(agg, "top_charts", { chart: "github", limit: 10 }).content[0]!.text) as {
+      rows: Array<{ id: string; growth: string | null; value: number }>;
+    };
+    expect(tool.rows.find((row) => row.id === "github:adobe/skills")).toMatchObject({ value: 8000, growth: null });
+    expect(tool.rows.find((row) => row.id === "github:example/only-plugin")?.growth).toBe(">100%");
+  });
 });
+
+function starChartAggregate(): Aggregate {
+  const app = (id: string, stars: number, starsScope: "host_repo" | "own_repo"): AppSummary => ({
+    id,
+    name: id,
+    displayName: id,
+    description: null,
+    homepage: null,
+    repoUrl: null,
+    npmPackage: null,
+    pypiPackage: null,
+    sources: ["github", "claude-plugins"],
+    stores: [],
+    category: "other",
+    firstSeen: "2026-11-01",
+    lastSeen: "2026-11-02",
+    stars,
+    forks: null,
+    openIssues: null,
+    pushedAt: null,
+    npmWeeklyDownloads: null,
+    pypiLastWeekDownloads: null,
+    geminiStars: null,
+    verified: null,
+    starsScope,
+  });
+  return {
+    meta: {
+      builtAt: "2026-11-02T00:00:00Z",
+      origin: "fixture",
+      source: "fixture",
+      snapshotDates: ["2026-11-01", "2026-11-02"],
+      latestDate: "2026-11-02",
+      previousDate: "2026-11-01",
+      weekAgoDate: null,
+      partialDates: [],
+      latestCompleteDate: "2026-11-02",
+      previousCompleteDate: "2026-11-01",
+      coverage: [],
+    },
+    stats: {
+      appCount: 2,
+      storeCount: 0,
+      snapshotCount: 2,
+      latestDate: "2026-11-02",
+      previousDate: "2026-11-01",
+      weekAgoDate: null,
+      totalStars: 0,
+      totalNpmWeekly: 0,
+      multiStoreCount: 0,
+      newArrivalCount: 0,
+      categoryCount: 1,
+      starsKpiHeld: false,
+      npmKpiHeld: false,
+      pypiKpiHeld: false,
+      starsFreshCount: 0,
+      npmFreshCount: 0,
+      pypiFreshCount: 0,
+    },
+    apps: [
+      app("github:adobe/skills", 8000, "host_repo"),
+      app("github:example/only-plugin", 40, "own_repo"),
+    ],
+    series: {
+      "github:adobe/skills": { s: [1000, 8000] },
+      "github:example/only-plugin": { s: [10, 40] },
+    },
+    answerShare: null,
+  };
+}
 
 describe("claude plugin collect health", () => {
   function payloads(sha: string | null, extraRelative = false) {
