@@ -4,6 +4,7 @@ export const SourceNameSchema = z.enum([
   "mcp-registry",
   "smithery",
   "gemini-cli",
+  "claude-plugins",
   "github",
   "npm",
   "pypi",
@@ -12,6 +13,11 @@ export const SourceNameSchema = z.enum([
 export type SourceName = z.infer<typeof SourceNameSchema>;
 
 export const SOURCE_NAMES = SourceNameSchema.options;
+
+/** Whether a star count belongs to the plugin's own repository or a shared host repo. */
+export const StarsScopeSchema = z.enum(["own_repo", "host_repo"]);
+
+export type StarsScope = z.infer<typeof StarsScopeSchema>;
 
 export const SourceRowSchema = z.object({
   snapshot_date: z.string(),
@@ -38,6 +44,17 @@ export const SourceRowSchema = z.object({
   verified: z.boolean().nullable(),
   /** GitHub `isFork` when the collector saw it. Null means unknown. */
   fork: z.boolean().nullable().default(null),
+  /** Claude plugin slug from the marketplace entry. Display names are not ids. */
+  plugin_name: z.string().nullable().optional(),
+  /** Marketplace `name` (the slug after `@`), not the GitHub repo name. */
+  marketplace_name: z.string().nullable().optional(),
+  /** Pinned commit from the marketplace source, when the entry has one. */
+  commit_sha: z.string().nullable().optional(),
+  /**
+   * `own_repo` when the star count is that plugin's repository.
+   * `host_repo` when the count is a shared or parent repository (subfolder or multi-plugin repo).
+   */
+  stars_scope: StarsScopeSchema.nullable().optional(),
   fetched_at: z.string().nullable().optional().default(null),
   carried_forward: z.boolean().optional().default(false),
   /** True when the live upstream value has not moved for N snapshot days. */
@@ -80,6 +97,8 @@ export const AppRowSchema = z.object({
   pypi_last_month_downloads_fetched_at: z.string().nullable().optional().default(null),
   pypi_last_month_downloads_carried_forward: z.boolean().optional().default(false),
   stars_source: z.string().nullable().optional().default(null),
+  /** Set when a Claude plugin row says the merged stars belong to a host repo or the plugin's own repo. */
+  stars_scope: StarsScopeSchema.nullable().optional(),
 });
 
 export type AppRow = z.infer<typeof AppRowSchema>;

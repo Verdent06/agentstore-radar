@@ -112,7 +112,8 @@ export function publicMetricSeries(agg: Aggregate, id: string, metric: MetricKey
       return { date: day.date, value: null, growth: null, gap: "missing" };
     }
     const broken = previous != null && starsSourceBreak(series, metric, previous.index, index);
-    const growth = broken ? null : growthFrom(previous?.value, value);
+    const hostRepo = metric === "stars" && findApp(agg, id)?.starsScope === "host_repo";
+    const growth = broken || hostRepo ? null : growthFrom(previous?.value, value);
     previous = { index, value };
     return { date: day.date, value, growth, gap: null };
   });
@@ -401,6 +402,9 @@ export function movers(
       if (prevIndex == null || current == null) {
         continue;
       }
+      if (metric === "stars" && app.starsScope === "host_repo") {
+        continue;
+      }
       if (starsSourceBreak(series, metric, prevIndex, toIndex)) {
         continue;
       }
@@ -538,6 +542,9 @@ export function categoryTrends(agg: Aggregate, slug?: CategorySlug): CategoryTre
       }
       if (metricCarriedForward(series, "stars", index)) {
         carriedExcluded = true;
+        continue;
+      }
+      if (app.starsScope === "host_repo") {
         continue;
       }
       stars += metricFromSeries(series, "stars", index) ?? 0;

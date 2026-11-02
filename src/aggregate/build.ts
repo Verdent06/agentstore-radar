@@ -205,6 +205,7 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
         geminiStars: geminiStarsFromRows(extra),
         verified: verifiedFromRows(extra),
         starsSource: row.stars_source ?? null,
+        ...(row.stars_scope ? { starsScope: row.stars_scope } : {}),
       };
     })
     .sort((a, b) => a.id.localeCompare(b.id));

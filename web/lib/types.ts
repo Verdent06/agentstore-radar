@@ -52,6 +52,7 @@ export type AppSummary = {
   geminiStars: number | null;
   verified: boolean | null;
   starsSource?: string | null;
+  starsScope?: "own_repo" | "host_repo" | null;
 };
 
 export type CompactSeries = {

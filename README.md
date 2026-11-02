@@ -16,6 +16,7 @@ v1 uses **only sanctioned public APIs**. We do **not** scrape ChatGPT or claude.
 | Official MCP Registry | `GET /v0.1/servers` (cursor + `version=latest`) | catalog, packages, repo |
 | Smithery | `GET /servers` (`useCount`, stable `seed` pagination) | connections |
 | Gemini CLI gallery | `https://geminicli.com/extensions.json` | stars, lastUpdated |
+| Claude plugins | Anthropic `marketplace.json` (official, skills, knowledge-work) | plugin catalog, pinned commit |
 | GitHub GraphQL | batches of 100 `repository` nodes via `GH_STATS_TOKEN` or Actions `GITHUB_TOKEN` | stars, forks, open issues, `pushed_at` (daily) |
 | npm | bulk `downloads/point/last-week` (128 unscoped; scoped one-by-one with 429 patience) | weekly downloads (daily) |
 | PyPI | `pypistats.org/api/packages/{pkg}/recent` (throttled, daily) | weekly / monthly downloads |
@@ -174,6 +175,7 @@ Each source's `eligibleCount`, `freshTodayCount` (keys fetched on this UTC date 
 | PyPI | every discovered PyPI package | `fetchedShare` ≥0.80: throttled `pypistats` recent (~400ms) within IP rate limits | checkpoint + resume after 429 |
 | MCP | catalog page rows | full catalog in the run | n/a |
 | Gemini | gallery JSON rows | `fetchedShare` ≥0.80 (full `extensions.json` in one GET; typically 1.00 of ~2.2k rows). Frozen gallery stars stay unrankable | source freeze on unchanged gallery `stars` (≥95% for N days); live GitHub stars still win on merge |
+| Claude plugins | one marketplace JSON file per Anthropic catalog | `fetchedShare` is 1 when those files are fetched (not per plugin). History starts the day this ships; no git backfill | freeze only when a pinned commit sha is unchanged for N days at ≥95% of rows. Subfolder and multi-plugin repos are `host_repo` stars and are not plugin growth |
 | Smithery | seeded list catalog (~20.8k) | `fetchedShare` ≥0.80 via the list fetch (~208 pages × 100 at ~120ms ≈ 25s). Overlay `?q=` is a thaw probe (default 400, ~48s), not the fetchedShare driver — 80% overlay would be ~16.6k searches ≈ 33 min of the same frozen index | source freeze when ≥95% of `useCount` is unchanged for `SMITHERY_FROZEN_DAYS` (default 3); values stay frozen/unrankable; 429 during search marks `truncated` |
 
 ## Development

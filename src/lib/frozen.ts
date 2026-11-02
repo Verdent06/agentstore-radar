@@ -8,9 +8,12 @@ export type MetricObservation = {
   fetchedAt?: string | null;
 };
 
-export type NumericSourceField = {
-  [K in keyof SourceRow]: SourceRow[K] extends number | null ? K : never;
-}[keyof SourceRow];
+export type NumericSourceField = Exclude<
+  {
+    [K in keyof SourceRow]: SourceRow[K] extends number | null ? K : never;
+  }[keyof SourceRow],
+  undefined
+>;
 
 export type SourceFreezeDecision = {
   sourceFrozen: boolean;
@@ -45,6 +48,38 @@ export function isUnchangedForDays(
   minDays = 3,
 ): boolean {
   if (typeof current !== "number" || minDays < 1) {
+    return false;
+  }
+  if (minDays === 1) {
+    return true;
+  }
+  const byDate = new Map(history.map((row) => [row.date, row.value]));
+  let streak = 1;
+  for (let index = previousSnapshotDates.length - 1; index >= 0; index -= 1) {
+    const date = previousSnapshotDates[index];
+    if (date == null || byDate.get(date) !== current) {
+      break;
+    }
+    streak += 1;
+    if (streak >= minDays) {
+      return true;
+    }
+  }
+  return streak >= minDays;
+}
+
+/**
+ * Same streak rule as `isUnchangedForDays`, for a string pin such as a commit sha.
+ * Missing or blank values are not "unchanged": a listing with no pin must not
+ * freeze the catalog just because today's fetch repeated yesterday's file.
+ */
+export function isUnchangedStringForDays(
+  current: string | null | undefined,
+  history: Array<{ date: string; value: string | null }>,
+  previousSnapshotDates: string[],
+  minDays = 3,
+): boolean {
+  if (typeof current !== "string" || current.length === 0 || minDays < 1) {
     return false;
   }
   if (minDays === 1) {
@@ -107,6 +142,35 @@ export function loadPreviousMetricHistory(
       list.push({
         date,
         value: typeof raw === "number" ? raw : null,
+        fetchedAt: row.fetched_at ?? null,
+      });
+      byId.set(row.source_id, list);
+    }
+  }
+  return { dates, byId };
+}
+
+export function loadPreviousStringHistory(
+  dataDir: string,
+  snapshotDate: string,
+  source: SourceName,
+  field: "commit_sha",
+  limit = 3,
+): { dates: string[]; byId: Map<string, Array<{ date: string; value: string | null; fetchedAt?: string | null }>> } {
+  const dates = listSnapshotDates(dataDir)
+    .filter((date) => date < snapshotDate)
+    .slice(-Math.max(0, limit));
+  const byId = new Map<string, Array<{ date: string; value: string | null; fetchedAt?: string | null }>>();
+  for (const date of dates) {
+    for (const row of readSourceRows(date, dataDir)) {
+      if (row.source !== source) {
+        continue;
+      }
+      const raw = row[field];
+      const list = byId.get(row.source_id) ?? [];
+      list.push({
+        date,
+        value: typeof raw === "string" && raw.length > 0 ? raw : null,
         fetchedAt: row.fetched_at ?? null,
       });
       byId.set(row.source_id, list);

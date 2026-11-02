@@ -1,4 +1,4 @@
-import { AppRowSchema, type AppRow, type SourceRow } from "./schema.ts";
+import { AppRowSchema, type AppRow, type SourceRow, type StarsScope } from "./schema.ts";
 
 function firstString(...values: Array<string | null | undefined>): string | null {
   for (const value of values) {
@@ -126,8 +126,12 @@ function emptyApp(snapshotDate: string, row: SourceRow): AppRow {
 export function mergeApps(snapshotDate: string, rows: SourceRow[]): AppRow[] {
   const byId = new Map<string, AppRow>();
   const sourceSets = new Map<string, Set<string>>();
+  const starScopes = new Map<string, StarsScope>();
 
   for (const row of rows) {
+    if (row.stars_scope === "host_repo" || (row.stars_scope === "own_repo" && starScopes.get(row.app_id) !== "host_repo")) {
+      starScopes.set(row.app_id, row.stars_scope);
+    }
     const existing = byId.get(row.app_id);
     const sources = sourceSets.get(row.app_id) ?? new Set<string>();
     sources.add(row.source);
@@ -184,7 +188,8 @@ export function mergeApps(snapshotDate: string, rows: SourceRow[]): AppRow[] {
   return [...byId.values()]
     .map((app) => {
       const sources = [...(sourceSets.get(app.app_id) ?? [])].sort().join("|");
-      return AppRowSchema.parse({ ...app, sources });
+      const stars_scope = starScopes.get(app.app_id) ?? null;
+      return AppRowSchema.parse({ ...app, sources, ...(stars_scope ? { stars_scope } : {}) });
     })
     .sort((a, b) => a.app_id.localeCompare(b.app_id));
 }

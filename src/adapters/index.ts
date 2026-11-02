@@ -1,4 +1,5 @@
 import type { SourceAdapter } from "./types.ts";
+import { claudePluginsAdapter } from "./claude-plugins.ts";
 import { geminiAdapter } from "./gemini.ts";
 import { githubAdapter } from "./github.ts";
 import { mcpRegistryAdapter } from "./mcp-registry.ts";
@@ -10,6 +11,7 @@ export const adapters: SourceAdapter[] = [
   mcpRegistryAdapter,
   smitheryAdapter,
   geminiAdapter,
+  claudePluginsAdapter,
   githubAdapter,
   npmAdapter,
   pypiAdapter,
