@@ -245,7 +245,6 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     log.warn("force overwrite of existing snapshot; previous day kept as backup", overwrite);
   }
 
-  const packageOwners = linkCrossStore(results.flatMap((result) => result.records)).packageOwners;
   const manifest: SnapshotManifest = {
     snapshotDate,
     collectedAt,
@@ -257,10 +256,15 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     failedSourceCount: failedSources.length,
     runId,
     overwrite,
-    owner_decided_by: packageOwners,
-    ownerDecisionCounts: ownerDecisionCounts(packageOwners),
-    tieDecidedPackageOwners: tieDecidedPackageOwners(packageOwners),
   };
+  try {
+    const packageOwners = linkCrossStore(results.flatMap((result) => result.records)).packageOwners;
+    manifest.owner_decided_by = packageOwners;
+    manifest.ownerDecisionCounts = ownerDecisionCounts(packageOwners);
+    manifest.tieDecidedPackageOwners = tieDecidedPackageOwners(packageOwners);
+  } catch (error) {
+    console.warn(errorMessage(error));
+  }
 
   try {
     writeNormalized(snapshotDate, sourceRows, apps, manifest, dataDir);
