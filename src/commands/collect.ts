@@ -259,11 +259,13 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
   };
   try {
     const packageOwners = linkCrossStore(results.flatMap((result) => result.records)).packageOwners;
+    const counts = ownerDecisionCounts(packageOwners);
+    const tieDecided = tieDecidedPackageOwners(packageOwners);
     manifest.owner_decided_by = packageOwners;
-    manifest.ownerDecisionCounts = ownerDecisionCounts(packageOwners);
-    manifest.tieDecidedPackageOwners = tieDecidedPackageOwners(packageOwners);
+    manifest.ownerDecisionCounts = counts;
+    manifest.tieDecidedPackageOwners = tieDecided;
   } catch (error) {
-    console.warn(errorMessage(error));
+    log.warn(errorMessage(error));
   }
 
   try {
