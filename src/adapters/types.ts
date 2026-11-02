@@ -44,6 +44,7 @@ export type SourceResult = {
   freshTodayCount?: number;
   freshWithin7dCount?: number;
   fetchedThisRunCount?: number;
+  fetchedShare?: number;
   coverage?: number;
   lastFetchedAt?: string;
   unresolvedCount?: number;

@@ -23,6 +23,7 @@ export type ReportResult = {
     freshTodayCount?: number;
     freshWithin7dCount?: number;
     fetchedThisRunCount?: number;
+    fetchedShare?: number;
     skipped: boolean;
   }>;
 };
@@ -118,6 +119,7 @@ export function coverageFromManifest(manifest: SnapshotManifest): ReportResult["
     freshTodayCount: source.freshTodayCount,
     freshWithin7dCount: sourceFreshWithin7dCount(source),
     fetchedThisRunCount: source.fetchedThisRunCount,
+    fetchedShare: source.fetchedShare,
     skipped: source.skipped,
   }));
 }
@@ -167,8 +169,9 @@ export function formatReport(report: ReportResult): string {
           ? `  ${source.freshTodayCount ?? source.freshWithin7dCount ?? 0}/${source.eligibleCount} fresh today`
           : "";
       const thisRun = source.fetchedThisRunCount != null ? `  ${source.fetchedThisRunCount} this run` : "";
+      const share = source.fetchedShare != null ? `  fetchedShare ${formatCoveragePct(source.fetchedShare)}` : "";
       const skipped = source.skipped ? "  (skipped)" : "";
-      lines.push(`  ${source.source.padEnd(16)} ${formatCoveragePct(source.coverage)}${window}${thisRun}${skipped}`);
+      lines.push(`  ${source.source.padEnd(16)} ${formatCoveragePct(source.coverage)}${window}${thisRun}${share}${skipped}`);
     }
     lines.push("");
   }

@@ -106,6 +106,8 @@ describe("source normalizers", () => {
       carried_forward: false,
       fetched_at: "2026-10-25T12:00:00Z",
     });
+    expect(result.fetchedThisRunCount).toBe(1);
+    expect(result.fetchedShare).toBe(1);
     expect((result.raw as { useCountRefresh?: { updated: number } }).useCountRefresh?.updated).toBe(1);
   });
 
@@ -138,6 +140,8 @@ describe("source normalizers", () => {
       carried_forward: true,
       fetched_at: "2026-10-24T12:00:00Z",
     });
+    expect(result.fetchedThisRunCount).toBe(1);
+    expect(result.fetchedShare).toBe(1);
   });
 
   it("does not stamp a real unchanged Smithery useCount as fresh (pipeworx/gateway = 419019)", async () => {
@@ -212,7 +216,9 @@ describe("source normalizers", () => {
       frozen: true,
     });
     expect(result.freshTodayCount).toBe(0);
-    expect(result.fetchedThisRunCount).toBe(0);
+    expect(result.fetchedThisRunCount).toBe(1);
+    expect(result.fetchedShare).toBe(1);
+    expect(result.fetchedThisRunCount).toBe(result.records.length);
     expect((result.raw as { useCountRefresh?: { unchanged: number; frozen: number; sourceFrozen: boolean } }).useCountRefresh).toMatchObject({
       unchanged: 1,
       frozen: 1,
@@ -292,6 +298,7 @@ describe("source normalizers", () => {
       carried_forward: false,
     });
     expect(result.fetchedThisRunCount).toBe(2);
+    expect(result.fetchedShare).toBe(1);
   });
 
   it("stamps Gemini gallery stars frozen when the gallery is unchanged for N days", async () => {
@@ -344,11 +351,12 @@ describe("source normalizers", () => {
       frozen: true,
     });
     expect(result.freshTodayCount).toBe(0);
-    expect(result.fetchedThisRunCount).toBe(0);
+    expect(result.fetchedThisRunCount).toBe(result.records.length);
+    expect(result.fetchedShare).toBe(1);
     expect((result.raw as { freeze?: { sourceFrozen: boolean } }).freeze?.sourceFrozen).toBe(true);
   });
 
-  it("counts fetchedThisRun as search hits this run and marks a 429-truncated search partial", async () => {
+  it("counts fetchedThisRun as live list rows and still marks a 429-truncated overlay partial", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-smithery-429-"));
     const brave = loadFixture<{ servers: Array<{ qualifiedName: string; useCount: number }> }>("smithery-page.json").servers[0]!;
     const extra = {
@@ -395,8 +403,8 @@ describe("source normalizers", () => {
       sleep: async () => {},
     });
     expect(result.records).toHaveLength(2);
-    expect(result.fetchedThisRunCount).toBe(1);
-    expect(result.fetchedThisRunCount).not.toBe(result.records.length);
+    expect(result.fetchedThisRunCount).toBe(2);
+    expect(result.fetchedShare).toBe(1);
     expect(result.truncated).toBe(true);
     expect((result.raw as { useCountRefresh?: { truncated: boolean; attempted: number } }).useCountRefresh).toMatchObject({
       truncated: true,

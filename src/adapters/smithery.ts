@@ -8,7 +8,7 @@ import {
   SOURCE_FREEZE_RATIO,
   runBatchSize,
 } from "../lib/config.ts";
-import { computeCoverage } from "../lib/coverage.ts";
+import { computeCoverage, computeFetchedShare } from "../lib/coverage.ts";
 import { evaluateSourceFreeze, isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../lib/frozen.ts";
 import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, githubRepoUrl, parseGithubRepo } from "../lib/matching.ts";
@@ -255,7 +255,6 @@ export const smitheryAdapter: SourceAdapter = {
     let useCountMissed = 0;
     let useCountTruncated = false;
     let processed = 0;
-    const fetchedThisRunNames = new Set<string>();
 
     ctx.log.info("smithery refreshing useCount via search", {
       catalog: allKeys.length,
@@ -288,7 +287,6 @@ export const smitheryAdapter: SourceAdapter = {
             const previousValue = cache[name]?.useCount;
             cache[name] = { useCount: live };
             lastFetched[name] = fetchedAt;
-            fetchedThisRunNames.add(name);
             if (previousValue === live) {
               useCountUnchanged += 1;
             } else {
@@ -400,9 +398,15 @@ export const smitheryAdapter: SourceAdapter = {
       throw new Error(`smithery validation failed for ${invalid}/${servers.length} rows`);
     }
 
-    const fetchedThisRunCount = [...fetchedThisRunNames].filter((name) => frozenByName.get(name) !== true).length;
-    const freshTodayCount = records.filter((row) => row.carried_forward !== true).length;
-    const { coverage } = computeCoverage(records.length, freshTodayCount);
+    // List pagination already returns useCount for the full catalog. Count those
+    // live list rows as fetched even when the catalog is source-frozen (unrankable).
+    // Overlay `?q=` hits stay a thaw probe; they do not define fetchedShare.
+    // `fresh` remains carried_forward false AND not frozen.
+    const fetchedThisRunCount = records.length;
+    const eligibleCount = Math.max(records.length, totalCount ?? 0);
+    const fetchedShare = computeFetchedShare(fetchedThisRunCount, eligibleCount);
+    const freshTodayCount = records.filter((row) => row.carried_forward !== true && row.frozen !== true).length;
+    const { coverage } = computeCoverage(eligibleCount, freshTodayCount);
     if (freeze.sourceFrozen) {
       ctx.log.warn("smithery useCount source-frozen; stamping unchanged rows frozen/carried_forward, not fresh", {
         frozen: frozenCount,
@@ -421,6 +425,7 @@ export const smitheryAdapter: SourceAdapter = {
       useCountUpdated,
       useCountUnchanged,
       fetchedThisRunCount,
+      fetchedShare,
       frozenCount,
       sourceFrozen: freeze.sourceFrozen,
       useCountTruncated,
@@ -454,8 +459,9 @@ export const smitheryAdapter: SourceAdapter = {
       failed: false,
       error: stoppedAt?.error,
       stoppedAt,
-      eligibleCount: records.length,
+      eligibleCount,
       fetchedThisRunCount,
+      fetchedShare,
       freshTodayCount,
       coverage,
       raw,

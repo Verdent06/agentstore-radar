@@ -177,6 +177,10 @@ function checkpointPath(dataDir: string, sourceId: string): string {
   return join(stateDir(dataDir, sourceId), "checkpoint.json");
 }
 
+function unresolvedPath(dataDir: string, sourceId: string): string {
+  return join(stateDir(dataDir, sourceId), "unresolved.json");
+}
+
 export function loadJsonState<T>(path: string, fallback: T): T {
   if (!existsSync(path)) {
     return fallback;
@@ -230,4 +234,27 @@ export function persistCheckpoint(dataDir: string, sourceId: string, checkpoint:
 
 export function clearCheckpoint(dataDir: string, sourceId: string): void {
   clearStateFile(checkpointPath(dataDir, sourceId));
+}
+
+/** Map of unresolved GitHub keys → when we last confirmed NOT_FOUND. */
+export type UnresolvedMap = Record<string, string>;
+
+export function loadUnresolved(dataDir: string, sourceId: string): UnresolvedMap {
+  const value = loadJsonState<UnresolvedMap | string[]>(unresolvedPath(dataDir, sourceId), {});
+  if (Array.isArray(value)) {
+    return Object.fromEntries(value.filter((key) => typeof key === "string").map((key) => [key, ""]));
+  }
+  return value && typeof value === "object" ? value : {};
+}
+
+export function persistUnresolved(dataDir: string, sourceId: string, unresolved: UnresolvedMap): void {
+  persistJsonState(unresolvedPath(dataDir, sourceId), unresolved);
+}
+
+/** Known-unresolved keys stay out of the daily batch unless the last check is stale. */
+export function isDueUnresolved(checkedAt: string | undefined, now: Date, maxAgeMs = DEFAULT_REFRESH_MAX_AGE_MS): boolean {
+  if (!checkedAt) {
+    return true;
+  }
+  return isStale(checkedAt, now, maxAgeMs);
 }

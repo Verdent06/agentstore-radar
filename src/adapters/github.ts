@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { GITHUB_GRAPHQL_BATCH, GITHUB_GRAPHQL_URL, GITHUB_RUN_BATCH, MAX_RATE_LIMIT_WAIT_MS, runBatchSize } from "../lib/config.ts";
-import { computeCoverage } from "../lib/coverage.ts";
+import { computeCoverage, computeFetchedShare } from "../lib/coverage.ts";
 import { HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, type GithubRepoRef } from "../lib/matching.ts";
 import type { SleepFn } from "../lib/retry.ts";
@@ -9,12 +9,15 @@ import {
   countFresh,
   countFreshToday,
   isCarriedForward,
+  isDueUnresolved,
   loadCheckpoint,
   loadEntityCache,
   loadLastFetched,
+  loadUnresolved,
   persistCheckpoint,
   persistEntityCache,
   persistLastFetched,
+  persistUnresolved,
   resumeDailyDueKeys,
   selectRunBatch,
 } from "../lib/rolling.ts";
@@ -235,8 +238,16 @@ export const githubAdapter: SourceAdapter = {
     const cache = loadEntityCache(ctx.dataDir, "github");
     const checkpoint = loadCheckpoint(ctx.dataDir, "github");
     const { dueKeys: unorderedDue, resumed } = resumeDailyDueKeys(allKeys, lastFetched, ctx.snapshotDate, checkpoint);
+    const unresolvedMap = loadUnresolved(ctx.dataDir, "github");
+    const allKeySet = new Set(allKeys);
+    for (const key of Object.keys(unresolvedMap)) {
+      if (!allKeySet.has(key)) {
+        delete unresolvedMap[key];
+      }
+    }
+    const fetchDue = unorderedDue.filter((key) => isDueUnresolved(unresolvedMap[key], ctx.now));
     const dueKeys = selectRunBatch(
-      unorderedDue,
+      fetchDue,
       lastFetched,
       runBatchSize(ctx.env, "RADAR_GITHUB_BATCH", GITHUB_RUN_BATCH),
       (key) => cachedStars(cache[key]),
@@ -244,7 +255,7 @@ export const githubAdapter: SourceAdapter = {
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
     const unresolvedRepos: string[] = [];
-    const unresolvedKeys = new Set<string>();
+    const unresolvedKeys = new Set(Object.keys(unresolvedMap));
 
     const finish = (input: {
       skipped: boolean;
@@ -259,10 +270,17 @@ export const githubAdapter: SourceAdapter = {
       const countableKeys = allKeys.filter((key) => !unresolvedKeys.has(key));
       const freshTodayCount = countFreshToday(countableKeys, lastFetched, ctx.snapshotDate);
       const freshWithin7dCount = countFresh(countableKeys, lastFetched, ctx.now);
+      const unresolvedCount = allKeys.filter((key) => unresolvedKeys.has(key)).length;
       const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
+      const fetchedShare = computeFetchedShare(input.fetchedThisRun, allKeys.length, unresolvedCount);
       const lastFetchedAt = Object.values(lastFetched).sort().at(-1);
       persistLastFetched(ctx.dataDir, "github", lastFetched);
       persistEntityCache(ctx.dataDir, "github", cache);
+      const nextUnresolved: Record<string, string> = {};
+      for (const key of unresolvedKeys) {
+        nextUnresolved[key] = unresolvedMap[key] ?? fetchedAt;
+      }
+      persistUnresolved(ctx.dataDir, "github", nextUnresolved);
       if (input.truncated) {
         persistCheckpoint(ctx.dataDir, "github", {
           snapshotDate: ctx.snapshotDate,
@@ -284,9 +302,10 @@ export const githubAdapter: SourceAdapter = {
         freshTodayCount,
         freshWithin7dCount,
         fetchedThisRunCount: input.fetchedThisRun,
+        fetchedShare,
         coverage,
         lastFetchedAt,
-        unresolvedCount: unresolvedKeys.size,
+        unresolvedCount,
         unresolvedRepos: unresolvedRepos.length > 0 ? unresolvedRepos : undefined,
         stoppedAt: input.stoppedAt,
         error: input.stoppedAt?.error,
@@ -299,7 +318,7 @@ export const githubAdapter: SourceAdapter = {
           resumed,
           repositories: allKeys.map((key) => cache[key]).filter((item) => item != null),
           ...input.rawExtra,
-          ...(unresolvedRepos.length > 0 ? { unresolvedRepos, unresolvedCount: unresolvedKeys.size } : {}),
+          ...(unresolvedCount > 0 ? { unresolvedRepos, unresolvedCount } : {}),
         } satisfies GithubRawSnapshot,
         records,
       };
@@ -332,6 +351,8 @@ export const githubAdapter: SourceAdapter = {
     ctx.log.info("github fetching repositories", {
       requested: allKeys.length,
       due: unorderedDue.length,
+      fetchDue: fetchDue.length,
+      knownUnresolved: unresolvedKeys.size,
       batch: dueKeys.length,
       resumed,
       batches: Math.ceil(dueKeys.length / GITHUB_GRAPHQL_BATCH),
@@ -375,6 +396,7 @@ export const githubAdapter: SourceAdapter = {
           const requested = Number.isInteger(aliasIndex) ? batch[aliasIndex] : undefined;
           const key = requested ? `${requested.owner}/${requested.repo}`.toLowerCase() : repo.toLowerCase();
           unresolvedKeys.add(key);
+          unresolvedMap[key] = fetchedAt;
           ctx.log.warn("github could not resolve repository", { repo, error: error.message });
         }
         if (isGraphqlRateLimit(otherErrors) && !payload.data) {
@@ -414,6 +436,8 @@ export const githubAdapter: SourceAdapter = {
               : parsed.data.nameWithOwner.toLowerCase();
             cache[key] = parsed.data;
             lastFetched[key] = fetchedAt;
+            unresolvedKeys.delete(key);
+            delete unresolvedMap[key];
             fetchedThisRun += 1;
           }
         }
@@ -471,8 +495,10 @@ export const githubAdapter: SourceAdapter = {
       requested: allKeys.length,
       due: dueKeys.length,
       fetchedThisRun,
+      fetchedShare: computeFetchedShare(fetchedThisRun, allKeys.length, unresolvedKeys.size),
       truncated,
-      unresolved: unresolvedRepos.length,
+      unresolved: unresolvedKeys.size,
+      unresolvedThisRun: unresolvedRepos.length,
     });
     return finish({
       skipped: false,

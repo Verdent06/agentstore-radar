@@ -57,12 +57,14 @@ describe("report", () => {
           freshTodayCount: 30746,
           freshWithin7dCount: 30746,
           fetchedThisRunCount: 30836,
+          fetchedShare: 0.97,
           skipped: false,
         },
       ],
     });
     expect(withCoverage).toContain("30746/30746 fresh today");
     expect(withCoverage).toContain("30836 this run");
+    expect(withCoverage).toContain("fetchedShare 97.0%");
     expect(withCoverage).not.toMatch(/30746\/30746 eligible/);
   });
 });

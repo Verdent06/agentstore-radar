@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { adaptersByKind } from "../adapters/index.ts";
 import { createDiscoveredRefs, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "../adapters/types.ts";
 import { SOURCE_COLLECT_ATTEMPTS } from "../lib/config.ts";
-import { computeCoverage } from "../lib/coverage.ts";
+import { computeCoverage, computeFetchedShare } from "../lib/coverage.ts";
 import { utcDateString } from "../lib/dates.ts";
 import { createHttpClient, type HttpClient } from "../lib/http.ts";
 import {
@@ -300,7 +300,9 @@ function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifes
   const freshToday = result.freshTodayCount ?? (result.skipped ? 0 : result.rowCount);
   const freshWithin7d = result.freshWithin7dCount ?? freshToday;
   const fetchedThisRun = result.fetchedThisRunCount ?? (result.skipped || result.failed ? 0 : result.rowCount);
+  const unresolvedCount = result.unresolvedCount ?? 0;
   const { coverage } = computeCoverage(eligible, freshToday);
+  const fetchedShare = result.fetchedShare ?? computeFetchedShare(fetchedThisRun, eligible, unresolvedCount);
   return {
     source: result.source,
     rowCount: result.rowCount,
@@ -312,6 +314,7 @@ function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifes
     freshTodayCount: freshToday,
     freshWithin7dCount: freshWithin7d,
     fetchedThisRunCount: fetchedThisRun,
+    fetchedShare: result.skipped && eligible === 0 ? undefined : fetchedShare,
     coverage: result.skipped && eligible === 0 ? undefined : result.coverage ?? coverage,
     lastFetchedAt: result.lastFetchedAt,
     unresolvedCount: result.unresolvedCount,

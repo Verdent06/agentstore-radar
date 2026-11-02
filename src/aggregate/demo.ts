@@ -681,6 +681,7 @@ function manifestFor(date: string, sourceRows: SourceRow[], appCount: number): S
         freshTodayCount: count,
         freshWithin7dCount: count,
         fetchedThisRunCount: count,
+        fetchedShare: 1,
         coverage: 1,
       };
     }),
