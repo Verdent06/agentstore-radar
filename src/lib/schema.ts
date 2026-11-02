@@ -129,6 +129,33 @@ export const SourceManifestSchema = z.object({
 
 export type SourceManifest = z.infer<typeof SourceManifestSchema>;
 
+const OwnerDecisionReasonSchema = z.enum([
+  "sole_claimant",
+  "scope_matches_github_org",
+  "most_supporting_rows",
+  "non_fork",
+  "repo_name_matches_package",
+  "github_id_fallback",
+  "smallest_id_fallback",
+]);
+
+const PackageOwnerDecisionSchema = z.object({
+  npm_package: z.string(),
+  app_id: z.string(),
+  owner_decided_by: OwnerDecisionReasonSchema,
+  claimants: z.array(z.string()),
+});
+
+const OwnerDecisionCountsSchema = z.object({
+  sole_claimant: z.number().int().nonnegative(),
+  scope_matches_github_org: z.number().int().nonnegative(),
+  most_supporting_rows: z.number().int().nonnegative(),
+  non_fork: z.number().int().nonnegative(),
+  repo_name_matches_package: z.number().int().nonnegative(),
+  github_id_fallback: z.number().int().nonnegative(),
+  smallest_id_fallback: z.number().int().nonnegative(),
+});
+
 export const SnapshotManifestSchema = z.object({
   snapshotDate: z.string(),
   collectedAt: z.string(),
@@ -153,6 +180,15 @@ export const SnapshotManifestSchema = z.object({
       newSha: z.string().optional(),
     })
     .optional(),
+  /**
+   * Private snapshot only. One record per npm package with at least one claimant.
+   * Not copied into the public web or MCP aggregate.
+   */
+  owner_decided_by: z.array(PackageOwnerDecisionSchema).optional(),
+  /** Private snapshot only. Count of npm packages per `owner_decided_by` reason. */
+  ownerDecisionCounts: OwnerDecisionCountsSchema.optional(),
+  /** Private snapshot only. Packages decided by `github_id_fallback` or `smallest_id_fallback`. */
+  tieDecidedPackageOwners: z.array(PackageOwnerDecisionSchema).optional(),
 });
 
 export type SnapshotManifest = z.infer<typeof SnapshotManifestSchema>;

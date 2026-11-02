@@ -20,7 +20,7 @@ import {
   writeNormalized,
 } from "../lib/io.ts";
 import { createLogger, type Logger } from "../lib/logger.ts";
-import { linkSourceRows } from "../lib/matching.ts";
+import { linkCrossStore, linkSourceRows, ownerDecisionCounts, tieDecidedPackageOwners } from "../lib/matching.ts";
 import { mergeApps } from "../lib/merge.ts";
 import { retryAsync, type SleepFn } from "../lib/retry.ts";
 import type { SnapshotManifest, SourceManifest, SourceName, SourceRow } from "../lib/schema.ts";
@@ -245,6 +245,7 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     log.warn("force overwrite of existing snapshot; previous day kept as backup", overwrite);
   }
 
+  const packageOwners = linkCrossStore(results.flatMap((result) => result.records)).packageOwners;
   const manifest: SnapshotManifest = {
     snapshotDate,
     collectedAt,
@@ -256,6 +257,9 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     failedSourceCount: failedSources.length,
     runId,
     overwrite,
+    owner_decided_by: packageOwners,
+    ownerDecisionCounts: ownerDecisionCounts(packageOwners),
+    tieDecidedPackageOwners: tieDecidedPackageOwners(packageOwners),
   };
 
   try {
