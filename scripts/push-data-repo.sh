@@ -15,6 +15,9 @@ ATTEMPTS="${GIT_PUSH_ATTEMPTS:-5}"
 cd "$DATA_REPO"
 git config user.name "${GIT_AUTHOR_NAME:-github-actions[bot]}"
 git config user.email "${GIT_AUTHOR_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}"
+# A global commit.gpgsign or fsmonitor must not block the retry loop.
+git config commit.gpgsign false
+git config core.fsmonitor false
 
 NORMALIZED="data/normalized/${DATE}"
 if [[ -f "$NORMALIZED" ]]; then
@@ -31,23 +34,75 @@ if [[ -d "$NORMALIZED" ]]; then
   fi
 fi
 
-git add -A
+# Drop staged zero-size files so we never publish empty blobs.
+drop_zero_size_staged() {
+  while IFS= read -r -d '' file; do
+    if [[ -f "$file" && ! -s "$file" ]]; then
+      echo "push: unstaging zero-size $file"
+      git restore --staged "$file" || true
+      rm -f "$file"
+    fi
+  done < <(git diff --cached --name-only -z)
+}
 
-# Drop any staged zero-size files so we never publish empty blobs.
-while IFS= read -r -d '' file; do
-  if [[ -f "$file" && ! -s "$file" ]]; then
-    echo "push: unstaging zero-size $file"
-    git restore --staged "$file" || true
-    rm -f "$file"
+# Snapshot commits include that day's manifest. Checkpoint-only commits
+# (state files saved when collect is killed before writeNormalized) do not.
+commit_message() {
+  if git diff --cached --name-only | grep -F -q "data/normalized/${DATE}/manifest.json"; then
+    echo "data: snapshot ${DATE}"
+  else
+    echo "data: checkpoint ${DATE}"
   fi
-done < <(git diff --cached --name-only -z)
+}
 
-if git diff --cached --quiet; then
+commit_if_needed() {
+  git add -A
+  drop_zero_size_staged
+  if git diff --cached --quiet; then
+    return 0
+  fi
+  git commit -m "$(commit_message)"
+}
+
+# A timeout can flush checkpoint writes after the first commit. Fold those
+# into another commit, or stash and re-apply after rebase, before pull --rebase.
+# `git pull --rebase` refuses a dirty worktree ("cannot pull with rebase: You have unstaged changes").
+STASHED=0
+settle_worktree() {
+  local attempt
+  for attempt in 1 2 3; do
+    commit_if_needed
+    if [[ -z "$(git status --porcelain)" ]]; then
+      return 0
+    fi
+  done
+  echo "push: stashing changes that survived commit"
+  git stash push --include-untracked --message "radar-collect-retry" >/dev/null
+  STASHED=1
+}
+
+reapply_stash() {
+  if [[ "$STASHED" != 1 ]]; then
+    return 0
+  fi
+  if git stash pop; then
+    STASHED=0
+    settle_worktree
+    return 0
+  fi
+  echo "push: stash pop conflicted; restoring HEAD files and keeping the stash for the next attempt" >&2
+  git checkout -- . >/dev/null 2>&1 || true
+  git reset >/dev/null 2>&1 || true
+  return 1
+}
+
+HEAD_BEFORE=$(git rev-parse HEAD)
+settle_worktree
+HEAD_AFTER=$(git rev-parse HEAD)
+if [[ "$HEAD_BEFORE" == "$HEAD_AFTER" && "$STASHED" != 1 ]]; then
   echo "No snapshot changes"
   exit 0
 fi
-
-git commit -m "data: snapshot ${DATE}"
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 if [[ "$BRANCH" == "HEAD" || -z "$BRANCH" ]]; then
@@ -72,9 +127,10 @@ fi
 
 push_failed=0
 for attempt in $(seq 1 "$ATTEMPTS"); do
+  settle_worktree
   git fetch origin "$BRANCH" --quiet || git fetch origin --quiet
   if git pull --rebase origin "$BRANCH"; then
-    if git push origin "HEAD:${BRANCH}"; then
+    if reapply_stash && git push origin "HEAD:${BRANCH}"; then
       echo "push: succeeded on attempt ${attempt}"
       exit 0
     fi

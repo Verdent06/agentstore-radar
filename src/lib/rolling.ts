@@ -236,6 +236,22 @@ export function clearCheckpoint(dataDir: string, sourceId: string): void {
   clearStateFile(checkpointPath(dataDir, sourceId));
 }
 
+/**
+ * First key in `keys` that was not fetched for this snapshot day.
+ * Resume slices `dueKeys` from this index (rolling.ts checkpoint contract).
+ * Keys before it are already fresh today; later keys, including ones skipped
+ * by a wall-clock budget, stay in the checkpoint.
+ */
+export function checkpointNextIndex(
+  keys: string[],
+  lastFetched: LastFetchedMap,
+  snapshotDate: string,
+  collectedAt?: string,
+): number {
+  const index = keys.findIndex((key) => isCarriedForward(lastFetched[key], snapshotDate, collectedAt));
+  return index === -1 ? keys.length : index;
+}
+
 /** Map of unresolved GitHub keys → when we last confirmed NOT_FOUND. */
 export type UnresolvedMap = Record<string, string>;
 

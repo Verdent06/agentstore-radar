@@ -2,8 +2,10 @@ import { existsSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { adaptersByKind } from "../adapters/index.ts";
 import { createDiscoveredRefs, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "../adapters/types.ts";
+import { budgetExhausted, budgetExhaustedError, isBudgetExhaustedError, openSourceBudget } from "../lib/budget.ts";
+import { budgetPartialRows } from "../lib/budget-partial.ts";
 import { SOURCE_COLLECT_ATTEMPTS } from "../lib/config.ts";
-import { computeCoverage, computeFetchedShare } from "../lib/coverage.ts";
+import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
 import { utcDateString } from "../lib/dates.ts";
 import { createHttpClient, type HttpClient } from "../lib/http.ts";
 import {
@@ -41,6 +43,7 @@ export type CollectOptions = {
   runId?: string;
   sourceAttempts?: number;
   sleep?: SleepFn;
+  monotonicNow?: () => number;
 };
 
 export type CollectOutcome = {
@@ -93,16 +96,65 @@ function sourceIncomplete(result: SourceResult): boolean {
   return Boolean(result.failed || result.truncated);
 }
 
-async function collectAdapter(
+function stampFetchWindow(result: SourceResult, startedMs: number, endedMs: number): SourceResult {
+  return {
+    ...result,
+    fetchStartedAt: new Date(startedMs).toISOString(),
+    fetchEndedAt: new Date(endedMs).toISOString(),
+  };
+}
+
+function budgetPartialResult(adapter: SourceAdapter, ctx: CollectContext, error: unknown): SourceResult {
+  const stoppedAt = sourceStoppedAt(adapter.name, error);
+  const records = budgetPartialRows(ctx.dataDir, adapter.name, ctx.snapshotDate);
+  const eligibleCount = records.length;
+  return {
+    source: adapter.name,
+    collectedAt: ctx.collectedAt,
+    rowCount: records.length,
+    skipped: false,
+    truncated: true,
+    failed: false,
+    error: stoppedAt.error,
+    stoppedAt,
+    raw: { truncated: true, budgetExhausted: true, keptRows: records.length },
+    records,
+    eligibleCount,
+    freshTodayCount: 0,
+    freshWithin7dCount: 0,
+    fetchedThisRunCount: 0,
+    fetchedShare: eligibleCount === 0 ? 0 : undefined,
+    coverage: eligibleCount === 0 ? 0 : 0,
+  };
+}
+
+/**
+ * One budget for every attempt. A retry reuses the time left; once the budget
+ * is spent the adapter is not called again, and exhaustion is a partial result.
+ */
+export async function collectAdapter(
   adapter: SourceAdapter,
   ctx: CollectContext,
   attempts: number,
   sleep: SleepFn,
 ): Promise<SourceResult> {
+  const clock = ctx.monotonicNow ?? Date.now;
+  const budget = openSourceBudget(ctx.env, adapter.name, clock);
+  const sourceCtx: CollectContext = { ...ctx, budget };
+  const fetchStartedMs = budget.startedAtMs;
+  const finish = (result: SourceResult): SourceResult => stampFetchWindow(result, fetchStartedMs, clock());
   try {
-    return await retryAsync(() => adapter.collect(ctx), {
+    const result = await retryAsync(async (attempt) => {
+      if (attempt > 0 && budgetExhausted(budget)) {
+        throw budgetExhaustedError(budget, "before retry");
+      }
+      return adapter.collect(sourceCtx);
+    }, {
       attempts,
       sleep,
+      shouldRetry(error) {
+        return !budgetExhausted(budget) && !isBudgetExhaustedError(error);
+      },
       onRetry(attempt, error, waitMs) {
         ctx.log.warn(`retrying ${adapter.name}`, {
           attempt: attempt + 1,
@@ -111,11 +163,19 @@ async function collectAdapter(
         });
       },
     });
+    return finish(result);
   } catch (error) {
+    if (budgetExhausted(budget) || isBudgetExhaustedError(error)) {
+      ctx.log.warn(`source ${adapter.name} stopped at its wall-clock budget`, {
+        error: errorMessage(error),
+        budgetMs: budget.budgetMs,
+      });
+      return finish(budgetPartialResult(adapter, sourceCtx, error));
+    }
     ctx.log.error(`source ${adapter.name} failed; continuing with remaining sources`, {
       error: errorMessage(error),
     });
-    return failedResult(adapter.name, ctx.collectedAt, error);
+    return finish(failedResult(adapter.name, ctx.collectedAt, error));
   }
 }
 
@@ -169,6 +229,8 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     discovered: createDiscoveredRefs(),
     maxPages: options.maxPages,
     sleep,
+    monotonicNow: options.monotonicNow,
+    runId,
   };
 
   const results: SourceResult[] = [];
@@ -202,6 +264,14 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     };
   }
   const apps = mergeApps(snapshotDate, sourceRows);
+  let previousManifest: SnapshotManifest | undefined;
+  if (inspection.hasManifest) {
+    try {
+      previousManifest = readManifest(snapshotDate, dataDir);
+    } catch {
+      previousManifest = undefined;
+    }
+  }
   const sourceManifests: SourceManifest[] = [];
 
   for (const result of results) {
@@ -211,7 +281,8 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
       rawFile = await writeJsonSnapshot(result.source, snapshotDate, today, result.raw, dataDir);
       log.info(`wrote ${rawFile}`, { source: result.source, rows: result.rowCount });
     }
-    sourceManifests.push(toSourceManifest(result, rawFile));
+    const previousSource = previousManifest?.sources.find((source) => source.source === result.source);
+    sourceManifests.push(mergeFetchSpan(previousSource, toSourceManifest(result, rawFile), runId));
   }
 
   const partial = incompleteSources.length > 0;
@@ -311,8 +382,14 @@ function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifes
   const freshWithin7d = result.freshWithin7dCount ?? freshToday;
   const fetchedThisRun = result.fetchedThisRunCount ?? (result.skipped || result.failed ? 0 : result.rowCount);
   const unresolvedCount = result.unresolvedCount ?? 0;
+  const incomplete = result.truncated === true || result.failed === true;
   const { coverage } = computeCoverage(eligible, freshToday);
-  const fetchedShare = result.fetchedShare ?? computeFetchedShare(fetchedThisRun, eligible, unresolvedCount);
+  const fetchedShare =
+    incomplete && eligible === 0
+      ? 0
+      : result.skipped && eligible === 0
+        ? undefined
+        : freshFetchedShare(result.records, eligible, unresolvedCount, incomplete);
   return {
     source: result.source,
     rowCount: result.rowCount,
@@ -324,8 +401,8 @@ function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifes
     freshTodayCount: freshToday,
     freshWithin7dCount: freshWithin7d,
     fetchedThisRunCount: fetchedThisRun,
-    fetchedShare: result.skipped && eligible === 0 ? undefined : fetchedShare,
-    coverage: result.skipped && eligible === 0 ? undefined : result.coverage ?? coverage,
+    fetchedShare,
+    coverage: result.skipped && eligible === 0 ? undefined : incomplete && eligible === 0 ? 0 : result.coverage ?? coverage,
     lastFetchedAt: result.lastFetchedAt,
     unresolvedCount: result.unresolvedCount,
     unresolvedRepos: result.unresolvedRepos,
@@ -335,5 +412,38 @@ function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifes
     backfilled: result.backfilled,
     backfilledFields: result.backfilledFields,
     stoppedAt: result.stoppedAt,
+    weeklyGtMonthlyCount: result.weeklyGtMonthlyCount,
+    fetch_started_at: result.fetchStartedAt,
+    fetch_ended_at: result.fetchEndedAt,
+  };
+}
+
+function earlierIso(left?: string, right?: string): string | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  return left <= right ? left : right;
+}
+
+function laterIso(left?: string, right?: string): string | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  return left >= right ? left : right;
+}
+
+/** Backup run keeps the first start, the latest end, and every run id that fetched the source. */
+export function mergeFetchSpan(
+  previous: SourceManifest | undefined,
+  current: SourceManifest,
+  runId?: string,
+): SourceManifest {
+  const fetchRunIds = [...(previous?.fetchRunIds ?? [])];
+  if (runId && fetchRunIds[fetchRunIds.length - 1] !== runId) {
+    fetchRunIds.push(runId);
+  }
+  return {
+    ...current,
+    fetch_started_at: earlierIso(previous?.fetch_started_at, current.fetch_started_at),
+    fetch_ended_at: laterIso(previous?.fetch_ended_at, current.fetch_ended_at),
+    fetchRunIds: fetchRunIds.length > 0 ? fetchRunIds : undefined,
   };
 }

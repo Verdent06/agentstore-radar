@@ -17,18 +17,44 @@ export function computeCoverage(eligible: number, fetched: number): CoverageStat
 }
 
 /**
- * Share of eligible keys actually fetched live this run, including rows whose
- * value did not change and catalog rows that stay frozen/unrankable.
- * Unresolved GitHub repos are excluded from the denominator so deleted/renamed
- * aliases cannot inflate or deflate the metric. Separate from `coverage` /
- * `fresh` (carried_forward false AND not frozen).
+ * Share of eligible keys that are fresh this run.
+ * The numerator is a fresh-row count: `carried_forward` is not true and
+ * `frozen` is not true. Unresolved GitHub repos are excluded from the
+ * denominator so deleted/renamed aliases cannot inflate or deflate the metric.
+ * A frozen or carried-forward row does not count, even if a live call returned it.
  */
-export function computeFetchedShare(fetchedThisRun: number, eligible: number, unresolvedCount = 0): number {
+export function computeFetchedShare(
+  freshCount: number,
+  eligible: number,
+  unresolvedCount = 0,
+  incomplete = false,
+): number {
   const denom = Math.max(0, eligible) - Math.max(0, unresolvedCount);
   if (denom <= 0) {
-    return 1;
+    // A truncated or failed source with nothing resolvable is not a clean 100%.
+    return incomplete ? 0 : 1;
   }
-  return Math.min(1, Math.max(0, fetchedThisRun) / denom);
+  return Math.min(1, Math.max(0, freshCount) / denom);
+}
+
+export function isFreshRow(row: { carried_forward?: boolean | null; frozen?: boolean | null }): boolean {
+  return row.carried_forward !== true && row.frozen !== true;
+}
+
+export function freshRowCount(
+  rows: ReadonlyArray<{ carried_forward?: boolean | null; frozen?: boolean | null }>,
+): number {
+  return rows.reduce((count, row) => count + (isFreshRow(row) ? 1 : 0), 0);
+}
+
+/** Manifest `fetchedShare`: fresh rows / (eligible − unresolved). */
+export function freshFetchedShare(
+  rows: ReadonlyArray<{ carried_forward?: boolean | null; frozen?: boolean | null }>,
+  eligible: number,
+  unresolvedCount = 0,
+  incomplete = false,
+): number {
+  return computeFetchedShare(freshRowCount(rows), eligible, unresolvedCount, incomplete);
 }
 
 export function isLowCoverage(coverage: number | undefined, eligible = 0, threshold = DEFAULT_LOW_COVERAGE_THRESHOLD): boolean {

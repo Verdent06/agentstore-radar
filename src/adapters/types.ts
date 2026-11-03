@@ -1,3 +1,4 @@
+import type { SourceBudget } from "../lib/budget.ts";
 import { HttpError, type HttpClient } from "../lib/http.ts";
 import type { Logger } from "../lib/logger.ts";
 import type { GithubRepoRef } from "../lib/matching.ts";
@@ -30,6 +31,14 @@ export type CollectContext = {
   discovered: DiscoveredRefs;
   maxPages?: number;
   sleep?: SleepFn;
+  /** Test clock for per-source wall-clock budgets. Defaults to Date.now. */
+  monotonicNow?: () => number;
+  /**
+   * Budget opened once per source per collect() call. Retries must reuse it.
+   * Direct adapter calls may omit it; the adapter then opens its own.
+   */
+  budget?: SourceBudget;
+  runId?: string;
 };
 
 export type SourceResult = {
@@ -55,6 +64,9 @@ export type SourceResult = {
   backfilled?: boolean;
   backfilledFields?: string[];
   stoppedAt?: SourceStoppedAt;
+  fetchStartedAt?: string;
+  fetchEndedAt?: string;
+  weeklyGtMonthlyCount?: number;
 };
 
 export class CollectSourceError extends Error {

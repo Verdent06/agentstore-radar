@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { adoptSourceBudget, budgetDeadlineMs, budgetExhausted, budgetExhaustedError } from "../lib/budget.ts";
 import { MCP_REGISTRY_BASE, MCP_SERVERS_PATH } from "../lib/config.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
 import {
@@ -154,9 +155,24 @@ export const mcpRegistryAdapter: SourceAdapter = {
     let truncated = false;
     let stoppedAt: SourceResult["stoppedAt"];
     const maxPages = ctx.maxPages ?? Number.POSITIVE_INFINITY;
+    const budget = adoptSourceBudget(ctx, "mcp-registry");
 
     try {
       while (pages < maxPages) {
+        if (budgetExhausted(budget)) {
+          const error = budgetExhaustedError(budget, "page");
+          truncated = true;
+          stoppedAt = sourceStoppedAt("mcp-registry", error, { page: pages + 1, cursor });
+          if (servers.length === 0) {
+            break;
+          }
+          ctx.log.warn("mcp-registry wall-clock budget exhausted; keeping partial catalog", {
+            pages,
+            rows: servers.length,
+            cursor,
+          });
+          break;
+        }
         const url = new URL(endpoint);
         url.searchParams.set("limit", "100");
         url.searchParams.set("version", "latest");
@@ -165,7 +181,11 @@ export const mcpRegistryAdapter: SourceAdapter = {
         }
         // fetchJson retries 5xx on this same URL (including cursor), so a 500
         // resumes the current page instead of restarting the catalog at page 1.
-        const page = ListResponseSchema.parse(await ctx.http.fetchJson<unknown>(url.toString()));
+        const page = ListResponseSchema.parse(
+          await ctx.http.fetchJson<unknown>(url.toString(), {
+            deadlineMs: budgetDeadlineMs(budget),
+          }),
+        );
         pages += 1;
         servers.push(...page.servers);
         const next = page.metadata?.nextCursor;

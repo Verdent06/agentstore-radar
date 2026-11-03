@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { adoptSourceBudget, budgetDeadlineMs, budgetExhausted, budgetExhaustedError, budgetRemainingMs } from "../lib/budget.ts";
 import {
   SMITHERY_FROZEN_DAYS,
   SMITHERY_SERVERS_URL,
@@ -9,11 +10,12 @@ import {
   SOURCE_FREEZE_RATIO,
   runBatchSize,
 } from "../lib/config.ts";
-import { computeCoverage, computeFetchedShare } from "../lib/coverage.ts";
+import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
 import { evaluateSourceFreeze, isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../lib/frozen.ts";
 import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, githubRepoUrl, parseGithubRepo } from "../lib/matching.ts";
 import {
+  checkpointNextIndex,
   clearCheckpoint,
   isCarriedForward,
   loadCheckpoint,
@@ -175,10 +177,18 @@ export const smitheryAdapter: SourceAdapter = {
     let truncated = false;
     let stoppedAt: SourceResult["stoppedAt"];
     const maxPages = ctx.maxPages ?? Number.POSITIVE_INFINITY;
+    const budget = adoptSourceBudget(ctx, "smithery");
+    let budgetStopped = false;
 
     try {
       let totalPages = 1;
       while (page <= totalPages && pages < maxPages) {
+        if (budgetExhausted(budget)) {
+          budgetStopped = true;
+          truncated = true;
+          stoppedAt = sourceStoppedAt("smithery", budgetExhaustedError(budget, "list page"), { page });
+          break;
+        }
         const url = new URL(SMITHERY_SERVERS_URL);
         url.searchParams.set("page", String(page));
         url.searchParams.set("pageSize", "100");
@@ -186,7 +196,10 @@ export const smitheryAdapter: SourceAdapter = {
         // stable seed unlocks deterministic deep pagination of the full catalog.
         url.searchParams.set("seed", String(SMITHERY_STABLE_SEED));
         const payload = ListResponseSchema.parse(
-          await ctx.http.fetchJson<unknown>(url.toString(), { headers }),
+          await ctx.http.fetchJson<unknown>(url.toString(), {
+            headers,
+            deadlineMs: budgetDeadlineMs(budget),
+          }),
         );
         pages += 1;
         totalPages = payload.pagination.totalPages;
@@ -286,6 +299,17 @@ export const smitheryAdapter: SourceAdapter = {
 
     try {
       for (const [index, name] of dueKeys.entries()) {
+        if (budgetExhausted(budget)) {
+          budgetStopped = true;
+          useCountTruncated = true;
+          stoppedAt = sourceStoppedAt("smithery", budgetExhaustedError(budget, "useCount"));
+          ctx.log.warn("smithery wall-clock budget exhausted; persisting useCount checkpoint", {
+            processed,
+            due: dueKeys.length,
+            budgetMs: budget.budgetMs,
+          });
+          break;
+        }
         persistCheckpoint(ctx.dataDir, "smithery", {
           snapshotDate: ctx.snapshotDate,
           dueKeys,
@@ -297,7 +321,9 @@ export const smitheryAdapter: SourceAdapter = {
         try {
           const payload = await fetchJsonWithRateLimitWait<unknown>(ctx.http, smitheryUseCountSearchUrl(name), {
             sleep: sleepFn,
+            maxWaitMs: budgetRemainingMs(budget),
             init: {
+              deadlineMs: budgetDeadlineMs(budget),
               headers,
               continueOnFailure() {
                 consecutiveOutages += 1;
@@ -372,7 +398,17 @@ export const smitheryAdapter: SourceAdapter = {
           });
         }
       }
-      clearCheckpoint(ctx.dataDir, "smithery");
+      if (budgetStopped) {
+        useCountTruncated = true;
+        persistCheckpoint(ctx.dataDir, "smithery", {
+          snapshotDate: ctx.snapshotDate,
+          dueKeys,
+          nextIndex: checkpointNextIndex(dueKeys, lastFetched, ctx.snapshotDate, fetchedAt),
+          startedAt: checkpoint?.startedAt ?? fetchedAt,
+        });
+      } else {
+        clearCheckpoint(ctx.dataDir, "smithery");
+      }
     } catch (error) {
       const rateLimited =
         error instanceof HttpError && (error.status === 429 || error.status === 403 || error.cloudflare);
@@ -400,7 +436,7 @@ export const smitheryAdapter: SourceAdapter = {
     }
 
     const heldNames = new Set<string>();
-    if (circuitOpen) {
+    if (circuitOpen || budgetStopped) {
       for (const name of dueKeys) {
         if (!liveRefreshed.has(name)) {
           heldNames.add(name);
@@ -468,18 +504,16 @@ export const smitheryAdapter: SourceAdapter = {
       throw new Error(`smithery validation failed for ${invalid}/${servers.length} rows`);
     }
 
-    // List pagination already returns useCount for the full catalog. Count those
-    // live list rows as fetched even when the catalog is source-frozen (unrankable).
-    // Overlay `?q=` hits stay a thaw probe; they do not define fetchedShare.
-    // `fresh` remains carried_forward false AND not frozen.
-    // When the useCount circuit breaker trips, due rows that were not refreshed
-    // keep last-known values and do not count as fetched.
+    // fetchedShare counts only fresh rows: carried_forward false and frozen not true.
+    // A source-frozen catalog, a tripped useCount breaker, or a wall-clock budget
+    // that holds due rows all score ~0 even when the seeded list completed.
+    // Held rows keep last-known values and are excluded from fetchedThisRunCount.
     const fetchedThisRunCount = records.reduce(
       (count, row) => count + (heldNames.has(row.source_id) ? 0 : 1),
       0,
     );
     const eligibleCount = Math.max(records.length, totalCount ?? 0);
-    const fetchedShare = computeFetchedShare(fetchedThisRunCount, eligibleCount);
+    const fetchedShare = freshFetchedShare(records, eligibleCount);
     const freshTodayCount = records.filter((row) => row.carried_forward !== true && row.frozen !== true).length;
     const { coverage } = computeCoverage(eligibleCount, freshTodayCount);
     if (freeze.sourceFrozen) {
@@ -533,7 +567,7 @@ export const smitheryAdapter: SourceAdapter = {
       collectedAt: ctx.collectedAt,
       rowCount: records.length,
       skipped: false,
-      truncated: truncated || useCountTruncated,
+      truncated: truncated || useCountTruncated || budgetStopped,
       failed: circuitOpen,
       error: circuitReason ?? stoppedAt?.error,
       skipReason: circuitReason,

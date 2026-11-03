@@ -1,10 +1,12 @@
 import { z } from "zod";
+import { adoptSourceBudget, budgetDeadlineMs, budgetExhausted, budgetExhaustedError, budgetRemainingMs } from "../lib/budget.ts";
 import { GITHUB_GRAPHQL_BATCH, GITHUB_GRAPHQL_URL, GITHUB_RUN_BATCH, MAX_RATE_LIMIT_WAIT_MS, runBatchSize } from "../lib/config.ts";
-import { computeCoverage, computeFetchedShare } from "../lib/coverage.ts";
+import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
 import { HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, type GithubRepoRef } from "../lib/matching.ts";
 import type { SleepFn } from "../lib/retry.ts";
 import {
+  checkpointNextIndex,
   clearCheckpoint,
   countFresh,
   countFreshToday,
@@ -160,6 +162,7 @@ async function waitForGraphqlBudget(
   rateLimit: z.infer<typeof RateLimitSchema> | undefined,
   log: CollectContext["log"],
   sleepFn: SleepFn,
+  maxWaitMs = MAX_RATE_LIMIT_WAIT_MS,
 ): Promise<void> {
   if (!rateLimit || rateLimit.remaining >= GITHUB_GRAPHQL_BATCH) {
     return;
@@ -172,8 +175,8 @@ async function waitForGraphqlBudget(
   if (waitMs <= 0) {
     return;
   }
-  if (waitMs > MAX_RATE_LIMIT_WAIT_MS) {
-    throw new HttpError(GITHUB_GRAPHQL_URL, 403, "GitHub GraphQL primary rate limit reset is too far away", {
+  if (waitMs > maxWaitMs) {
+    throw new HttpError(GITHUB_GRAPHQL_URL, 403, "GitHub GraphQL rate limit wait exceeds the source budget", {
       resetAt,
       remaining: rateLimit.remaining,
     });
@@ -254,6 +257,7 @@ export const githubAdapter: SourceAdapter = {
     );
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
+    const budget = adoptSourceBudget(ctx, "github");
     const unresolvedRepos: string[] = [];
     const unresolvedKeys = new Set(Object.keys(unresolvedMap));
 
@@ -272,7 +276,7 @@ export const githubAdapter: SourceAdapter = {
       const freshWithin7dCount = countFresh(countableKeys, lastFetched, ctx.now);
       const unresolvedCount = allKeys.filter((key) => unresolvedKeys.has(key)).length;
       const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
-      const fetchedShare = computeFetchedShare(input.fetchedThisRun, allKeys.length, unresolvedCount);
+      const fetchedShare = freshFetchedShare(records, allKeys.length, unresolvedCount);
       const lastFetchedAt = Object.values(lastFetched).sort().at(-1);
       persistLastFetched(ctx.dataDir, "github", lastFetched);
       persistEntityCache(ctx.dataDir, "github", cache);
@@ -281,11 +285,12 @@ export const githubAdapter: SourceAdapter = {
         nextUnresolved[key] = unresolvedMap[key] ?? fetchedAt;
       }
       persistUnresolved(ctx.dataDir, "github", nextUnresolved);
-      if (input.truncated) {
+      const nextIndex = checkpointNextIndex(dueKeys, lastFetched, ctx.snapshotDate, fetchedAt);
+      if (input.truncated && nextIndex < dueKeys.length) {
         persistCheckpoint(ctx.dataDir, "github", {
           snapshotDate: ctx.snapshotDate,
           dueKeys,
-          nextIndex: Math.min(dueKeys.length, input.processed ?? input.fetchedThisRun),
+          nextIndex,
           startedAt: checkpoint?.startedAt ?? fetchedAt,
         });
       } else {
@@ -369,6 +374,17 @@ export const githubAdapter: SourceAdapter = {
 
     try {
       for (const [index, batch] of batches.entries()) {
+        if (budgetExhausted(budget)) {
+          truncated = true;
+          stoppedAt = sourceStoppedAt("github", budgetExhaustedError(budget, "before batch"));
+          ctx.log.warn("github wall-clock budget exhausted; persisting checkpoint", {
+            processed,
+            due: dueKeys.length,
+            budgetMs: budget.budgetMs,
+            fetchedThisRun,
+          });
+          break;
+        }
         persistCheckpoint(ctx.dataDir, "github", {
           snapshotDate: ctx.snapshotDate,
           dueKeys,
@@ -378,6 +394,7 @@ export const githubAdapter: SourceAdapter = {
         const payload = GraphqlResponseSchema.parse(
           await ctx.http.fetchJson<unknown>(GITHUB_GRAPHQL_URL, {
             method: "POST",
+            deadlineMs: budgetDeadlineMs(budget),
             headers: {
               authorization: `Bearer ${token}`,
               "content-type": "application/json",
@@ -452,7 +469,7 @@ export const githubAdapter: SourceAdapter = {
             freshToday: countFreshToday(allKeys, lastFetched, ctx.snapshotDate),
           });
         }
-        await waitForGraphqlBudget(rateLimit, ctx.log, sleepFn);
+        await waitForGraphqlBudget(rateLimit, ctx.log, sleepFn, Math.min(MAX_RATE_LIMIT_WAIT_MS, budgetRemainingMs(budget)));
       }
     } catch (error) {
       if (error instanceof HttpError && error.status === 401 && fetchedThisRun === 0 && Object.keys(cache).length === 0) {
@@ -495,7 +512,6 @@ export const githubAdapter: SourceAdapter = {
       requested: allKeys.length,
       due: dueKeys.length,
       fetchedThisRun,
-      fetchedShare: computeFetchedShare(fetchedThisRun, allKeys.length, unresolvedKeys.size),
       truncated,
       unresolved: unresolvedKeys.size,
       unresolvedThisRun: unresolvedRepos.length,

@@ -102,9 +102,8 @@ export function freshShare(freshCount: number, eligibleCount: number): number {
  * A complete day is "good" for a source only when its own fresh share is at
  * least KPI_MIN_FRESH_SHARE. Days are never compared to the previous day.
  *
- * TODO: once the collector's per-source manifest `fetchedShare` field lands,
- * add a consistency check that fresh share <= fetchedShare. Do not replace
- * fresh share with fetchedShare: fetchedShare counts frozen-but-fetched rows.
+ * fetchedShare counts only fresh rows (carried_forward false AND frozen not true).
+ * Do not treat a frozen-but-fetched row as part of fetchedShare.
  */
 export function minFreshShareForSource(source: KpiSource): number {
   const bySource: Record<KpiSource, number> = {

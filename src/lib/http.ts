@@ -42,6 +42,12 @@ export type HttpRequestInit = RequestInit & {
   timeoutMs?: number;
   minIntervalMs?: number;
   /**
+   * Epoch ms after which this client must not sleep for a retry or host
+   * throttle. Used so a source wall-clock budget cannot be overrun by a
+   * Retry-After inside one request. Callers compare it with Date.now().
+   */
+  deadlineMs?: number;
+  /**
    * Smithery useCount circuit breaker. Called for each HTTP 5xx or transport
    * failure before this client retries it. Return false to fail immediately.
    * Other status codes, including 429, do not call this.
@@ -134,6 +140,10 @@ export function retryWaitMs(input: {
   return Math.min(HTTP_5XX_MAX_WAIT_MS, 1_000 * 2 ** input.attempt);
 }
 
+export function retryExceedsDeadline(waitMs: number, deadlineMs?: number, nowMs = Date.now()): boolean {
+  return deadlineMs != null && nowMs + waitMs > deadlineMs;
+}
+
 export function isHttpRateLimit(error: unknown): error is HttpError {
   if (!(error instanceof HttpError)) {
     return false;
@@ -168,7 +178,7 @@ export async function fetchJsonWithRateLimitWait<T>(
         rateLimited: true,
         cloudflare: Boolean(error.cloudflare),
       });
-      if (waitedMs + waitMs > maxWaitMs) {
+      if (waitedMs + waitMs > maxWaitMs || retryExceedsDeadline(waitMs, options?.init?.deadlineMs)) {
         throw error;
       }
       options?.onWait?.(waitMs, attempt, error);
@@ -205,15 +215,21 @@ export function createHttpClient(options?: {
   const sleepFn = options?.sleep ?? sleep;
   const nextAllowed = new Map<string, number>();
 
-  async function throttle(url: string, overrideMs?: number): Promise<void> {
+  async function throttle(url: string, overrideMs?: number, deadlineMs?: number): Promise<void> {
     const host = new URL(url).host;
     const interval = overrideMs ?? HOST_MIN_INTERVAL_MS[host] ?? 100;
     const now = Date.now();
     const allowed = nextAllowed.get(host) ?? 0;
-    if (now < allowed) {
-      await sleepFn(allowed - now);
+    const startAt = Math.max(now, allowed);
+    // Reserve the slot before sleeping so concurrent callers cannot all pass the check.
+    nextAllowed.set(host, startAt + interval);
+    if (startAt > now) {
+      const wait = startAt - now;
+      if (retryExceedsDeadline(wait, deadlineMs, now)) {
+        throw new HttpError(url, 429, "host throttle wait exceeds source budget", { retryAfterMs: wait });
+      }
+      await sleepFn(wait);
     }
-    nextAllowed.set(host, Date.now() + interval);
   }
 
   function noteRateLimit(url: string, headers: Headers, retryAfterMs?: number): void {
@@ -233,7 +249,7 @@ export function createHttpClient(options?: {
   async function request(url: string, init?: HttpRequestInit): Promise<string> {
     let lastError: unknown;
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-      await throttle(url, init?.minIntervalMs);
+      await throttle(url, init?.minIntervalMs, init?.deadlineMs);
       const timeoutMs = init?.timeoutMs ?? defaultTimeoutMs;
       const headers = new Headers(init?.headers);
       if (!headers.has("user-agent")) {
@@ -250,6 +266,9 @@ export function createHttpClient(options?: {
       try {
         const fetchInit: HttpRequestInit = { ...init };
         delete fetchInit.continueOnFailure;
+        delete fetchInit.deadlineMs;
+        delete fetchInit.minIntervalMs;
+        delete fetchInit.timeoutMs;
         const response = await fetchImpl(url, {
           ...fetchInit,
           headers,
@@ -284,6 +303,9 @@ export function createHttpClient(options?: {
             rateLimited,
             cloudflare,
           });
+          if (retryExceedsDeadline(waitMs, init?.deadlineMs)) {
+            throw httpError;
+          }
           await sleepFn(waitMs);
           continue;
         }
@@ -295,7 +317,11 @@ export function createHttpClient(options?: {
         }
         const proceed = init?.continueOnFailure?.({ network: true }) ?? true;
         if (proceed && attempt < maxRetries) {
-          await sleepFn(Math.min(16_000, 500 * 2 ** attempt));
+          const waitMs = Math.min(16_000, 500 * 2 ** attempt);
+          if (retryExceedsDeadline(waitMs, init?.deadlineMs)) {
+            throw error;
+          }
+          await sleepFn(waitMs);
           continue;
         }
         throw error;

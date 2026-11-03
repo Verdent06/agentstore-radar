@@ -34,7 +34,14 @@ export const SourceRowSchema = z.object({
   use_count: z.number().nullable(),
   npm_weekly_downloads: z.number().int().nullable(),
   pypi_last_week_downloads: z.number().int().nullable(),
+  /**
+   * pypistats `last_month`. Not a growth signal: the API can return
+   * `last_week` greater than `last_month`, so week-over-week movement is
+   * `pypi_last_week_downloads`.
+   */
   pypi_last_month_downloads: z.number().int().nullable(),
+  /** True when pypistats last_week is greater than last_month. */
+  pypi_weekly_gt_monthly: z.boolean().optional(),
   verified: z.boolean().nullable(),
   /** GitHub `isFork` when the collector saw it. Null means unknown. */
   fork: z.boolean().nullable().default(null),
@@ -64,6 +71,10 @@ export const AppRowSchema = z.object({
   use_count: z.number().nullable(),
   npm_weekly_downloads: z.number().int().nullable(),
   pypi_last_week_downloads: z.number().int().nullable(),
+  /**
+   * pypistats `last_month`. Not a growth signal: weekly can exceed monthly,
+   * so movers use `pypi_last_week_downloads`.
+   */
   pypi_last_month_downloads: z.number().int().nullable(),
   stars_fetched_at: z.string().nullable().optional().default(null),
   /** Explicit false is fresh; missing is not fresh for home KPIs. No default so missing stays missing. */
@@ -108,8 +119,9 @@ export const SourceManifestSchema = z.object({
   /** Keys actually requested from the live API during this collect. */
   fetchedThisRunCount: z.number().int().nonnegative().optional(),
   /**
-   * Live fetches this run / eligible keys. Unresolved GitHub repos are excluded
-   * from the denominator. Separate from `coverage` (fresh today / eligible).
+   * Fresh rows / eligible keys. Fresh means `carried_forward` is not true and
+   * `frozen` is not true. Unresolved GitHub repos are excluded from the
+   * denominator. A frozen or carried-forward row does not count.
    */
   fetchedShare: z.number().min(0).max(1).optional(),
   /** @deprecated Legacy alias of freshWithin7dCount, kept so older snapshots still parse. */
@@ -125,6 +137,17 @@ export const SourceManifestSchema = z.object({
   backfilled: z.boolean().optional(),
   backfilledFields: z.array(z.string()).optional(),
   stoppedAt: SourceStoppedAtSchema.optional(),
+  /** Rows whose pypistats last_week is greater than last_month. */
+  weeklyGtMonthlyCount: z.number().int().nonnegative().optional(),
+  /**
+   * When this source's fetch began. A backup run that resumes the same
+   * snapshotDate keeps the earlier start.
+   */
+  fetch_started_at: z.string().optional(),
+  /** When this source's fetch last finished, including a later backup run. */
+  fetch_ended_at: z.string().optional(),
+  /** Collect run ids that fetched this source for the snapshotDate, in order. */
+  fetchRunIds: z.array(z.string()).optional(),
 });
 
 export type SourceManifest = z.infer<typeof SourceManifestSchema>;

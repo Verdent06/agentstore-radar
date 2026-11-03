@@ -141,7 +141,7 @@ describe("source normalizers", () => {
       fetched_at: "2026-10-24T12:00:00Z",
     });
     expect(result.fetchedThisRunCount).toBe(1);
-    expect(result.fetchedShare).toBe(1);
+    expect(result.fetchedShare).toBe(0);
   });
 
   it("does not stamp a real unchanged Smithery useCount as fresh (pipeworx/gateway = 419019)", async () => {
@@ -217,7 +217,7 @@ describe("source normalizers", () => {
     });
     expect(result.freshTodayCount).toBe(0);
     expect(result.fetchedThisRunCount).toBe(1);
-    expect(result.fetchedShare).toBe(1);
+    expect(result.fetchedShare).toBeCloseTo(0);
     expect(result.fetchedThisRunCount).toBe(result.records.length);
     expect((result.raw as { useCountRefresh?: { unchanged: number; frozen: number; sourceFrozen: boolean } }).useCountRefresh).toMatchObject({
       unchanged: 1,
@@ -352,7 +352,7 @@ describe("source normalizers", () => {
     });
     expect(result.freshTodayCount).toBe(0);
     expect(result.fetchedThisRunCount).toBe(result.records.length);
-    expect(result.fetchedShare).toBe(1);
+    expect(result.fetchedShare).toBeCloseTo(0);
     expect((result.raw as { freeze?: { sourceFrozen: boolean } }).freeze?.sourceFrozen).toBe(true);
   });
 
@@ -404,7 +404,10 @@ describe("source normalizers", () => {
     });
     expect(result.records).toHaveLength(2);
     expect(result.fetchedThisRunCount).toBe(2);
-    expect(result.fetchedShare).toBe(1);
+    // The 429 stops before the second due key is refreshed, so that row is
+    // carried forward and does not count toward fetchedShare.
+    expect(result.fetchedShare).toBe(0.5);
+    expect(result.records.filter((row) => row.carried_forward !== true && row.frozen !== true)).toHaveLength(1);
     expect(result.truncated).toBe(true);
     expect((result.raw as { useCountRefresh?: { truncated: boolean; attempted: number } }).useCountRefresh).toMatchObject({
       truncated: true,
