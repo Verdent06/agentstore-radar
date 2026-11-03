@@ -41,6 +41,12 @@ export type FetchImpl = (input: string | URL, init?: RequestInit) => Promise<Res
 export type HttpRequestInit = RequestInit & {
   timeoutMs?: number;
   minIntervalMs?: number;
+  /**
+   * Smithery useCount circuit breaker. Called for each HTTP 5xx or transport
+   * failure before this client retries it. Return false to fail immediately.
+   * Other status codes, including 429, do not call this.
+   */
+  continueOnFailure?: (failure: { status?: number; network: boolean }) => boolean;
 };
 
 export interface HttpClient {
@@ -242,8 +248,10 @@ export function createHttpClient(options?: {
         init.signal.addEventListener("abort", () => controller.abort(), { once: true });
       }
       try {
+        const fetchInit: HttpRequestInit = { ...init };
+        delete fetchInit.continueOnFailure;
         const response = await fetchImpl(url, {
-          ...init,
+          ...fetchInit,
           headers,
           signal: controller.signal,
         });
@@ -257,6 +265,18 @@ export function createHttpClient(options?: {
           return body;
         }
         const rateLimited = isRateLimited(response.status, body, response.headers);
+        const httpError = new HttpError(url, response.status, body.slice(0, 2000), {
+          retryAfterMs,
+          remaining: rate.remaining,
+          resetAt: rate.resetAt,
+          cloudflare,
+        });
+        const serverError = response.status >= 500 && response.status <= 599;
+        const stopForBreaker =
+          serverError && init?.continueOnFailure?.({ status: response.status, network: false }) === false;
+        if (stopForBreaker) {
+          throw httpError;
+        }
         if ((isRetryableHttpStatus(response.status) || rateLimited || cloudflare) && attempt < maxRetries) {
           const waitMs = retryWaitMs({
             attempt,
@@ -267,18 +287,14 @@ export function createHttpClient(options?: {
           await sleepFn(waitMs);
           continue;
         }
-        throw new HttpError(url, response.status, body.slice(0, 2000), {
-          retryAfterMs,
-          remaining: rate.remaining,
-          resetAt: rate.resetAt,
-          cloudflare,
-        });
+        throw httpError;
       } catch (error) {
         lastError = error;
         if (error instanceof HttpError) {
           throw error;
         }
-        if (attempt < maxRetries) {
+        const proceed = init?.continueOnFailure?.({ network: true }) ?? true;
+        if (proceed && attempt < maxRetries) {
           await sleepFn(Math.min(16_000, 500 * 2 ** attempt));
           continue;
         }

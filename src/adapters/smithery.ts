@@ -3,6 +3,7 @@ import {
   SMITHERY_FROZEN_DAYS,
   SMITHERY_SERVERS_URL,
   SMITHERY_STABLE_SEED,
+  SMITHERY_USECOUNT_CIRCUIT_BREAKER_THRESHOLD,
   SMITHERY_USECOUNT_PAGE_SIZE,
   SMITHERY_USECOUNT_RUN_BATCH,
   SOURCE_FREEZE_RATIO,
@@ -78,12 +79,24 @@ export type SmitheryRawSnapshot = {
     frozenDays: number;
     sourceFrozen: boolean;
     freezeRatio: number;
+    circuitOpen?: boolean;
   };
 };
 
 export type SmitheryUseCountCache = {
   useCount: number | null;
 };
+
+/** HTTP 5xx or a transport failure. A handled 4xx is not an outage. */
+export function isSmitheryUseCountOutage(error: unknown): boolean {
+  if (error instanceof HttpError) {
+    return error.status >= 500 && error.status <= 599;
+  }
+  if (error instanceof Error && error.message.startsWith("Invalid JSON")) {
+    return false;
+  }
+  return true;
+}
 
 export function smitheryUseCountSearchUrl(qualifiedName: string): string {
   const url = new URL(SMITHERY_SERVERS_URL);
@@ -255,6 +268,14 @@ export const smitheryAdapter: SourceAdapter = {
     let useCountMissed = 0;
     let useCountTruncated = false;
     let processed = 0;
+    let consecutiveOutages = 0;
+    let circuitOpen = false;
+    const liveRefreshed = new Set<string>();
+    const circuitThreshold = runBatchSize(
+      ctx.env,
+      "RADAR_SMITHERY_CIRCUIT_BREAKER",
+      SMITHERY_USECOUNT_CIRCUIT_BREAKER_THRESHOLD,
+    );
 
     ctx.log.info("smithery refreshing useCount via search", {
       catalog: allKeys.length,
@@ -272,14 +293,26 @@ export const smitheryAdapter: SourceAdapter = {
           startedAt: checkpoint?.startedAt ?? fetchedAt,
         });
         useCountAttempted += 1;
+        const outagesBefore = consecutiveOutages;
         try {
           const payload = await fetchJsonWithRateLimitWait<unknown>(ctx.http, smitheryUseCountSearchUrl(name), {
             sleep: sleepFn,
-            init: { headers },
+            init: {
+              headers,
+              continueOnFailure() {
+                consecutiveOutages += 1;
+                if (consecutiveOutages >= circuitThreshold) {
+                  circuitOpen = true;
+                  return false;
+                }
+                return true;
+              },
+            },
             onWait(waitMs, attempt, error) {
               ctx.log.warn("smithery waiting out rate limit", { waitMs, attempt, status: error.status, name });
             },
           });
+          consecutiveOutages = 0;
           const live = searchUseCount(payload, name);
           if (live === undefined) {
             useCountMissed += 1;
@@ -287,6 +320,7 @@ export const smitheryAdapter: SourceAdapter = {
             const previousValue = cache[name]?.useCount;
             cache[name] = { useCount: live };
             lastFetched[name] = fetchedAt;
+            liveRefreshed.add(name);
             if (previousValue === live) {
               useCountUnchanged += 1;
             } else {
@@ -301,7 +335,30 @@ export const smitheryAdapter: SourceAdapter = {
             throw error;
           }
           useCountMissed += 1;
-          ctx.log.warn("smithery useCount search failed", { name, error: String(error) });
+          if (isSmitheryUseCountOutage(error)) {
+            if (consecutiveOutages === outagesBefore) {
+              consecutiveOutages += 1;
+              if (consecutiveOutages >= circuitThreshold) {
+                circuitOpen = true;
+              }
+            }
+            ctx.log.warn("smithery useCount search failed", {
+              name,
+              error: String(error),
+              consecutiveOutages,
+            });
+            if (circuitOpen) {
+              ctx.log.warn("smithery useCount circuit breaker tripped; stopping useCount requests for this run", {
+                reason: "circuit_breaker_5xx",
+                threshold: circuitThreshold,
+                consecutiveOutages,
+              });
+              break;
+            }
+          } else {
+            consecutiveOutages = 0;
+            ctx.log.warn("smithery useCount search failed", { name, error: String(error) });
+          }
         }
         processed = index + 1;
         persistLastFetched(ctx.dataDir, "smithery", lastFetched);
@@ -342,6 +399,15 @@ export const smitheryAdapter: SourceAdapter = {
       }
     }
 
+    const heldNames = new Set<string>();
+    if (circuitOpen) {
+      for (const name of dueKeys) {
+        if (!liveRefreshed.has(name)) {
+          heldNames.add(name);
+        }
+      }
+    }
+
     const unchangedByName = new Map<string, boolean>();
     for (const name of allKeys) {
       const useCount = cache[name]?.useCount ?? listCountByName.get(name) ?? null;
@@ -369,10 +435,14 @@ export const smitheryAdapter: SourceAdapter = {
       const cached = cache[name];
       const fetched = lastFetched[name];
       const useCount = cached?.useCount ?? parsed.data.useCount ?? null;
-      const frozen = frozenByName.get(name) === true;
+      const held = heldNames.has(name);
+      const frozen = held || frozenByName.get(name) === true;
       // Search hits are not fresh while the catalog is source-frozen.
+      // A tripped useCount breaker holds every due row that was not refreshed.
       const liveToday =
-        Boolean(fetched && !isCarriedForward(fetched, ctx.snapshotDate, fetchedAt) && cached) && !frozen;
+        !held &&
+        Boolean(fetched && !isCarriedForward(fetched, ctx.snapshotDate, fetchedAt) && cached) &&
+        !frozen;
       const row = normalizeSmitheryServer(ctx.snapshotDate, overlayUseCount(item, useCount));
       if (!row) {
         invalid += 1;
@@ -383,7 +453,7 @@ export const smitheryAdapter: SourceAdapter = {
       if (frozen) {
         frozenCount += 1;
       }
-      records.push(withObservation(row, observationAt, !liveToday, frozen));
+      records.push(withObservation(row, observationAt, held || !liveToday, frozen));
       if (row.repo_url) {
         const ref = parseGithubRepo(row.repo_url);
         if (ref) {
@@ -402,7 +472,12 @@ export const smitheryAdapter: SourceAdapter = {
     // live list rows as fetched even when the catalog is source-frozen (unrankable).
     // Overlay `?q=` hits stay a thaw probe; they do not define fetchedShare.
     // `fresh` remains carried_forward false AND not frozen.
-    const fetchedThisRunCount = records.length;
+    // When the useCount circuit breaker trips, due rows that were not refreshed
+    // keep last-known values and do not count as fetched.
+    const fetchedThisRunCount = records.reduce(
+      (count, row) => count + (heldNames.has(row.source_id) ? 0 : 1),
+      0,
+    );
     const eligibleCount = Math.max(records.length, totalCount ?? 0);
     const fetchedShare = computeFetchedShare(fetchedThisRunCount, eligibleCount);
     const freshTodayCount = records.filter((row) => row.carried_forward !== true && row.frozen !== true).length;
@@ -429,6 +504,7 @@ export const smitheryAdapter: SourceAdapter = {
       frozenCount,
       sourceFrozen: freeze.sourceFrozen,
       useCountTruncated,
+      circuitOpen,
     });
     const raw: SmitheryRawSnapshot = {
       endpoint: SMITHERY_SERVERS_URL,
@@ -448,17 +524,20 @@ export const smitheryAdapter: SourceAdapter = {
         frozenDays,
         sourceFrozen: freeze.sourceFrozen,
         freezeRatio: freeze.ratio,
+        circuitOpen,
       },
     };
+    const circuitReason = circuitOpen ? "circuit_breaker_5xx" : undefined;
     return {
       source: "smithery",
       collectedAt: ctx.collectedAt,
       rowCount: records.length,
       skipped: false,
       truncated: truncated || useCountTruncated,
-      failed: false,
-      error: stoppedAt?.error,
-      stoppedAt,
+      failed: circuitOpen,
+      error: circuitReason ?? stoppedAt?.error,
+      skipReason: circuitReason,
+      stoppedAt: circuitOpen ? { source: "smithery", error: "circuit_breaker_5xx" } : stoppedAt,
       eligibleCount,
       fetchedThisRunCount,
       fetchedShare,

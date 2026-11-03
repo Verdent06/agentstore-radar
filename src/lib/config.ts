@@ -87,6 +87,12 @@ export const GITHUB_RUN_BATCH = 50_000;
 export const NPM_RUN_BATCH = 20_000;
 export const PYPI_RUN_BATCH = 10_000;
 export const SMITHERY_USECOUNT_RUN_BATCH = 400;
+/**
+ * Stop Smithery `?q=` useCount lookups after this many consecutive HTTP 5xx
+ * or network failures in one run. A successful response resets the streak.
+ * Override with RADAR_SMITHERY_CIRCUIT_BREAKER.
+ */
+export const SMITHERY_USECOUNT_CIRCUIT_BREAKER_THRESHOLD = 10;
 
 export function runBatchSize(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
   const raw = env[key]?.trim();
