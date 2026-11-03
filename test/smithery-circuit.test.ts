@@ -12,7 +12,7 @@ import { inspectSnapshot, readSourceRows } from "../src/lib/io.ts";
 import { createLogger } from "../src/lib/logger.ts";
 import { persistEntityCache, persistLastFetched } from "../src/lib/rolling.ts";
 import { snapshotIsPartial } from "../src/lib/schema.ts";
-import { fixtureFetch, jsonResponse, loadFixture } from "./helpers.ts";
+import { claudeMarketplaceRoutes, fixtureFetch, jsonResponse, loadFixture } from "./helpers.ts";
 
 const silent = createLogger({
   log() {},
@@ -56,6 +56,7 @@ describe("smithery useCount circuit breaker", () => {
       { match: /registry.modelcontextprotocol.io\/v0.1\/servers\?limit=100&version=latest$/, body: loadFixture("mcp-page.json") },
       { match: /cursor=page-2/, body: loadFixture("mcp-page-2.json") },
       { match: "geminicli.com/extensions.json", body: loadFixture("gemini.json") },
+      ...claudeMarketplaceRoutes(),
       {
         match: "api.npmjs.org/downloads/point/last-week/@example%2Fweather-mcp",
         body: loadFixture<Record<string, unknown>>("npm-point.json")["@example/weather-mcp"],
@@ -130,7 +131,7 @@ describe("smithery useCount circuit breaker", () => {
     expect(inspectSnapshot(date, dataDir).needsRetry).toBe(true);
     expect(manifest?.failedSourceCount).toBe(1);
     expect(outcome.failedSources).toEqual(["smithery"]);
-    expect(manifest?.completedSources).toEqual(["mcp-registry", "gemini-cli", "github", "npm", "pypi"]);
+    expect(manifest?.completedSources).toEqual(["mcp-registry", "gemini-cli", "claude-plugins", "github", "npm", "pypi"]);
 
     const smithery = manifest?.sources.find((source) => source.source === "smithery");
     expect(smithery).toMatchObject({
@@ -154,7 +155,7 @@ describe("smithery useCount circuit breaker", () => {
     });
     expect(smitheryRows.find((row) => row.source_id === "srv/11")?.use_count).toBe(1000 - 11);
 
-    for (const name of ["mcp-registry", "gemini-cli", "github", "npm", "pypi"] as const) {
+    for (const name of ["mcp-registry", "gemini-cli", "claude-plugins", "github", "npm", "pypi"] as const) {
       const source = manifest?.sources.find((row) => row.source === name);
       expect(source?.rowCount).toBeGreaterThan(0);
       expect(source?.failed).toBeFalsy();

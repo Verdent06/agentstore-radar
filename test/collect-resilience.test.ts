@@ -16,7 +16,7 @@ import {
 import { createLogger } from "../src/lib/logger.ts";
 import { mergeApps } from "../src/lib/merge.ts";
 import { emptySourceRow, type SnapshotManifest } from "../src/lib/schema.ts";
-import { fixtureFetch, loadFixture } from "./helpers.ts";
+import { claudeMarketplaceRoutes, fixtureFetch, loadFixture } from "./helpers.ts";
 
 vi.mock("../src/lib/io.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/lib/io.ts")>();
@@ -35,6 +35,7 @@ const silent = createLogger({
 const catalogs = [
   { match: "api.smithery.ai/servers", body: loadFixture("smithery-page.json") },
   { match: "geminicli.com/extensions.json", body: loadFixture("gemini.json") },
+  ...claudeMarketplaceRoutes(),
   {
     match: "api.npmjs.org/downloads/point/last-week/@example%2Fweather-mcp",
     body: loadFixture<Record<string, unknown>>("npm-point.json")["@example/weather-mcp"],
@@ -596,5 +597,46 @@ describe("collect resilience", () => {
     expect(inspectSnapshot("2026-10-19", dataDir).needsRetry).toBe(true);
     expect(readSourceRows("2026-10-19", dataDir).some((row) => row.source === "mcp-registry")).toBe(true);
     expect(readSourceRows("2026-10-19", dataDir).some((row) => row.source === "smithery")).toBe(true);
+  });
+
+  it("marks only claude-plugins failed when its marketplace JSON is malformed", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-claude-bad-"));
+    const bad = readFileSync(join(process.cwd(), "test/fixtures/claude-plugins-bad.json"), "utf8");
+    const catalogFetch = fixtureFetch([
+      { match: /registry.modelcontextprotocol.io\/v0.1\/servers\?limit=100&version=latest$/, body: loadFixture("mcp-page-2.json") },
+      ...catalogs,
+    ]);
+    let claudeCalls = 0;
+    const fetchImpl = async (input: string | URL, init?: RequestInit) => {
+      if (String(input).includes("raw.githubusercontent.com/anthropics/")) {
+        claudeCalls += 1;
+        return new Response(bad, { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return catalogFetch(input, init);
+    };
+    const outcome = await collect({
+      date: "2026-11-02",
+      dataDir,
+      now: new Date("2026-11-02T12:00:00Z"),
+      env: {},
+      http: createHttpClient({ fetchImpl, maxRetries: 0 }),
+      log: silent,
+      sourceAttempts: 1,
+      sleep: async () => {},
+    });
+    expect(claudeCalls).toBe(1);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.wrote).toBe(true);
+    expect(outcome.failedSources).toEqual(["claude-plugins"]);
+    expect(outcome.manifest?.partial).toBe(true);
+    const claude = outcome.manifest?.sources.find((source) => source.source === "claude-plugins");
+    expect(claude?.failed).toBe(true);
+    expect(claude?.skipped).toBe(true);
+    expect(claude?.rowCount).toBe(0);
+    expect(outcome.manifest?.sources.find((source) => source.source === "gemini-cli")?.rowCount).toBe(1);
+    expect(outcome.manifest?.sources.find((source) => source.source === "smithery")?.failed).toBeFalsy();
+    const rows = readSourceRows("2026-11-02", dataDir);
+    expect(rows.some((row) => row.source === "gemini-cli")).toBe(true);
+    expect(rows.some((row) => row.source === "claude-plugins")).toBe(false);
   });
 });

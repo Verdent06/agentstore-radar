@@ -67,6 +67,8 @@ export type AppSummary = {
   geminiStars: number | null;
   verified: boolean | null;
   starsSource?: string | null;
+  /** `host_repo` star counts are the shared repository, not plugin growth. */
+  starsScope?: "own_repo" | "host_repo" | null;
 };
 
 export type HistoryGap = "partial" | "carried_forward" | "missing";

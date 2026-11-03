@@ -132,7 +132,7 @@ export function runTool(
           category: row.app.category,
           value: roundCount(row.value),
           growth:
-            row.previousValue == null || row.previousValue === 0
+            row.delta == null || row.previousValue == null || row.previousValue === 0
               ? null
               : growthBucket((row.value - row.previousValue) / row.previousValue),
         })),

@@ -31,6 +31,7 @@ export const HOST_MIN_INTERVAL_MS: Record<string, number> = {
   "api.npmjs.org": 200,
   "pypistats.org": 400,
   "geminicli.com": 200,
+  "raw.githubusercontent.com": 200,
   "api.openai.com": 250,
   "api.anthropic.com": 250,
   "generativelanguage.googleapis.com": 250,
@@ -42,6 +43,29 @@ export const MCP_SERVERS_PATH = "/v0.1/servers";
 export const SMITHERY_SERVERS_URL = "https://api.smithery.ai/servers";
 export const SMITHERY_STABLE_SEED = 1;
 export const GEMINI_EXTENSIONS_URL = "https://geminicli.com/extensions.json";
+
+/**
+ * Anthropic's official marketplace plus the two topic marketplaces named in
+ * Claude Code's marketplace docs (`anthropics/skills`, `anthropics/knowledge-work-plugins`).
+ * One GET per file. History starts the day this ships; do not backfill from git.
+ */
+export const CLAUDE_PLUGIN_MARKETPLACES = [
+  {
+    owner: "anthropics",
+    repo: "claude-plugins-official",
+    url: "https://raw.githubusercontent.com/anthropics/claude-plugins-official/main/.claude-plugin/marketplace.json",
+  },
+  {
+    owner: "anthropics",
+    repo: "skills",
+    url: "https://raw.githubusercontent.com/anthropics/skills/main/.claude-plugin/marketplace.json",
+  },
+  {
+    owner: "anthropics",
+    repo: "knowledge-work-plugins",
+    url: "https://raw.githubusercontent.com/anthropics/knowledge-work-plugins/main/.claude-plugin/marketplace.json",
+  },
+] as const;
 export const NPM_DOWNLOADS_BASE = "https://api.npmjs.org/downloads/point/last-week";
 export const PYPISTATS_BASE = "https://pypistats.org/api/packages";
 export const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";

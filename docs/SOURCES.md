@@ -43,7 +43,7 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - `Could not resolve to a Repository` / `NOT_FOUND` (deleted or renamed repos) is logged per-app and never fails the GitHub source or the workflow. Unresolved aliases are **not** stamped `last_fetched` and are **not** counted in `fetchedThisRunCount` / `freshTodayCount`. They are persisted under `data/state/github/unresolved.json`, excluded from the next day's due set (retried after 7 days), recorded as `unresolvedCount` / `unresolvedRepos` on the source manifest, and **excluded from the `fetchedShare` denominator**. If a cached row exists it is emitted with `carried_forward: true` and the original `fetched_at`; it is never labeled fresh.
 - The 2026-10-15..22 freeze then 10-24 jump for many repos was the previous weekly refresh landing after several failed MCP runs, not a parser bug. `morluto/rea` is a real repository; its 268,700 → 375,620 jump was a **`stars_source` switch**, not carry-forward plus a parser freeze: through Oct 22 the merged app had ~268,700 stars and **no** `stars_source` (Gemini gallery / catalog value), then Oct 24 wrote 375,620 with `stars_source=github` once live GraphQL won. Movers ignore carried-forward GitHub points; a source switch still needs `stars_source` to be interpreted correctly.
 - Target: `fetchedShare` ≥0.80 of resolvable GitHub URLs every day (100-wide GraphQL, default `RADAR_GITHUB_BATCH` 50k). Unresolved `NOT_FOUND` aliases are persisted so they cannot consume the daily batch. Missing stars stay missing.
-- Repos are discovered from MCP `repository.url` / `io.github.*` names, Smithery GitHub homepages, and the Gemini gallery
+- Repos are discovered from MCP `repository.url` / `io.github.*` names, Smithery GitHub homepages, the Gemini gallery, and Claude plugin marketplaces
 
 ## npm weekly downloads
 
@@ -74,6 +74,27 @@ User-Agent on every request: `agentstore-radar/0.1 (+https://github.com/Verdent0
 - Gallery `stars` (e.g. `obra/superpowers` 299,294) are static catalog values. The same source-level freeze as Smithery applies: if ≥95% of gallery stars are unchanged for N snapshot days, those rows are `frozen`/`carried_forward`, not stamped fresh. Merged app `stars` prefer the live GitHub GraphQL count and set `stars_source` accordingly; `geminiStars` keeps the gallery number for the Gemini chart.
 - The gallery JSON is fetched in full every run (~2.2k rows, one GET). `fetchedShare` counts those live rows **including frozen**; target ≥0.80 (typically 1.00). `fresh` stays `carried_forward` false and not frozen.
 - Included in M1 (not skipped)
+
+## Claude plugin marketplaces
+
+Anthropic publishes plugin catalogs as `.claude-plugin/marketplace.json`. One GET per file, from `raw.githubusercontent.com`, with no per-plugin requests. GitHub repos found in those files join the existing batched GraphQL star lookup.
+
+| Marketplace | Repository | Name in the file |
+| --- | --- | --- |
+| Official | `anthropics/claude-plugins-official` | `claude-plugins-official` |
+| Skills | `anthropics/skills` | `anthropic-agent-skills` |
+| Knowledge work | `anthropics/knowledge-work-plugins` | `knowledge-work-plugins` |
+
+The skills and knowledge-work files use the same document shape as the official catalog (`name`, `owner`, `plugins`, and a string or object `source`). Other Anthropic topic repos also ship a marketplace file; this collector follows the two topic marketplaces named in Claude Code's marketplace docs.
+
+- One row per plugin. `plugin_name` and `marketplace_name` stay on the row so a repo that hosts many plugins (for example `adobe/skills`) can be split later. The merged `app_id` is the repository, not the plugin: the 2026-11-02 collect wrote 443 plugin rows that folded into 245 apps. Per-plugin identity exists only on the source row.
+- The row id is the marketplace name plus the source path or repo, not the display name. The marketplace `renames` map keeps a shared-path id on the pre-rename slug.
+- `github` and git URLs that point at GitHub become `github:{owner}/{repo}` and merge with existing apps. A relative path resolves inside that marketplace's repo. A `git-subdir` path stays on the host repo's id.
+- `commit_sha` stores `source.sha` when the entry has one.
+- `stars_scope` is `host_repo` for a subfolder (the official catalog's `git-subdir` entries) or when more than one plugin maps to the same GitHub repo. It is `own_repo` only when the plugin is that repository and nothing else in the fetch shares it. Growth and movers skip `host_repo` star deltas. The star number itself still comes from the GitHub source.
+- `fetchedShare` is 1 when the marketplace files were fetched, including rows whose pin did not move. A row freezes only when its pinned sha is unchanged for N snapshot days and at least 95% of the catalog is in that state. A missing pin is not "unchanged", so a daily re-fetch of path-only plugins does not freeze the source.
+- A failed fetch, malformed JSON, or a marketplace shape the strict schema rejects fails this source only. The rest of the day still writes.
+- History starts the day this source ships. Do not rebuild earlier days from the git history of `marketplace.json`.
 
 ## Answer-share probe (weekly)
 

@@ -34,6 +34,7 @@ describe("KPI fresh-coverage constants", () => {
     expect(KPI_SOURCES).not.toContain("smithery");
     expect(KPI_SOURCES).not.toContain("gemini-cli");
     expect(KPI_SOURCES).not.toContain("gemini");
+    expect(KPI_SOURCES).not.toContain("claude-plugins");
   });
 });
 

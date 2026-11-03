@@ -7,7 +7,7 @@ import { createHttpClient } from "../src/lib/http.ts";
 import { createLogger } from "../src/lib/logger.ts";
 import { existingRawPath, readApps, readManifest, readSourceRows } from "../src/lib/io.ts";
 import { loadLastFetched } from "../src/lib/rolling.ts";
-import { fixtureFetch, loadFixture } from "./helpers.ts";
+import { claudeMarketplaceRoutes, fixtureFetch, loadFixture } from "./helpers.ts";
 
 const silent = createLogger({
   log() {},
@@ -23,6 +23,7 @@ describe("collect", () => {
       { match: /cursor=page-2/, body: loadFixture("mcp-page-2.json") },
       { match: "api.smithery.ai/servers", body: loadFixture("smithery-page.json") },
       { match: "geminicli.com/extensions.json", body: loadFixture("gemini.json") },
+      ...claudeMarketplaceRoutes(),
       {
         match: "api.npmjs.org/downloads/point/last-week/@example%2Fweather-mcp",
         body: loadFixture<Record<string, unknown>>("npm-point.json")["@example/weather-mcp"],
@@ -110,6 +111,7 @@ describe("collect", () => {
       { match: /registry.modelcontextprotocol.io/, body: loadFixture("mcp-page-2.json") },
       { match: "api.smithery.ai/servers", body: loadFixture("smithery-page.json") },
       { match: "geminicli.com/extensions.json", body: [] },
+      ...claudeMarketplaceRoutes(),
       { match: "api.github.com/graphql", body: { message: "Bad credentials" }, status: 401 },
     ]);
     const { manifest } = await collect({
@@ -129,6 +131,7 @@ describe("collect", () => {
       { match: /registry.modelcontextprotocol.io/, body: loadFixture("mcp-page-2.json") },
       { match: "api.smithery.ai/servers", body: loadFixture("smithery-page.json") },
       { match: "geminicli.com/extensions.json", body: [] },
+      ...claudeMarketplaceRoutes(),
     ]);
     const { manifest } = await collect({
       date: "2026-10-15",

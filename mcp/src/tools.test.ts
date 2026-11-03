@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { buildAggregate } from "../../src/aggregate/build.ts";
 import { writeDemoSnapshots } from "../../src/aggregate/demo.ts";
 import { runTool, TOOL_NAMES } from "../../src/aggregate/tools.ts";
+import type { Aggregate, AppSummary } from "../../src/aggregate/types.ts";
 import { PublicLimitSchema } from "./server.ts";
 
 const FORBIDDEN_KEYS = new Set(["useCount", "use_count", "u"]);
@@ -129,6 +130,86 @@ describe("MCP tool payloads", () => {
     for (const result of extras) {
       assert.deepEqual(collectForbiddenKeys(JSON.parse(result.content[0]!.text)), []);
     }
+  });
+
+  it("top_charts leaves host_repo star growth null", () => {
+    const app = (id: string, stars: number, starsScope: "host_repo" | "own_repo"): AppSummary => ({
+      id,
+      name: id,
+      displayName: id,
+      description: null,
+      homepage: null,
+      repoUrl: null,
+      npmPackage: null,
+      pypiPackage: null,
+      sources: ["github", "claude-plugins"],
+      stores: [],
+      category: "other",
+      firstSeen: "2026-11-01",
+      lastSeen: "2026-11-02",
+      stars,
+      forks: null,
+      openIssues: null,
+      pushedAt: null,
+      npmWeeklyDownloads: null,
+      pypiLastWeekDownloads: null,
+      geminiStars: null,
+      verified: null,
+      starsScope,
+    });
+    const chart: Aggregate = {
+      meta: {
+        builtAt: "2026-11-02T00:00:00Z",
+        origin: "fixture",
+        source: "fixture",
+        snapshotDates: ["2026-11-01", "2026-11-02"],
+        latestDate: "2026-11-02",
+        previousDate: "2026-11-01",
+        weekAgoDate: null,
+        partialDates: [],
+        latestCompleteDate: "2026-11-02",
+        previousCompleteDate: "2026-11-01",
+        coverage: [],
+      },
+      stats: {
+        appCount: 2,
+        storeCount: 0,
+        snapshotCount: 2,
+        latestDate: "2026-11-02",
+        previousDate: "2026-11-01",
+        weekAgoDate: null,
+        totalStars: 0,
+        totalNpmWeekly: 0,
+        multiStoreCount: 0,
+        newArrivalCount: 0,
+        categoryCount: 1,
+        starsKpiHeld: false,
+        npmKpiHeld: false,
+        pypiKpiHeld: false,
+        starsFreshCount: 0,
+        npmFreshCount: 0,
+        pypiFreshCount: 0,
+      },
+      apps: [app("github:adobe/skills", 8000, "host_repo"), app("github:example/only-plugin", 40, "own_repo")],
+      series: {
+        "github:adobe/skills": { s: [1000, 8000] },
+        "github:example/only-plugin": { s: [10, 40] },
+      },
+      answerShare: null,
+    };
+    const payload = JSON.parse(runTool(chart, "top_charts", { chart: "github", limit: 10 }).content[0]!.text) as {
+      rows: Array<{ id: string; growth: string | null; value: number }>;
+    };
+    assert.deepEqual(payload.rows.find((row) => row.id === "github:adobe/skills"), {
+      rank: 1,
+      previousRank: 1,
+      id: "github:adobe/skills",
+      name: "github:adobe/skills",
+      category: "other",
+      value: 8000,
+      growth: null,
+    });
+    assert.equal(payload.rows.find((row) => row.id === "github:example/only-plugin")?.growth, ">100%");
   });
 
   it("rejects limit: 50 on the public tool schema", () => {

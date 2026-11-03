@@ -17,7 +17,7 @@
     "start": "tsx src/http.ts",
     "start:stdio": "tsx src/stdio.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test src/tools.test.ts"
+    "test": "vitest run"
   },
   "engines": {
     "node": ">=22"

@@ -39,6 +39,38 @@ export function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+/** Tiny valid marketplaces so full-catalog collects do not hit the network. */
+export function claudeMarketplaceRoutes(): Array<{ match: string; body: unknown }> {
+  return [
+    {
+      match: "raw.githubusercontent.com/anthropics/skills/main/.claude-plugin/marketplace.json",
+      body: { name: "anthropic-agent-skills", owner: { name: "Anthropic" }, plugins: [] },
+    },
+    {
+      match: "raw.githubusercontent.com/anthropics/knowledge-work-plugins/main/.claude-plugin/marketplace.json",
+      body: { name: "knowledge-work-plugins", owner: { name: "Anthropic" }, plugins: [] },
+    },
+    {
+      match: "raw.githubusercontent.com/anthropics/claude-plugins-official/main/.claude-plugin/marketplace.json",
+      body: {
+        name: "claude-plugins-official",
+        owner: { name: "Anthropic" },
+        plugins: [
+          {
+            name: "weather",
+            description: "Weather plugin",
+            source: {
+              source: "github",
+              repo: "example/weather",
+              sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            },
+          },
+        ],
+      },
+    },
+  ];
+}
+
 export function fixtureFetch(routes: Array<{ match: RegExp | string; body: unknown; status?: number }>): FetchImpl {
   return async (input, init) => {
     const url = String(input);

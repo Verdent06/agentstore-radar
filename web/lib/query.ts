@@ -181,7 +181,11 @@ function publicMetricSeries(agg: Aggregate, id: string, metric: MetricKey): Publ
       return { date: day.date, value: null, growth: null, gap: "missing" };
     }
     const broken = previous != null && starsSourceBreak(agg, id, metric, previous.index, index);
-    const growth = broken || previous == null || previous.value === 0 ? null : growthBucket((value - previous.value) / previous.value);
+    const hostRepo = metric === "stars" && findApp(agg, id)?.starsScope === "host_repo";
+    const growth =
+      broken || hostRepo || previous == null || previous.value === 0
+        ? null
+        : growthBucket((value - previous.value) / previous.value);
     previous = { index, value };
     return { date: day.date, value, growth, gap: null };
   });
@@ -233,10 +237,11 @@ export function topChart(agg: Aggregate, chart: ChartId, limit = PUBLIC_TOP_N): 
       .forEach((row, index) => prevRank.set(row.id, index + 1));
   }
   return rows.slice(0, clamp(limit, PUBLIC_TOP_N)).map((row, index) => {
+    const hostRepoStars = metric === "stars" && row.app.starsScope === "host_repo";
     const previousValue =
-      prevIndex >= 0 && !seriesCarried(agg, row.app.id, metric, prevIndex)
-        ? seriesValue(agg, row.app.id, metric, prevIndex)
-        : null;
+      hostRepoStars || prevIndex < 0 || seriesCarried(agg, row.app.id, metric, prevIndex)
+        ? null
+        : seriesValue(agg, row.app.id, metric, prevIndex);
     return {
       rank: index + 1,
       previousRank: prevRank.get(row.app.id) ?? null,
@@ -266,6 +271,7 @@ export function movers(
       const current = seriesValue(agg, app.id, metric, toIndex);
       const prevIndex = previousFreshIndex(agg, app.id, metric, fromIndex, window === "7d");
       if (prevIndex == null || current == null) continue;
+      if (metric === "stars" && app.starsScope === "host_repo") continue;
       if (starsSourceBreak(agg, app.id, metric, prevIndex, toIndex)) continue;
       const previous = seriesValue(agg, app.id, metric, prevIndex);
       if (previous == null || current === previous) continue;

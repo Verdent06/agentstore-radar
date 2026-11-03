@@ -36,7 +36,9 @@ export function OgFrame({
             </span>
             <span style={{ display: "flex", gap: 20, fontFamily: "IBM Plex Mono, ui-monospace" }}>
               <span>{row.value}</span>
-              {row.delta ? <span style={{ color: row.delta.startsWith("-") || row.delta.startsWith("−") ? "#ff6b7a" : "#3ee08f" }}>{row.delta}</span> : null}
+              {row.delta && row.delta !== "—" ? (
+                <span style={{ color: row.delta.startsWith("-") || row.delta.startsWith("−") ? "#ff6b7a" : "#3ee08f" }}>{row.delta}</span>
+              ) : null}
             </span>
           </div>
         ))}

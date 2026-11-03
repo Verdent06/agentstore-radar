@@ -53,6 +53,9 @@ export function computeMovers(previous: AppRow[], current: AppRow[], limit = 10)
       if (!prior) {
         continue;
       }
+      if (metric.key === "stars" && (row.stars_scope === "host_repo" || prior.stars_scope === "host_repo")) {
+        continue;
+      }
       const currentValue = metricValue(row, metric.key);
       const previousValue = metricValue(prior, metric.key);
       if (currentValue == null || previousValue == null) {
