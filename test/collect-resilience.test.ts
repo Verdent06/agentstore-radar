@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { npmAdapter } from "../src/adapters/npm.ts";
 import { collect, collectAdapter } from "../src/commands/collect.ts";
 import type { SourceAdapter } from "../src/adapters/types.ts";
 import type { SourceBudget } from "../src/lib/budget.ts";
@@ -697,5 +698,72 @@ describe("collect resilience", () => {
     expect(now - origin).toBeLessThanOrEqual(budgetMs);
     expect(retried.truncated).toBe(true);
     expect(retried.failed).toBe(false);
+  });
+
+  it("keeps prior rows frozen when an adapter throws a budget error", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-budget-partial-"));
+    const priorRow = emptySourceRow({
+      snapshot_date: "2026-11-02",
+      source: "npm",
+      source_id: "@scope/kept",
+      name: "@scope/kept",
+      app_id: "npm:@scope/kept",
+      npm_package: "@scope/kept",
+      npm_weekly_downloads: 42,
+      fetched_at: "2026-11-02T12:00:00.000Z",
+    });
+    const priorManifest: SnapshotManifest = {
+      snapshotDate: "2026-11-02",
+      collectedAt: "2026-11-02T12:00:00.000Z",
+      appCount: 1,
+      sourceRowCount: 1,
+      partial: false,
+      sources: [{ source: "npm", rowCount: 1, skipped: false, collectedAt: "2026-11-02T12:00:00.000Z" }],
+    };
+    writeNormalized("2026-11-02", [priorRow], mergeApps("2026-11-02", [priorRow]), priorManifest, dataDir);
+
+    const original = npmAdapter.collect;
+    npmAdapter.collect = async () => {
+      throw new Error("npm wall-clock budget of 0m exhausted (test)");
+    };
+    try {
+      const outcome = await collect({
+        date: "2026-11-03",
+        dataDir,
+        sources: ["npm"],
+        now: new Date("2026-11-03T12:00:00.000Z"),
+        env: { RADAR_NPM_BUDGET_MS: "1000" },
+        http: createHttpClient({
+          fetchImpl: async () => {
+            throw new Error("no http");
+          },
+          maxRetries: 0,
+        }),
+        log: silent,
+        sourceAttempts: 3,
+        sleep: async () => {
+          throw new Error("budget throw must not be retried");
+        },
+      });
+      expect(outcome.ok).toBe(true);
+      expect(outcome.wrote).toBe(true);
+      expect(outcome.manifest?.partial).toBe(true);
+      const npm = outcome.manifest?.sources.find((source) => source.source === "npm");
+      expect(npm?.truncated).toBe(true);
+      expect(npm?.failed).toBeFalsy();
+      expect(npm?.eligibleCount).toBe(1);
+      expect(npm?.fetchedShare).toBeCloseTo(0);
+      const rows = readSourceRows("2026-11-03", dataDir).filter((row) => row.source === "npm");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        source_id: "@scope/kept",
+        npm_weekly_downloads: 42,
+        carried_forward: true,
+        frozen: true,
+        snapshot_date: "2026-11-03",
+      });
+    } finally {
+      npmAdapter.collect = original;
+    }
   });
 });

@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { adaptersByKind } from "../adapters/index.ts";
 import { createDiscoveredRefs, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "../adapters/types.ts";
 import { budgetExhausted, budgetExhaustedError, isBudgetExhaustedError, openSourceBudget } from "../lib/budget.ts";
+import { budgetPartialRows } from "../lib/budget-partial.ts";
 import { SOURCE_COLLECT_ATTEMPTS } from "../lib/config.ts";
 import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
 import { utcDateString } from "../lib/dates.ts";
@@ -105,22 +106,25 @@ function stampFetchWindow(result: SourceResult, startedMs: number, endedMs: numb
 
 function budgetPartialResult(adapter: SourceAdapter, ctx: CollectContext, error: unknown): SourceResult {
   const stoppedAt = sourceStoppedAt(adapter.name, error);
+  const records = budgetPartialRows(ctx.dataDir, adapter.name, ctx.snapshotDate);
+  const eligibleCount = records.length;
   return {
     source: adapter.name,
     collectedAt: ctx.collectedAt,
-    rowCount: 0,
+    rowCount: records.length,
     skipped: false,
     truncated: true,
     failed: false,
     error: stoppedAt.error,
     stoppedAt,
-    raw: { truncated: true, budgetExhausted: true },
-    records: [],
-    eligibleCount: 0,
+    raw: { truncated: true, budgetExhausted: true, keptRows: records.length },
+    records,
+    eligibleCount,
     freshTodayCount: 0,
     freshWithin7dCount: 0,
     fetchedThisRunCount: 0,
-    fetchedShare: 0,
+    fetchedShare: eligibleCount === 0 ? 0 : undefined,
+    coverage: eligibleCount === 0 ? 0 : 0,
   };
 }
 
@@ -378,9 +382,14 @@ function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifes
   const freshWithin7d = result.freshWithin7dCount ?? freshToday;
   const fetchedThisRun = result.fetchedThisRunCount ?? (result.skipped || result.failed ? 0 : result.rowCount);
   const unresolvedCount = result.unresolvedCount ?? 0;
+  const incomplete = result.truncated === true || result.failed === true;
   const { coverage } = computeCoverage(eligible, freshToday);
   const fetchedShare =
-    result.skipped && eligible === 0 ? undefined : freshFetchedShare(result.records, eligible, unresolvedCount);
+    incomplete && eligible === 0
+      ? 0
+      : result.skipped && eligible === 0
+        ? undefined
+        : freshFetchedShare(result.records, eligible, unresolvedCount, incomplete);
   return {
     source: result.source,
     rowCount: result.rowCount,
@@ -392,8 +401,8 @@ function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifes
     freshTodayCount: freshToday,
     freshWithin7dCount: freshWithin7d,
     fetchedThisRunCount: fetchedThisRun,
-    fetchedShare: result.skipped && eligible === 0 ? undefined : fetchedShare,
-    coverage: result.skipped && eligible === 0 ? undefined : result.coverage ?? coverage,
+    fetchedShare,
+    coverage: result.skipped && eligible === 0 ? undefined : incomplete && eligible === 0 ? 0 : result.coverage ?? coverage,
     lastFetchedAt: result.lastFetchedAt,
     unresolvedCount: result.unresolvedCount,
     unresolvedRepos: result.unresolvedRepos,

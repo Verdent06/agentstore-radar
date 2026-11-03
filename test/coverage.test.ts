@@ -32,6 +32,12 @@ describe("fetchedShare", () => {
     expect(computeFetchedShare(0, 3_864, 3_864)).toBe(1);
   });
 
+  it("is 0 for a truncated or failed source whose denominator is empty", () => {
+    expect(computeFetchedShare(0, 0, 0, true)).toBe(0);
+    expect(computeFetchedShare(0, 4, 4, true)).toBe(0);
+    expect(computeFetchedShare(0, 0, 0, false)).toBe(1);
+  });
+
   it("does not count unresolved GitHub repos as fetched", () => {
     expect(computeFetchedShare(0, 1, 1)).toBe(1);
     expect(computeFetchedShare(100, 200, 50)).toBeCloseTo(100 / 150);

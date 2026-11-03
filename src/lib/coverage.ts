@@ -23,10 +23,16 @@ export function computeCoverage(eligible: number, fetched: number): CoverageStat
  * denominator so deleted/renamed aliases cannot inflate or deflate the metric.
  * A frozen or carried-forward row does not count, even if a live call returned it.
  */
-export function computeFetchedShare(freshCount: number, eligible: number, unresolvedCount = 0): number {
+export function computeFetchedShare(
+  freshCount: number,
+  eligible: number,
+  unresolvedCount = 0,
+  incomplete = false,
+): number {
   const denom = Math.max(0, eligible) - Math.max(0, unresolvedCount);
   if (denom <= 0) {
-    return 1;
+    // A truncated or failed source with nothing resolvable is not a clean 100%.
+    return incomplete ? 0 : 1;
   }
   return Math.min(1, Math.max(0, freshCount) / denom);
 }
@@ -46,8 +52,9 @@ export function freshFetchedShare(
   rows: ReadonlyArray<{ carried_forward?: boolean | null; frozen?: boolean | null }>,
   eligible: number,
   unresolvedCount = 0,
+  incomplete = false,
 ): number {
-  return computeFetchedShare(freshRowCount(rows), eligible, unresolvedCount);
+  return computeFetchedShare(freshRowCount(rows), eligible, unresolvedCount, incomplete);
 }
 
 export function isLowCoverage(coverage: number | undefined, eligible = 0, threshold = DEFAULT_LOW_COVERAGE_THRESHOLD): boolean {
