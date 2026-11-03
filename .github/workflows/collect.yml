@@ -25,6 +25,10 @@ on:
         description: "Collect without pushing to the private data repo (branch verification)"
         type: boolean
         default: false
+      sources:
+        description: "Comma-separated sources to collect (empty collects every source)"
+        type: string
+        default: ""
 
 concurrency:
   group: collect-snapshots
@@ -100,12 +104,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_STATS_TOKEN: ${{ secrets.GH_STATS_TOKEN }}
           SMITHERY_API_KEY: ${{ secrets.SMITHERY_API_KEY }}
+          COLLECT_SOURCES: ${{ inputs.sources }}
         run: |
           ARGS=(--data "$DATA_DIR")
           if [[ "${{ inputs.force }}" == "true" ]]; then
             ARGS+=(--force)
           elif [[ "${IS_BACKSTOP}" == "true" || "${{ inputs.if_incomplete }}" == "true" ]]; then
             ARGS+=(--if-incomplete)
+          fi
+          if [[ -n "$COLLECT_SOURCES" ]]; then
+            ARGS+=(--sources "$COLLECT_SOURCES")
           fi
           npm run collect -- "${ARGS[@]}"
 
