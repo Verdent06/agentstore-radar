@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { budgetDeadlineMs, budgetExhausted, budgetExhaustedError, budgetRemainingMs, openSourceBudget } from "../lib/budget.ts";
+import { adoptSourceBudget, budgetDeadlineMs, budgetExhausted, budgetExhaustedError, budgetRemainingMs } from "../lib/budget.ts";
 import { GITHUB_GRAPHQL_BATCH, GITHUB_GRAPHQL_URL, GITHUB_RUN_BATCH, MAX_RATE_LIMIT_WAIT_MS, runBatchSize } from "../lib/config.ts";
 import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
 import { HttpError } from "../lib/http.ts";
@@ -257,7 +257,7 @@ export const githubAdapter: SourceAdapter = {
     );
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
-    const budget = openSourceBudget(ctx.env, "github", ctx.monotonicNow ?? Date.now);
+    const budget = adoptSourceBudget(ctx, "github");
     const unresolvedRepos: string[] = [];
     const unresolvedKeys = new Set(Object.keys(unresolvedMap));
 

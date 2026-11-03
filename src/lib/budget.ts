@@ -50,3 +50,18 @@ export function budgetExhaustedError(budget: SourceBudget, where?: string): Erro
   const place = where ? ` (${where})` : "";
   return new Error(`${budget.source} wall-clock budget of ${minutes}m exhausted${place}`);
 }
+
+export function isBudgetExhaustedError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("wall-clock budget");
+}
+
+/** Reuse the budget collect() opened for this source so a retry cannot restart the clock. */
+export function adoptSourceBudget(
+  ctx: { env: NodeJS.ProcessEnv; monotonicNow?: MonotonicClock; budget?: SourceBudget },
+  source: BudgetSourceName,
+): SourceBudget {
+  if (ctx.budget?.source === source) {
+    return ctx.budget;
+  }
+  return openSourceBudget(ctx.env, source, ctx.monotonicNow ?? Date.now);
+}

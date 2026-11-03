@@ -1,17 +1,18 @@
 import { z } from "zod";
-import { budgetDeadlineMs, budgetExhausted, budgetExhaustedError, budgetRemainingMs, openSourceBudget } from "../lib/budget.ts";
+import { adoptSourceBudget, budgetDeadlineMs, budgetExhausted, budgetExhaustedError, budgetRemainingMs } from "../lib/budget.ts";
 import {
   NPM_BULK_LIMIT,
   NPM_BULK_MIN_INTERVAL_MS,
   NPM_DOWNLOADS_BASE,
   NPM_PARTIAL_FAILURE_RATIO,
   NPM_RUN_BATCH,
+  NPM_SCOPED_CONCURRENCY,
   NPM_SCOPED_MIN_INTERVAL_MS,
   RATE_LIMIT_MIN_WAIT_MS,
   runBatchSize,
 } from "../lib/config.ts";
 import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
-import { fetchJsonWithRateLimitWait, isHttpRateLimit } from "../lib/http.ts";
+import { fetchJsonWithRateLimitWait, isHttpRateLimit, retryWaitMs } from "../lib/http.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import {
   checkpointNextIndex,
@@ -28,6 +29,7 @@ import {
   resumeDailyDueKeys,
   selectRunBatch,
 } from "../lib/rolling.ts";
+import { createSharedBackoffPool } from "../lib/pool.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
 import { chunk, sleep as defaultSleep } from "../lib/util.ts";
 import { sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "./types.ts";
@@ -55,6 +57,13 @@ export function isScopedNpmPackage(name: string): boolean {
 
 export function npmBulkUrl(names: string[]): string {
   return `${NPM_DOWNLOADS_BASE}/${names.join(",")}`;
+}
+
+/** Unscoped names go out in bulk batches of 128. Scoped names stay one request each. */
+export function partitionNpmDownloads(names: string[]): { bulk: string[][]; scoped: string[] } {
+  const scoped = names.filter(isScopedNpmPackage);
+  const unscoped = names.filter((name) => !isScopedNpmPackage(name));
+  return { bulk: chunk(unscoped, NPM_BULK_LIMIT), scoped };
 }
 
 export function npmScopedUrl(name: string): string {
@@ -146,7 +155,7 @@ export const npmAdapter: SourceAdapter = {
     const walkOrder = [...unscoped, ...scoped];
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
-    const budget = openSourceBudget(ctx.env, "npm", ctx.monotonicNow ?? Date.now);
+    const budget = adoptSourceBudget(ctx, "npm");
 
     const finish = (input: {
       truncated: boolean;
@@ -266,7 +275,7 @@ export const npmAdapter: SourceAdapter = {
       });
     };
 
-    const batches = chunk(unscoped, NPM_BULK_LIMIT);
+    const batches = partitionNpmDownloads(walkOrder).bulk;
     for (const [index, batch] of batches.entries()) {
       if (budgetExhausted(budget)) {
         noteBudget("before bulk batch");
@@ -318,37 +327,67 @@ export const npmAdapter: SourceAdapter = {
       }
     }
 
-    if (!budgetStopped) {
-      for (const name of scoped) {
-        if (budgetExhausted(budget)) {
-          noteBudget("before scoped package");
-          break;
-        }
-        rememberCheckpoint();
-        try {
-          const payload = await fetchNpm(npmScopedUrl(name), NPM_SCOPED_MIN_INTERVAL_MS);
-          if (rememberPoint(cache, lastFetched, name, payload, fetchedAt)) {
-            fetchedThisRun += 1;
+    if (!budgetStopped && scoped.length > 0) {
+      const concurrency = runBatchSize(ctx.env, "RADAR_NPM_SCOPED_CONCURRENCY", NPM_SCOPED_CONCURRENCY);
+      const pool = createSharedBackoffPool(concurrency, sleepFn, ctx.monotonicNow ?? Date.now);
+      let io: Promise<void> = Promise.resolve();
+      const enqueueIo = (fn: () => void): Promise<void> => {
+        io = io.then(fn);
+        return io;
+      };
+      await Promise.all(
+        scoped.map(async (name) => {
+          if (budgetStopped || budgetExhausted(budget)) {
+            noteBudget("before scoped package");
+            return;
           }
-        } catch (error) {
-          if (isHttpRateLimit(error)) {
-            if (budgetExhausted(budget) || budgetRemainingMs(budget) < RATE_LIMIT_MIN_WAIT_MS) {
-              noteBudget("scoped rate limit");
-              break;
+          await pool.acquire();
+          try {
+            if (budgetStopped || budgetExhausted(budget)) {
+              noteBudget("before scoped package");
+              return;
             }
-            deferred += 1;
-            ctx.log.warn("npm scoped delayed past wait budget; leaving key for next run", {
-              name,
-              error: String(error),
+            await enqueueIo(() => {
+              rememberCheckpoint();
             });
-          } else {
-            ctx.log.warn("npm scoped package fetch failed", { name, error: String(error) });
+            try {
+              const payload = await fetchNpm(npmScopedUrl(name), NPM_SCOPED_MIN_INTERVAL_MS);
+              if (rememberPoint(cache, lastFetched, name, payload, fetchedAt)) {
+                fetchedThisRun += 1;
+              }
+            } catch (error) {
+              if (isHttpRateLimit(error)) {
+                const waitMs = retryWaitMs({
+                  attempt: 0,
+                  retryAfterMs: error.retryAfterMs,
+                  rateLimited: true,
+                  cloudflare: Boolean(error.cloudflare),
+                });
+                pool.pauseAll(waitMs);
+                if (budgetExhausted(budget) || budgetRemainingMs(budget) < RATE_LIMIT_MIN_WAIT_MS) {
+                  noteBudget("scoped rate limit");
+                  return;
+                }
+                deferred += 1;
+                ctx.log.warn("npm scoped delayed past wait budget; leaving key for next run", {
+                  name,
+                  error: String(error),
+                });
+              } else {
+                ctx.log.warn("npm scoped package fetch failed", { name, error: String(error) });
+              }
+            }
+            processed += 1;
+            await enqueueIo(() => {
+              persistLastFetched(ctx.dataDir, "npm", lastFetched);
+              persistEntityCache(ctx.dataDir, "npm", cache);
+            });
+          } finally {
+            pool.release();
           }
-        }
-        processed += 1;
-        persistLastFetched(ctx.dataDir, "npm", lastFetched);
-        persistEntityCache(ctx.dataDir, "npm", cache);
-      }
+        }),
+      );
+      await io;
     }
 
     if (!truncated && dueKeys.length > 0) {

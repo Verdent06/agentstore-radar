@@ -49,7 +49,15 @@ export const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 export const NPM_BULK_LIMIT = 128;
 export const NPM_SCOPED_MIN_INTERVAL_MS = 250;
 export const NPM_BULK_MIN_INTERVAL_MS = 200;
+/**
+ * Scoped npm packages cannot use the bulk endpoint. 4 in flight with a shared
+ * 429 pause. A live sample of 80 scoped names at this concurrency finished in
+ * 19.8s (~4 req/s, 25 HTTP 429s); extrapolating 8,054 scoped names is ~33 min.
+ */
+export const NPM_SCOPED_CONCURRENCY = 4;
 export const PYPI_MIN_INTERVAL_MS = 400;
+/** pypistats recent calls in flight. Host interval still spaces starts. */
+export const PYPI_CONCURRENCY = 4;
 /**
  * Per-run enrichment caps. Defaults cover the current catalog (~32k GitHub,
  * ~14k npm, ~5k PyPI). A wall-clock budget (below) can still end a source
@@ -62,22 +70,23 @@ export const PYPI_MIN_INTERVAL_MS = 400;
  * and frozen not true), so a source-frozen catalog scores ~0.
  */
 /**
- * Per-source wall-clock budgets. The collect step is killed at 330 minutes;
- * these stop a source first, persist a same-day checkpoint, and still write
- * a partial manifest. Sum is 250 minutes. Each source can overrun by at most
- * one in-flight HTTP timeout (30s), so the worst case is 253 minutes.
+ * Per-source wall-clock budgets. Sum is 245 minutes, under the 300-minute
+ * target and inside the 330-minute collect step. One in-flight HTTP call can
+ * still finish after the check (30s timeout), so the worst case is 248 minutes.
+ * The checkpoint/partial path remains if a source still overruns.
  * Override with RADAR_<SOURCE>_BUDGET_MS.
  *
- * Sized from the 2026-11-03 run (mcp ~2m, smithery ~6m, gemini <1m,
- * github ~24m, npm ~221m mostly scoped, PyPI ~85m for ~4.9k). npm and PyPI
- * are capped below a full pass so the job returns and the backstop resumes.
+ * npm and PyPI are sized from a live sample on 2026-11-03 (see docs/SOURCES.md):
+ * full npm pass ~34 min, full PyPI pass ~33 min, plus margin. The other
+ * sources keep headroom over the 2026-11-03 run (mcp ~2m, smithery ~6m,
+ * gemini <1m, github ~24m).
  */
-export const MCP_COLLECT_BUDGET_MS = 10 * 60 * 1000;
-export const SMITHERY_COLLECT_BUDGET_MS = 15 * 60 * 1000;
+export const MCP_COLLECT_BUDGET_MS = 15 * 60 * 1000;
+export const SMITHERY_COLLECT_BUDGET_MS = 20 * 60 * 1000;
 export const GEMINI_COLLECT_BUDGET_MS = 5 * 60 * 1000;
-export const GITHUB_COLLECT_BUDGET_MS = 35 * 60 * 1000;
-export const NPM_COLLECT_BUDGET_MS = 120 * 60 * 1000;
-export const PYPI_COLLECT_BUDGET_MS = 65 * 60 * 1000;
+export const GITHUB_COLLECT_BUDGET_MS = 50 * 60 * 1000;
+export const NPM_COLLECT_BUDGET_MS = 100 * 60 * 1000;
+export const PYPI_COLLECT_BUDGET_MS = 55 * 60 * 1000;
 export const GITHUB_RUN_BATCH = 50_000;
 export const NPM_RUN_BATCH = 20_000;
 export const PYPI_RUN_BATCH = 10_000;

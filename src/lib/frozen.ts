@@ -8,9 +8,12 @@ export type MetricObservation = {
   fetchedAt?: string | null;
 };
 
-export type NumericSourceField = {
-  [K in keyof SourceRow]: SourceRow[K] extends number | null ? K : never;
-}[keyof SourceRow];
+export type NumericSourceField = Exclude<
+  {
+    [K in keyof SourceRow]: SourceRow[K] extends number | null ? K : never;
+  }[keyof SourceRow],
+  undefined
+>;
 
 export type SourceFreezeDecision = {
   sourceFrozen: boolean;

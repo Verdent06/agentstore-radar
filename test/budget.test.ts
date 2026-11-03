@@ -35,7 +35,7 @@ function jumpingClock(): () => number {
 }
 
 describe("source wall-clock budgets", () => {
-  it("sums to 250 minutes, inside the 330-minute collect step", () => {
+  it("sums to 245 minutes, under 300 and inside the 330-minute collect step", () => {
     const total =
       MCP_COLLECT_BUDGET_MS +
       SMITHERY_COLLECT_BUDGET_MS +
@@ -43,8 +43,10 @@ describe("source wall-clock budgets", () => {
       GITHUB_COLLECT_BUDGET_MS +
       NPM_COLLECT_BUDGET_MS +
       PYPI_COLLECT_BUDGET_MS;
-    expect(total).toBe(250 * 60 * 1000);
-    expect(total).toBeLessThan(330 * 60 * 1000);
+    expect(total).toBe(245 * 60 * 1000);
+    expect(total).toBeLessThan(300 * 60 * 1000);
+    expect(NPM_COLLECT_BUDGET_MS).toBeGreaterThan(34 * 60 * 1000);
+    expect(PYPI_COLLECT_BUDGET_MS).toBeGreaterThan(33 * 60 * 1000);
   });
 
   it("stops npm on budget, checkpoints that snapshot date, and freezes rows that were not refreshed", async () => {

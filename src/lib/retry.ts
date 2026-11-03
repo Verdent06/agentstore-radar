@@ -14,6 +14,8 @@ export async function retryAsync<T>(
     sleep?: SleepFn;
     waitMs?: (attempt: number) => number;
     onRetry?: (attempt: number, error: unknown, waitMs: number) => void;
+    /** Return false to stop. Budget exhaustion uses this so a spent source is not run again. */
+    shouldRetry?: (error: unknown, attempt: number) => boolean;
   },
 ): Promise<T> {
   const attempts = options?.attempts ?? 3;
@@ -28,7 +30,7 @@ export async function retryAsync<T>(
       return await fn(attempt);
     } catch (error) {
       lastError = error;
-      if (attempt >= attempts - 1) {
+      if (attempt >= attempts - 1 || options?.shouldRetry?.(error, attempt) === false) {
         break;
       }
       const wait = waitMs(attempt);

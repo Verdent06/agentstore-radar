@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { budgetDeadlineMs, budgetExhausted, budgetExhaustedError, openSourceBudget } from "../lib/budget.ts";
+import { adoptSourceBudget, budgetDeadlineMs, budgetExhausted, budgetExhaustedError } from "../lib/budget.ts";
 import { MCP_REGISTRY_BASE, MCP_SERVERS_PATH } from "../lib/config.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
 import {
@@ -155,17 +155,17 @@ export const mcpRegistryAdapter: SourceAdapter = {
     let truncated = false;
     let stoppedAt: SourceResult["stoppedAt"];
     const maxPages = ctx.maxPages ?? Number.POSITIVE_INFINITY;
-    const budget = openSourceBudget(ctx.env, "mcp-registry", ctx.monotonicNow ?? Date.now);
+    const budget = adoptSourceBudget(ctx, "mcp-registry");
 
     try {
       while (pages < maxPages) {
         if (budgetExhausted(budget)) {
           const error = budgetExhaustedError(budget, "page");
-          if (servers.length === 0) {
-            throw new CollectSourceError(sourceStoppedAt("mcp-registry", error, { page: pages + 1, cursor }));
-          }
           truncated = true;
           stoppedAt = sourceStoppedAt("mcp-registry", error, { page: pages + 1, cursor });
+          if (servers.length === 0) {
+            break;
+          }
           ctx.log.warn("mcp-registry wall-clock budget exhausted; keeping partial catalog", {
             pages,
             rows: servers.length,

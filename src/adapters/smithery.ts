@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { budgetDeadlineMs, budgetExhausted, budgetExhaustedError, budgetRemainingMs, openSourceBudget } from "../lib/budget.ts";
+import { adoptSourceBudget, budgetDeadlineMs, budgetExhausted, budgetExhaustedError, budgetRemainingMs } from "../lib/budget.ts";
 import {
   SMITHERY_FROZEN_DAYS,
   SMITHERY_SERVERS_URL,
@@ -177,7 +177,7 @@ export const smitheryAdapter: SourceAdapter = {
     let truncated = false;
     let stoppedAt: SourceResult["stoppedAt"];
     const maxPages = ctx.maxPages ?? Number.POSITIVE_INFINITY;
-    const budget = openSourceBudget(ctx.env, "smithery", ctx.monotonicNow ?? Date.now);
+    const budget = adoptSourceBudget(ctx, "smithery");
     let budgetStopped = false;
 
     try {
@@ -185,7 +185,9 @@ export const smitheryAdapter: SourceAdapter = {
       while (page <= totalPages && pages < maxPages) {
         if (budgetExhausted(budget)) {
           budgetStopped = true;
-          throw budgetExhaustedError(budget, "list page");
+          truncated = true;
+          stoppedAt = sourceStoppedAt("smithery", budgetExhaustedError(budget, "list page"), { page });
+          break;
         }
         const url = new URL(SMITHERY_SERVERS_URL);
         url.searchParams.set("page", String(page));

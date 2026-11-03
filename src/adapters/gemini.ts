@@ -1,11 +1,11 @@
 import { z } from "zod";
-import { budgetDeadlineMs, budgetExhausted, budgetExhaustedError, openSourceBudget } from "../lib/budget.ts";
+import { adoptSourceBudget, budgetDeadlineMs, budgetExhausted, budgetExhaustedError } from "../lib/budget.ts";
 import { GEMINI_EXTENSIONS_URL, SMITHERY_FROZEN_DAYS, SOURCE_FREEZE_RATIO } from "../lib/config.ts";
 import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
 import { evaluateSourceFreeze, isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../lib/frozen.ts";
 import { appIdFromIdentity, githubRepoUrl, parseGithubRepo } from "../lib/matching.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
-import type { CollectContext, SourceAdapter, SourceResult } from "./types.ts";
+import { sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "./types.ts";
 
 const ExtensionSchema = z
   .object({
@@ -69,9 +69,24 @@ export const geminiAdapter: SourceAdapter = {
   name: "gemini-cli",
   kind: "catalog",
   async collect(ctx: CollectContext): Promise<SourceResult> {
-    const budget = openSourceBudget(ctx.env, "gemini-cli", ctx.monotonicNow ?? Date.now);
+    const budget = adoptSourceBudget(ctx, "gemini-cli");
     if (budgetExhausted(budget)) {
-      throw budgetExhaustedError(budget);
+      const stoppedAt = sourceStoppedAt("gemini-cli", budgetExhaustedError(budget));
+      return {
+        source: "gemini-cli",
+        collectedAt: ctx.collectedAt,
+        rowCount: 0,
+        skipped: false,
+        truncated: true,
+        error: stoppedAt.error,
+        stoppedAt,
+        eligibleCount: 0,
+        fetchedThisRunCount: 0,
+        fetchedShare: 0,
+        freshTodayCount: 0,
+        raw: { truncated: true, budgetExhausted: true },
+        records: [],
+      };
     }
     const payload = await ctx.http.fetchJson<unknown>(GEMINI_EXTENSIONS_URL, {
       deadlineMs: budgetDeadlineMs(budget),

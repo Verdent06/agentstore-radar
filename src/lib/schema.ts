@@ -40,6 +40,8 @@ export const SourceRowSchema = z.object({
    * `pypi_last_week_downloads`.
    */
   pypi_last_month_downloads: z.number().int().nullable(),
+  /** True when pypistats last_week is greater than last_month. */
+  pypi_weekly_gt_monthly: z.boolean().optional(),
   verified: z.boolean().nullable(),
   /** GitHub `isFork` when the collector saw it. Null means unknown. */
   fork: z.boolean().nullable().default(null),
@@ -135,6 +137,17 @@ export const SourceManifestSchema = z.object({
   backfilled: z.boolean().optional(),
   backfilledFields: z.array(z.string()).optional(),
   stoppedAt: SourceStoppedAtSchema.optional(),
+  /** Rows whose pypistats last_week is greater than last_month. */
+  weeklyGtMonthlyCount: z.number().int().nonnegative().optional(),
+  /**
+   * When this source's fetch began. A backup run that resumes the same
+   * snapshotDate keeps the earlier start.
+   */
+  fetch_started_at: z.string().optional(),
+  /** When this source's fetch last finished, including a later backup run. */
+  fetch_ended_at: z.string().optional(),
+  /** Collect run ids that fetched this source for the snapshotDate, in order. */
+  fetchRunIds: z.array(z.string()).optional(),
 });
 
 export type SourceManifest = z.infer<typeof SourceManifestSchema>;

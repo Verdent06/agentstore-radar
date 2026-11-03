@@ -772,9 +772,11 @@ describe("pypi growth adapter", () => {
         discovered,
       }),
     );
+    expect(result.weeklyGtMonthlyCount).toBe(1);
     expect(result.records[0]).toMatchObject({
       pypi_last_week_downloads: 100,
       pypi_last_month_downloads: 0,
+      pypi_weekly_gt_monthly: true,
       carried_forward: true,
       frozen: true,
     });

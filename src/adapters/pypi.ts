@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { budgetDeadlineMs, budgetExhausted, budgetExhaustedError, budgetRemainingMs, openSourceBudget } from "../lib/budget.ts";
+import { adoptSourceBudget, budgetDeadlineMs, budgetExhausted, budgetExhaustedError, budgetRemainingMs } from "../lib/budget.ts";
 import {
+  PYPI_CONCURRENCY,
   PYPI_MIN_INTERVAL_MS,
   PYPI_RUN_BATCH,
   PYPISTATS_BASE,
@@ -11,7 +12,7 @@ import {
 } from "../lib/config.ts";
 import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
 import { evaluateSourceFreeze, isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../lib/frozen.ts";
-import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
+import { fetchJsonWithRateLimitWait, HttpError, retryWaitMs } from "../lib/http.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import {
   checkpointNextIndex,
@@ -28,6 +29,7 @@ import {
   resumeDailyDueKeys,
   selectRunBatch,
 } from "../lib/rolling.ts";
+import { createSharedBackoffPool } from "../lib/pool.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
 import { sleep as defaultSleep } from "../lib/util.ts";
 import { sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "./types.ts";
@@ -156,7 +158,8 @@ function recordsFromCache(
       liveFrozen.get(item.row.source_id) === true ||
       (freezeUnfetched && item.fetchedCarried);
     const carried = item.fetchedCarried || item.inconsistent;
-    return withObservation(item.row, item.fetchedAt, carried, frozen);
+    const row = item.inconsistent ? { ...item.row, pypi_weekly_gt_monthly: true } : item.row;
+    return withObservation(row, item.fetchedAt, carried, frozen);
   });
 }
 
@@ -177,7 +180,7 @@ export const pypiAdapter: SourceAdapter = {
     );
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
-    const budget = openSourceBudget(ctx.env, "pypi", ctx.monotonicNow ?? Date.now);
+    const budget = adoptSourceBudget(ctx, "pypi");
     const frozenDays = smitheryFrozenDays(ctx.env, SMITHERY_FROZEN_DAYS);
     const monthHistory = loadPreviousMetricHistory(
       ctx.dataDir,
@@ -215,6 +218,7 @@ export const pypiAdapter: SourceAdapter = {
       const freshWithin7dCount = countFresh(allKeys, lastFetched, ctx.now);
       const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
       const fetchedShare = freshFetchedShare(records, allKeys.length);
+      const weeklyGtMonthlyCount = records.filter((row) => row.pypi_weekly_gt_monthly === true).length;
       persistLastFetched(ctx.dataDir, "pypi", lastFetched);
       persistEntityCache(ctx.dataDir, "pypi", cache);
       const nextIndex = checkpointNextIndex(dueKeys, lastFetched, ctx.snapshotDate, fetchedAt);
@@ -239,6 +243,7 @@ export const pypiAdapter: SourceAdapter = {
         freshWithin7dCount,
         fetchedThisRunCount: input.fetchedThisRun,
         fetchedShare,
+        weeklyGtMonthlyCount,
         coverage,
         lastFetchedAt: Object.values(lastFetched).sort().at(-1),
         stoppedAt: input.stoppedAt,
@@ -287,78 +292,90 @@ export const pypiAdapter: SourceAdapter = {
       });
     };
 
-    try {
-      for (const [index, name] of dueKeys.entries()) {
-        if (budgetExhausted(budget)) {
+    const concurrency = runBatchSize(ctx.env, "RADAR_PYPI_CONCURRENCY", PYPI_CONCURRENCY);
+    const pool = createSharedBackoffPool(concurrency, sleepFn, ctx.monotonicNow ?? Date.now);
+    let io: Promise<void> = Promise.resolve();
+    const enqueueIo = (fn: () => void): Promise<void> => {
+      io = io.then(fn);
+      return io;
+    };
+    await Promise.all(
+      dueKeys.map(async (name, index) => {
+        if (budgetStopped || budgetExhausted(budget)) {
           noteBudget("before package");
-          break;
+          return;
         }
-        persistCheckpoint(ctx.dataDir, "pypi", {
-          snapshotDate: ctx.snapshotDate,
-          dueKeys,
-          nextIndex: index,
-          startedAt: checkpoint?.startedAt ?? fetchedAt,
-        });
+        await pool.acquire();
         try {
-          const payload = await fetchJsonWithRateLimitWait<unknown>(ctx.http, pypiRecentUrl(name), {
-            sleep: sleepFn,
-            maxWaitMs: budgetRemainingMs(budget),
-            init: { minIntervalMs: PYPI_MIN_INTERVAL_MS, deadlineMs: budgetDeadlineMs(budget) },
-            onWait(waitMs, attempt, error) {
-              ctx.log.warn("pypi waiting out rate limit", {
-                waitMs,
-                attempt,
-                status: error.status,
-                name,
-              });
-            },
+          if (budgetStopped || budgetExhausted(budget)) {
+            noteBudget("before package");
+            return;
+          }
+          await enqueueIo(() => {
+            persistCheckpoint(ctx.dataDir, "pypi", {
+              snapshotDate: ctx.snapshotDate,
+              dueKeys,
+              nextIndex: index,
+              startedAt: checkpoint?.startedAt ?? fetchedAt,
+            });
           });
-          if (RecentSchema.safeParse(payload).success) {
-            cache[name] = payload;
-            lastFetched[name] = fetchedAt;
-            fetchedThisRun += 1;
-          }
-        } catch (error) {
-          if (error instanceof HttpError && error.status === 404) {
-            lastFetched[name] = fetchedAt;
-            persistLastFetched(ctx.dataDir, "pypi", lastFetched);
-            processed = index + 1;
-            continue;
-          }
-          if (error instanceof HttpError && (error.status === 429 || error.status === 403 || error.cloudflare)) {
-            if (budgetExhausted(budget) || budgetRemainingMs(budget) < RATE_LIMIT_MIN_WAIT_MS) {
-              noteBudget("rate limit");
-              break;
+          try {
+            const payload = await fetchJsonWithRateLimitWait<unknown>(ctx.http, pypiRecentUrl(name), {
+              sleep: sleepFn,
+              maxWaitMs: budgetRemainingMs(budget),
+              init: { minIntervalMs: PYPI_MIN_INTERVAL_MS, deadlineMs: budgetDeadlineMs(budget) },
+              onWait(waitMs, attempt, error) {
+                pool.pauseAll(waitMs);
+                ctx.log.warn("pypi waiting out rate limit", {
+                  waitMs,
+                  attempt,
+                  status: error.status,
+                  name,
+                });
+              },
+            });
+            if (RecentSchema.safeParse(payload).success) {
+              cache[name] = payload;
+              lastFetched[name] = fetchedAt;
+              fetchedThisRun += 1;
             }
-            throw error;
+          } catch (error) {
+            if (error instanceof HttpError && error.status === 404) {
+              lastFetched[name] = fetchedAt;
+            } else if (error instanceof HttpError && (error.status === 429 || error.status === 403 || error.cloudflare)) {
+              const waitMs = retryWaitMs({
+                attempt: 0,
+                retryAfterMs: error.retryAfterMs,
+                rateLimited: true,
+                cloudflare: Boolean(error.cloudflare),
+              });
+              pool.pauseAll(waitMs);
+              if (budgetExhausted(budget) || budgetRemainingMs(budget) < RATE_LIMIT_MIN_WAIT_MS) {
+                noteBudget("rate limit");
+                return;
+              }
+              ctx.log.warn("pypi package delayed past wait budget; leaving key for next run", {
+                name,
+                error: String(error),
+              });
+            } else {
+              ctx.log.warn("pypi package fetch failed", { name, error: String(error) });
+            }
           }
-          ctx.log.warn("pypi package fetch failed", { name, error: String(error) });
+          processed += 1;
+          await enqueueIo(() => {
+            persistLastFetched(ctx.dataDir, "pypi", lastFetched);
+            persistEntityCache(ctx.dataDir, "pypi", cache);
+          });
+          if (processed % 50 === 0 || processed === dueKeys.length) {
+            ctx.log.info("pypi progress", { done: processed, total: dueKeys.length, fetchedThisRun });
+          }
+        } finally {
+          pool.release();
         }
-        processed = index + 1;
-        persistLastFetched(ctx.dataDir, "pypi", lastFetched);
-        persistEntityCache(ctx.dataDir, "pypi", cache);
-        if ((index + 1) % 50 === 0 || index + 1 === dueKeys.length) {
-          ctx.log.info("pypi progress", { done: index + 1, total: dueKeys.length, fetchedThisRun });
-        }
-      }
-    } catch (error) {
-      if (
-        error instanceof HttpError &&
-        (error.status === 429 || error.status === 403 || error.cloudflare) &&
-        (fetchedThisRun > 0 || Object.keys(cache).length > 0)
-      ) {
-        truncated = true;
-        stoppedAt = sourceStoppedAt("pypi", error, { page: fetchedThisRun + 1 });
-        ctx.log.warn("pypi stopped early after rate limit; keeping partial snapshot", {
-          fetchedThisRun,
-          requested: allKeys.length,
-          due: dueKeys.length,
-          error: stoppedAt.error,
-        });
-      } else {
-        throw error;
-      }
-    }
+      }),
+    );
+    await io;
 
     ctx.log.info("pypi collected", {
       requested: allKeys.length,

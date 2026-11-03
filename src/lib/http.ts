@@ -220,14 +220,16 @@ export function createHttpClient(options?: {
     const interval = overrideMs ?? HOST_MIN_INTERVAL_MS[host] ?? 100;
     const now = Date.now();
     const allowed = nextAllowed.get(host) ?? 0;
-    if (now < allowed) {
-      const wait = allowed - now;
+    const startAt = Math.max(now, allowed);
+    // Reserve the slot before sleeping so concurrent callers cannot all pass the check.
+    nextAllowed.set(host, startAt + interval);
+    if (startAt > now) {
+      const wait = startAt - now;
       if (retryExceedsDeadline(wait, deadlineMs, now)) {
         throw new HttpError(url, 429, "host throttle wait exceeds source budget", { retryAfterMs: wait });
       }
       await sleepFn(wait);
     }
-    nextAllowed.set(host, Date.now() + interval);
   }
 
   function noteRateLimit(url: string, headers: Headers, retryAfterMs?: number): void {
