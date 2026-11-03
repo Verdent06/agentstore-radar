@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { budgetDeadlineMs, budgetExhausted, budgetExhaustedError, budgetRemainingMs, openSourceBudget } from "../lib/budget.ts";
 import {
   NPM_BULK_LIMIT,
   NPM_BULK_MIN_INTERVAL_MS,
@@ -6,12 +7,14 @@ import {
   NPM_PARTIAL_FAILURE_RATIO,
   NPM_RUN_BATCH,
   NPM_SCOPED_MIN_INTERVAL_MS,
+  RATE_LIMIT_MIN_WAIT_MS,
   runBatchSize,
 } from "../lib/config.ts";
-import { computeCoverage, computeFetchedShare } from "../lib/coverage.ts";
+import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
 import { fetchJsonWithRateLimitWait, isHttpRateLimit } from "../lib/http.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import {
+  checkpointNextIndex,
   clearCheckpoint,
   countFresh,
   countFreshToday,
@@ -105,6 +108,7 @@ function recordsFromCache(
   cache: Record<string, unknown>,
   lastFetched: Record<string, string>,
   collectedAt: string,
+  freezeUnfetched: boolean,
 ): SourceRow[] {
   const records: SourceRow[] = [];
   for (const name of keys) {
@@ -115,7 +119,8 @@ function recordsFromCache(
     const row = normalizeNpmPoint(snapshotDate, name, item);
     if (row) {
       const fetchedAt = lastFetched[name] ?? null;
-      records.push(withObservation(row, fetchedAt, isCarriedForward(fetchedAt, snapshotDate, collectedAt)));
+      const carried = isCarriedForward(fetchedAt, snapshotDate, collectedAt);
+      records.push(withObservation(row, fetchedAt, carried, freezeUnfetched && carried));
     }
   }
   return records;
@@ -136,28 +141,39 @@ export const npmAdapter: SourceAdapter = {
       runBatchSize(ctx.env, "RADAR_NPM_BATCH", NPM_RUN_BATCH),
       (key) => cachedDownloads(cache[key]),
     );
+    const unscoped = dueKeys.filter((name) => !isScopedNpmPackage(name));
+    const scoped = dueKeys.filter(isScopedNpmPackage);
+    const walkOrder = [...unscoped, ...scoped];
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
+    const budget = openSourceBudget(ctx.env, "npm", ctx.monotonicNow ?? Date.now);
 
     const finish = (input: {
       truncated: boolean;
       fetchedThisRun: number;
-      processed?: number;
+      freezeUnfetched?: boolean;
       stoppedAt?: SourceResult["stoppedAt"];
     }): SourceResult => {
-      const records = recordsFromCache(ctx.snapshotDate, allKeys, cache, lastFetched, fetchedAt);
+      const records = recordsFromCache(
+        ctx.snapshotDate,
+        allKeys,
+        cache,
+        lastFetched,
+        fetchedAt,
+        input.freezeUnfetched === true,
+      );
       const freshTodayCount = countFreshToday(allKeys, lastFetched, ctx.snapshotDate);
       const freshWithin7dCount = countFresh(allKeys, lastFetched, ctx.now);
       const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
-      const fetchedShare = computeFetchedShare(input.fetchedThisRun, allKeys.length);
+      const fetchedShare = freshFetchedShare(records, allKeys.length);
       persistLastFetched(ctx.dataDir, "npm", lastFetched);
       persistEntityCache(ctx.dataDir, "npm", cache);
-      const processed = input.processed ?? input.fetchedThisRun;
-      if (input.truncated && processed < dueKeys.length) {
+      const nextIndex = checkpointNextIndex(walkOrder, lastFetched, ctx.snapshotDate, fetchedAt);
+      if (input.truncated && nextIndex < walkOrder.length) {
         persistCheckpoint(ctx.dataDir, "npm", {
           snapshotDate: ctx.snapshotDate,
-          dueKeys,
-          nextIndex: Math.min(dueKeys.length, processed),
+          dueKeys: walkOrder,
+          nextIndex,
           startedAt: checkpoint?.startedAt ?? fetchedAt,
         });
       } else {
@@ -196,8 +212,6 @@ export const npmAdapter: SourceAdapter = {
     }
 
     const dueSet = new Set(dueKeys);
-    const scoped = dueKeys.filter(isScopedNpmPackage);
-    const unscoped = dueKeys.filter((name) => !isScopedNpmPackage(name));
     ctx.log.info("npm fetching downloads", {
       requested: allKeys.length,
       due: unorderedDue.length,
@@ -205,18 +219,34 @@ export const npmAdapter: SourceAdapter = {
       unscoped: unscoped.length,
       scoped: scoped.length,
       resumed,
+      budgetMs: budget.budgetMs,
     });
 
     let fetchedThisRun = 0;
     let truncated = false;
+    let budgetStopped = false;
     let processed = 0;
     let deferred = 0;
     let stoppedAt: SourceResult["stoppedAt"];
 
+    const noteBudget = (where: string): void => {
+      truncated = true;
+      budgetStopped = true;
+      stoppedAt = sourceStoppedAt("npm", budgetExhaustedError(budget, where));
+      ctx.log.warn("npm wall-clock budget exhausted; persisting checkpoint", {
+        where,
+        processed,
+        due: walkOrder.length,
+        budgetMs: budget.budgetMs,
+        fetchedThisRun,
+      });
+    };
+
     const fetchNpm = async (url: string, minIntervalMs: number): Promise<unknown> =>
       fetchJsonWithRateLimitWait<unknown>(ctx.http, url, {
         sleep: sleepFn,
-        init: { minIntervalMs },
+        maxWaitMs: budgetRemainingMs(budget),
+        init: { minIntervalMs, deadlineMs: budgetDeadlineMs(budget) },
         onWait(waitMs, attempt, error) {
           ctx.log.warn("npm waiting out rate limit", {
             waitMs,
@@ -227,14 +257,22 @@ export const npmAdapter: SourceAdapter = {
         },
       });
 
-    const batches = chunk(unscoped, NPM_BULK_LIMIT);
-    for (const [index, batch] of batches.entries()) {
+    const rememberCheckpoint = (): void => {
       persistCheckpoint(ctx.dataDir, "npm", {
         snapshotDate: ctx.snapshotDate,
-        dueKeys,
+        dueKeys: walkOrder,
         nextIndex: processed,
         startedAt: checkpoint?.startedAt ?? fetchedAt,
       });
+    };
+
+    const batches = chunk(unscoped, NPM_BULK_LIMIT);
+    for (const [index, batch] of batches.entries()) {
+      if (budgetExhausted(budget)) {
+        noteBudget("before bulk batch");
+        break;
+      }
+      rememberCheckpoint();
       try {
         const payload = await fetchNpm(npmBulkUrl(batch), NPM_BULK_MIN_INTERVAL_MS);
         if (batch.length === 1) {
@@ -253,6 +291,10 @@ export const npmAdapter: SourceAdapter = {
         }
       } catch (error) {
         if (isHttpRateLimit(error)) {
+          if (budgetExhausted(budget) || budgetRemainingMs(budget) < RATE_LIMIT_MIN_WAIT_MS) {
+            noteBudget("bulk rate limit");
+            break;
+          }
           deferred += batch.length;
           ctx.log.warn("npm bulk delayed past wait budget; leaving batch for next run", {
             batch: index + 1,
@@ -276,32 +318,37 @@ export const npmAdapter: SourceAdapter = {
       }
     }
 
-    for (const name of scoped) {
-      persistCheckpoint(ctx.dataDir, "npm", {
-        snapshotDate: ctx.snapshotDate,
-        dueKeys,
-        nextIndex: processed,
-        startedAt: checkpoint?.startedAt ?? fetchedAt,
-      });
-      try {
-        const payload = await fetchNpm(npmScopedUrl(name), NPM_SCOPED_MIN_INTERVAL_MS);
-        if (rememberPoint(cache, lastFetched, name, payload, fetchedAt)) {
-          fetchedThisRun += 1;
+    if (!budgetStopped) {
+      for (const name of scoped) {
+        if (budgetExhausted(budget)) {
+          noteBudget("before scoped package");
+          break;
         }
-      } catch (error) {
-        if (isHttpRateLimit(error)) {
-          deferred += 1;
-          ctx.log.warn("npm scoped delayed past wait budget; leaving key for next run", {
-            name,
-            error: String(error),
-          });
-        } else {
-          ctx.log.warn("npm scoped package fetch failed", { name, error: String(error) });
+        rememberCheckpoint();
+        try {
+          const payload = await fetchNpm(npmScopedUrl(name), NPM_SCOPED_MIN_INTERVAL_MS);
+          if (rememberPoint(cache, lastFetched, name, payload, fetchedAt)) {
+            fetchedThisRun += 1;
+          }
+        } catch (error) {
+          if (isHttpRateLimit(error)) {
+            if (budgetExhausted(budget) || budgetRemainingMs(budget) < RATE_LIMIT_MIN_WAIT_MS) {
+              noteBudget("scoped rate limit");
+              break;
+            }
+            deferred += 1;
+            ctx.log.warn("npm scoped delayed past wait budget; leaving key for next run", {
+              name,
+              error: String(error),
+            });
+          } else {
+            ctx.log.warn("npm scoped package fetch failed", { name, error: String(error) });
+          }
         }
+        processed += 1;
+        persistLastFetched(ctx.dataDir, "npm", lastFetched);
+        persistEntityCache(ctx.dataDir, "npm", cache);
       }
-      processed += 1;
-      persistLastFetched(ctx.dataDir, "npm", lastFetched);
-      persistEntityCache(ctx.dataDir, "npm", cache);
     }
 
     if (!truncated && dueKeys.length > 0) {
@@ -328,9 +375,9 @@ export const npmAdapter: SourceAdapter = {
       requested: allKeys.length,
       due: dueKeys.length,
       fetchedThisRun,
-      fetchedShare: computeFetchedShare(fetchedThisRun, allKeys.length),
       truncated,
+      budgetStopped,
     });
-    return finish({ truncated, fetchedThisRun, processed, stoppedAt });
+    return finish({ truncated, fetchedThisRun, freezeUnfetched: budgetStopped, stoppedAt });
   },
 };

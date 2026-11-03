@@ -215,7 +215,7 @@ describe("smithery useCount circuit breaker", () => {
     expect(result.failed).toBe(false);
     expect(result.error).toBeUndefined();
     expect(result.skipReason).toBeUndefined();
-    expect(result.fetchedShare).toBe(1);
+    expect(result.fetchedShare).toBeCloseTo(3 / count);
     expect(result.fetchedThisRunCount).toBe(count);
     expect((result.raw as { useCountRefresh?: { circuitOpen?: boolean } }).useCountRefresh?.circuitOpen).toBe(false);
     for (const sourceId of ["srv/04", "srv/09", "srv/14"]) {

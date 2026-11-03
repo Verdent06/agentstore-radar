@@ -1,17 +1,20 @@
 import { z } from "zod";
+import { budgetDeadlineMs, budgetExhausted, budgetExhaustedError, budgetRemainingMs, openSourceBudget } from "../lib/budget.ts";
 import {
   PYPI_MIN_INTERVAL_MS,
   PYPI_RUN_BATCH,
   PYPISTATS_BASE,
+  RATE_LIMIT_MIN_WAIT_MS,
   SMITHERY_FROZEN_DAYS,
   SOURCE_FREEZE_RATIO,
   runBatchSize,
 } from "../lib/config.ts";
-import { computeCoverage, computeFetchedShare } from "../lib/coverage.ts";
+import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
 import { evaluateSourceFreeze, isUnchangedForDays, loadPreviousMetricHistory, smitheryFrozenDays } from "../lib/frozen.ts";
 import { fetchJsonWithRateLimitWait, HttpError } from "../lib/http.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import {
+  checkpointNextIndex,
   clearCheckpoint,
   countFresh,
   countFreshToday,
@@ -97,6 +100,7 @@ function recordsFromCache(
   monthHistory: ReturnType<typeof loadPreviousMetricHistory>,
   weekHistory: ReturnType<typeof loadPreviousMetricHistory>,
   frozenDays: number,
+  freezeUnfetched: boolean,
 ): SourceRow[] {
   const pending: Array<{
     row: SourceRow;
@@ -146,7 +150,11 @@ function recordsFromCache(
   const liveFrozen = new Map(live.map((item, index) => [item.row.source_id, freeze.freezeRow[index] === true]));
   return pending.map((item) => {
     const monthlyStale = item.monthUnchanged && (freeze.sourceFrozen || item.weekMoved);
-    const frozen = item.inconsistent || monthlyStale || liveFrozen.get(item.row.source_id) === true;
+    const frozen =
+      item.inconsistent ||
+      monthlyStale ||
+      liveFrozen.get(item.row.source_id) === true ||
+      (freezeUnfetched && item.fetchedCarried);
     const carried = item.fetchedCarried || item.inconsistent;
     return withObservation(item.row, item.fetchedAt, carried, frozen);
   });
@@ -169,6 +177,7 @@ export const pypiAdapter: SourceAdapter = {
     );
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
+    const budget = openSourceBudget(ctx.env, "pypi", ctx.monotonicNow ?? Date.now);
     const frozenDays = smitheryFrozenDays(ctx.env, SMITHERY_FROZEN_DAYS);
     const monthHistory = loadPreviousMetricHistory(
       ctx.dataDir,
@@ -188,7 +197,7 @@ export const pypiAdapter: SourceAdapter = {
     const finish = (input: {
       truncated: boolean;
       fetchedThisRun: number;
-      processed?: number;
+      freezeUnfetched?: boolean;
       stoppedAt?: SourceResult["stoppedAt"];
     }): SourceResult => {
       const records = recordsFromCache(
@@ -200,18 +209,20 @@ export const pypiAdapter: SourceAdapter = {
         monthHistory,
         weekHistory,
         frozenDays,
+        input.freezeUnfetched === true,
       );
       const freshTodayCount = countFreshToday(allKeys, lastFetched, ctx.snapshotDate);
       const freshWithin7dCount = countFresh(allKeys, lastFetched, ctx.now);
       const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
-      const fetchedShare = computeFetchedShare(input.fetchedThisRun, allKeys.length);
+      const fetchedShare = freshFetchedShare(records, allKeys.length);
       persistLastFetched(ctx.dataDir, "pypi", lastFetched);
       persistEntityCache(ctx.dataDir, "pypi", cache);
-      if (input.truncated) {
+      const nextIndex = checkpointNextIndex(dueKeys, lastFetched, ctx.snapshotDate, fetchedAt);
+      if (input.truncated && nextIndex < dueKeys.length) {
         persistCheckpoint(ctx.dataDir, "pypi", {
           snapshotDate: ctx.snapshotDate,
           dueKeys,
-          nextIndex: Math.min(dueKeys.length, input.processed ?? input.fetchedThisRun),
+          nextIndex,
           startedAt: checkpoint?.startedAt ?? fetchedAt,
         });
       } else {
@@ -254,15 +265,34 @@ export const pypiAdapter: SourceAdapter = {
       due: unorderedDue.length,
       batch: dueKeys.length,
       resumed,
+      budgetMs: budget.budgetMs,
     });
 
     let fetchedThisRun = 0;
     let processed = 0;
     let truncated = false;
+    let budgetStopped = false;
     let stoppedAt: SourceResult["stoppedAt"];
+
+    const noteBudget = (where: string): void => {
+      truncated = true;
+      budgetStopped = true;
+      stoppedAt = sourceStoppedAt("pypi", budgetExhaustedError(budget, where));
+      ctx.log.warn("pypi wall-clock budget exhausted; persisting checkpoint", {
+        where,
+        processed,
+        due: dueKeys.length,
+        budgetMs: budget.budgetMs,
+        fetchedThisRun,
+      });
+    };
 
     try {
       for (const [index, name] of dueKeys.entries()) {
+        if (budgetExhausted(budget)) {
+          noteBudget("before package");
+          break;
+        }
         persistCheckpoint(ctx.dataDir, "pypi", {
           snapshotDate: ctx.snapshotDate,
           dueKeys,
@@ -272,7 +302,8 @@ export const pypiAdapter: SourceAdapter = {
         try {
           const payload = await fetchJsonWithRateLimitWait<unknown>(ctx.http, pypiRecentUrl(name), {
             sleep: sleepFn,
-            init: { minIntervalMs: PYPI_MIN_INTERVAL_MS },
+            maxWaitMs: budgetRemainingMs(budget),
+            init: { minIntervalMs: PYPI_MIN_INTERVAL_MS, deadlineMs: budgetDeadlineMs(budget) },
             onWait(waitMs, attempt, error) {
               ctx.log.warn("pypi waiting out rate limit", {
                 waitMs,
@@ -295,6 +326,10 @@ export const pypiAdapter: SourceAdapter = {
             continue;
           }
           if (error instanceof HttpError && (error.status === 429 || error.status === 403 || error.cloudflare)) {
+            if (budgetExhausted(budget) || budgetRemainingMs(budget) < RATE_LIMIT_MIN_WAIT_MS) {
+              noteBudget("rate limit");
+              break;
+            }
             throw error;
           }
           ctx.log.warn("pypi package fetch failed", { name, error: String(error) });
@@ -329,9 +364,9 @@ export const pypiAdapter: SourceAdapter = {
       requested: allKeys.length,
       due: dueKeys.length,
       fetchedThisRun,
-      fetchedShare: computeFetchedShare(fetchedThisRun, allKeys.length),
       truncated,
+      budgetStopped,
     });
-    return finish({ truncated, fetchedThisRun, processed, stoppedAt });
+    return finish({ truncated, fetchedThisRun, freezeUnfetched: budgetStopped, stoppedAt });
   },
 };

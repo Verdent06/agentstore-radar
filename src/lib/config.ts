@@ -52,13 +52,32 @@ export const NPM_BULK_MIN_INTERVAL_MS = 200;
 export const PYPI_MIN_INTERVAL_MS = 400;
 /**
  * Per-run enrichment caps. Defaults cover the current catalog (~32k GitHub,
- * ~14k npm, ~5k PyPI) so fetchedShare can hit ≥0.80 in one Actions run.
+ * ~14k npm, ~5k PyPI). A wall-clock budget (below) can still end a source
+ * early; the same-day backstop resumes from the checkpoint.
  * Tests and emergency throttling override via RADAR_*_BATCH.
- * Smithery `fetchedShare` is the seeded list catalog (~20.8k, ~208 pages of 100
- * at ~120ms ≈ 25s), not this overlay cap. Overlay `?q=` is a thaw probe of the
- * same frozen index (400 × 120ms ≈ 48s). Raising overlay to 80% of the catalog
- * would be ~16.6k searches ≈ 33 min of the same frozen values, so we do not.
+ * Smithery overlay `?q=` is a thaw probe of the same frozen index
+ * (400 × 120ms ≈ 48s), not the fetchedShare driver. Raising overlay to 80%
+ * of the catalog would be ~16.6k searches ≈ 33 min of the same frozen values,
+ * so we do not. fetchedShare counts only fresh rows (carried_forward false
+ * and frozen not true), so a source-frozen catalog scores ~0.
  */
+/**
+ * Per-source wall-clock budgets. The collect step is killed at 330 minutes;
+ * these stop a source first, persist a same-day checkpoint, and still write
+ * a partial manifest. Sum is 250 minutes. Each source can overrun by at most
+ * one in-flight HTTP timeout (30s), so the worst case is 253 minutes.
+ * Override with RADAR_<SOURCE>_BUDGET_MS.
+ *
+ * Sized from the 2026-11-03 run (mcp ~2m, smithery ~6m, gemini <1m,
+ * github ~24m, npm ~221m mostly scoped, PyPI ~85m for ~4.9k). npm and PyPI
+ * are capped below a full pass so the job returns and the backstop resumes.
+ */
+export const MCP_COLLECT_BUDGET_MS = 10 * 60 * 1000;
+export const SMITHERY_COLLECT_BUDGET_MS = 15 * 60 * 1000;
+export const GEMINI_COLLECT_BUDGET_MS = 5 * 60 * 1000;
+export const GITHUB_COLLECT_BUDGET_MS = 35 * 60 * 1000;
+export const NPM_COLLECT_BUDGET_MS = 120 * 60 * 1000;
+export const PYPI_COLLECT_BUDGET_MS = 65 * 60 * 1000;
 export const GITHUB_RUN_BATCH = 50_000;
 export const NPM_RUN_BATCH = 20_000;
 export const PYPI_RUN_BATCH = 10_000;
@@ -80,6 +99,23 @@ export function runBatchSize(env: NodeJS.ProcessEnv, key: string, fallback: numb
     return fallback;
   }
   return Math.floor(parsed);
+}
+
+const SOURCE_BUDGET_MS = {
+  "mcp-registry": { ms: MCP_COLLECT_BUDGET_MS, env: "RADAR_MCP_BUDGET_MS" },
+  smithery: { ms: SMITHERY_COLLECT_BUDGET_MS, env: "RADAR_SMITHERY_BUDGET_MS" },
+  "gemini-cli": { ms: GEMINI_COLLECT_BUDGET_MS, env: "RADAR_GEMINI_BUDGET_MS" },
+  github: { ms: GITHUB_COLLECT_BUDGET_MS, env: "RADAR_GITHUB_BUDGET_MS" },
+  npm: { ms: NPM_COLLECT_BUDGET_MS, env: "RADAR_NPM_BUDGET_MS" },
+  pypi: { ms: PYPI_COLLECT_BUDGET_MS, env: "RADAR_PYPI_BUDGET_MS" },
+} as const;
+
+export type BudgetSourceName = keyof typeof SOURCE_BUDGET_MS;
+
+/** Wall-clock budget for one source. `RADAR_*_BUDGET_MS` overrides the default. */
+export function sourceBudgetMs(env: NodeJS.ProcessEnv, source: BudgetSourceName): number {
+  const entry = SOURCE_BUDGET_MS[source];
+  return runBatchSize(env, entry.env, entry.ms);
 }
 export const SMITHERY_USECOUNT_PAGE_SIZE = 10;
 /** Snapshot days of identical catalog metrics (including today) before a value can be frozen. */

@@ -34,6 +34,11 @@ export const SourceRowSchema = z.object({
   use_count: z.number().nullable(),
   npm_weekly_downloads: z.number().int().nullable(),
   pypi_last_week_downloads: z.number().int().nullable(),
+  /**
+   * pypistats `last_month`. Not a growth signal: the API can return
+   * `last_week` greater than `last_month`, so week-over-week movement is
+   * `pypi_last_week_downloads`.
+   */
   pypi_last_month_downloads: z.number().int().nullable(),
   verified: z.boolean().nullable(),
   /** GitHub `isFork` when the collector saw it. Null means unknown. */
@@ -64,6 +69,10 @@ export const AppRowSchema = z.object({
   use_count: z.number().nullable(),
   npm_weekly_downloads: z.number().int().nullable(),
   pypi_last_week_downloads: z.number().int().nullable(),
+  /**
+   * pypistats `last_month`. Not a growth signal: weekly can exceed monthly,
+   * so movers use `pypi_last_week_downloads`.
+   */
   pypi_last_month_downloads: z.number().int().nullable(),
   stars_fetched_at: z.string().nullable().optional().default(null),
   /** Explicit false is fresh; missing is not fresh for home KPIs. No default so missing stays missing. */
@@ -108,8 +117,9 @@ export const SourceManifestSchema = z.object({
   /** Keys actually requested from the live API during this collect. */
   fetchedThisRunCount: z.number().int().nonnegative().optional(),
   /**
-   * Live fetches this run / eligible keys. Unresolved GitHub repos are excluded
-   * from the denominator. Separate from `coverage` (fresh today / eligible).
+   * Fresh rows / eligible keys. Fresh means `carried_forward` is not true and
+   * `frozen` is not true. Unresolved GitHub repos are excluded from the
+   * denominator. A frozen or carried-forward row does not count.
    */
   fetchedShare: z.number().min(0).max(1).optional(),
   /** @deprecated Legacy alias of freshWithin7dCount, kept so older snapshots still parse. */

@@ -848,7 +848,7 @@ describe("pypi growth adapter", () => {
       frozen: true,
     });
     expect(result.fetchedThisRunCount).toBe(1);
-    expect(result.fetchedShare).toBe(1);
+    expect(result.fetchedShare).toBe(0);
     expect(result.truncated).toBe(false);
     const apps = mergeApps("2026-10-25", result.records);
     expect(apps[0]).toMatchObject({
@@ -1048,7 +1048,7 @@ describe("pypi growth adapter", () => {
     expect(carried.every((row) => row.carried_forward === true)).toBe(true);
   });
 
-  it("counts an unchanged PyPI value fetched today toward fetchedShare, not as a failed fetch", async () => {
+  it("does not count a frozen PyPI monthly value toward fetchedShare", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-pypi-unchanged-fetched-"));
     const same = "pkg-same";
     const missed = "pkg-missed";
@@ -1115,7 +1115,7 @@ describe("pypi growth adapter", () => {
       }),
     );
     expect(result.fetchedThisRunCount).toBe(1);
-    expect(result.fetchedShare).toBe(0.5);
+    expect(result.fetchedShare).toBe(0);
     expect(result.truncated).toBe(false);
     expect(result.records.find((row) => row.source_id === same)).toMatchObject({
       pypi_last_month_downloads: 20314,

@@ -30,6 +30,8 @@ export type CollectContext = {
   discovered: DiscoveredRefs;
   maxPages?: number;
   sleep?: SleepFn;
+  /** Test clock for per-source wall-clock budgets. Defaults to Date.now. */
+  monotonicNow?: () => number;
 };
 
 export type SourceResult = {

@@ -118,6 +118,10 @@ jobs:
           npm run collect -- "${ARGS[@]}"
 
       - name: Commit snapshot to private data repo
+        # Commits or stashes a dirty tree before every pull --rebase so a timeout
+        # cannot leave unstaged checkpoint files and fail all retries.
+        # A manifest commit is "data: snapshot <date>"; checkpoint-only is
+        # "data: checkpoint <snapshotDate>".
         if: ${{ always() && github.ref == 'refs/heads/main' && inputs.seed_only != true && inputs.skip_push != true && steps.gate.outputs.skip != 'true' && steps.collect.outcome != 'skipped' }}
         working-directory: .radar-data
         run: bash "$GITHUB_WORKSPACE/scripts/push-data-repo.sh" "$GITHUB_WORKSPACE/.radar-data"

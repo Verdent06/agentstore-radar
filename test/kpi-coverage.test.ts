@@ -207,9 +207,9 @@ describe("guard source wiring (fails if reverted)", () => {
     expect(config).not.toContain("KPI_BASELINE_MIN_RATIO");
     expect(coverage).toContain("export function selectFreshCoverageBaseline");
     expect(coverage).toContain("export function isGoodFreshCoverageDay");
-    expect(coverage).toContain("fresh share <= fetchedShare");
-    expect(coverage).toContain("Do not replace");
-    expect(coverage).toContain("fetchedShare counts frozen-but-fetched rows");
+    expect(coverage).toContain("fetchedShare counts only fresh rows");
+    expect(coverage).toContain("carried_forward false AND frozen not true");
+    expect(coverage).toContain("Do not treat a frozen-but-fetched row as part of fetchedShare");
     expect(coverage).not.toMatch(/minRatio \* baseline/);
     expect(build).toContain("decideKpiFreshCoverage");
     expect(build).toContain("coverageSeriesForSource");

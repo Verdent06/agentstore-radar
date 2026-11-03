@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeCoverage, computeFetchedShare, formatCoveragePct, isLowCoverage } from "../src/lib/coverage.ts";
+import { computeCoverage, computeFetchedShare, freshFetchedShare, formatCoveragePct, isLowCoverage } from "../src/lib/coverage.ts";
 
 describe("coverage", () => {
   it("is 1 when nothing is eligible", () => {
@@ -37,8 +37,19 @@ describe("fetchedShare", () => {
     expect(computeFetchedShare(100, 200, 50)).toBeCloseTo(100 / 150);
   });
 
-  it("counts an unchanged live fetch in the numerator", () => {
+  it("counts an unchanged live fetch in the numerator when that row is fresh", () => {
     expect(computeFetchedShare(1, 1)).toBe(1);
     expect(computeFetchedShare(1, 2)).toBe(0.5);
+  });
+
+  it("scores frozen and carried-forward rows as not fetched", () => {
+    const rows = [
+      { carried_forward: true, frozen: true },
+      { carried_forward: false, frozen: true },
+      { carried_forward: true, frozen: false },
+      { carried_forward: false, frozen: false },
+    ];
+    expect(freshFetchedShare(rows, rows.length)).toBeCloseTo(0.25);
+    expect(freshFetchedShare([{ carried_forward: true, frozen: true }], 4)).toBe(0);
   });
 });

@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { adaptersByKind } from "../adapters/index.ts";
 import { createDiscoveredRefs, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "../adapters/types.ts";
 import { SOURCE_COLLECT_ATTEMPTS } from "../lib/config.ts";
-import { computeCoverage, computeFetchedShare } from "../lib/coverage.ts";
+import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
 import { utcDateString } from "../lib/dates.ts";
 import { createHttpClient, type HttpClient } from "../lib/http.ts";
 import {
@@ -41,6 +41,7 @@ export type CollectOptions = {
   runId?: string;
   sourceAttempts?: number;
   sleep?: SleepFn;
+  monotonicNow?: () => number;
 };
 
 export type CollectOutcome = {
@@ -169,6 +170,7 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     discovered: createDiscoveredRefs(),
     maxPages: options.maxPages,
     sleep,
+    monotonicNow: options.monotonicNow,
   };
 
   const results: SourceResult[] = [];
@@ -312,7 +314,8 @@ function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifes
   const fetchedThisRun = result.fetchedThisRunCount ?? (result.skipped || result.failed ? 0 : result.rowCount);
   const unresolvedCount = result.unresolvedCount ?? 0;
   const { coverage } = computeCoverage(eligible, freshToday);
-  const fetchedShare = result.fetchedShare ?? computeFetchedShare(fetchedThisRun, eligible, unresolvedCount);
+  const fetchedShare =
+    result.skipped && eligible === 0 ? undefined : freshFetchedShare(result.records, eligible, unresolvedCount);
   return {
     source: result.source,
     rowCount: result.rowCount,
