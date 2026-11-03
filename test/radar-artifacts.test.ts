@@ -42,7 +42,9 @@ describe("generated radar aggregates stay unpublished", () => {
       expect(mainFiles).not.toContain(path);
     }
     expect(mainFiles.filter((path) => /(?:^|\/)radar\.(json|sqlite)$/.test(path))).toEqual([]);
-  });
+    // CI checks out the PR ref only. Listing origin/main then fetches it, and
+    // that fetch can take longer than the default 5s test limit.
+  }, 30_000);
 
   it("mcp package publish contents exclude data/radar.*", () => {
     const pkg = JSON.parse(readFileSync(join(repoRoot, "mcp/package.json"), "utf8")) as { files?: string[] };
