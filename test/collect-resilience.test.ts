@@ -3,7 +3,9 @@ import { existsSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { collect } from "../src/commands/collect.ts";
+import { collect, collectAdapter } from "../src/commands/collect.ts";
+import type { SourceAdapter } from "../src/adapters/types.ts";
+import type { SourceBudget } from "../src/lib/budget.ts";
 import { createHttpClient } from "../src/lib/http.ts";
 import {
   cleanupBrokenNormalizedEntries,
@@ -596,5 +598,104 @@ describe("collect resilience", () => {
     expect(inspectSnapshot("2026-10-19", dataDir).needsRetry).toBe(true);
     expect(readSourceRows("2026-10-19", dataDir).some((row) => row.source === "mcp-registry")).toBe(true);
     expect(readSourceRows("2026-10-19", dataDir).some((row) => row.source === "smithery")).toBe(true);
+  });
+
+  it("opens one source budget in collect.ts, does not retry after it is spent, and stays within the cap", async () => {
+    const budgetMs = 5_000;
+    const origin = Date.parse("2026-11-03T12:00:00.000Z");
+    let now = origin;
+    let calls = 0;
+    let slept = false;
+    const seen: SourceBudget[] = [];
+    const adapter: SourceAdapter = {
+      name: "npm",
+      kind: "enrichment",
+      async collect(ctx) {
+        calls += 1;
+        if (!ctx.budget) {
+          throw new Error("collect.ts did not pass a budget on ctx");
+        }
+        seen.push(ctx.budget);
+        now = ctx.budget.startedAtMs + ctx.budget.budgetMs;
+        throw new Error("adapter exhausted its budget on attempt 1");
+      },
+    };
+
+    const result = await collectAdapter(
+      adapter,
+      {
+        snapshotDate: "2026-11-03",
+        collectedAt: "2026-11-03T12:00:00.000Z",
+        dataDir: mkdtempSync(join(tmpdir(), "radar-budget-once-")),
+        now: new Date(origin),
+        env: { RADAR_NPM_BUDGET_MS: String(budgetMs) },
+        http: createHttpClient({ fetchImpl: async () => { throw new Error("no http"); }, maxRetries: 0 }),
+        log: silent,
+        discovered: { githubRepos: new Map(), npmPackages: new Set(), pypiPackages: new Set() },
+        monotonicNow: () => now,
+      },
+      3,
+      async () => {
+        slept = true;
+        now += budgetMs;
+      },
+    );
+
+    expect(calls).toBe(1);
+    expect(slept).toBe(false);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.source).toBe("npm");
+    expect(seen[0]?.budgetMs).toBe(budgetMs);
+    expect(seen[0]?.startedAtMs).toBe(origin);
+    expect(now - seen[0]!.startedAtMs).toBeLessThanOrEqual(budgetMs);
+    expect(result.truncated).toBe(true);
+    expect(result.failed).toBe(false);
+    expect(result.source).toBe("npm");
+
+    calls = 0;
+    slept = false;
+    now = origin;
+    const reused: SourceBudget[] = [];
+    const retrying: SourceAdapter = {
+      name: "pypi",
+      kind: "enrichment",
+      async collect(ctx) {
+        calls += 1;
+        reused.push(ctx.budget!);
+        if (calls === 1) {
+          now = origin + 100;
+          throw new Error("transient before the budget is spent");
+        }
+        now = ctx.budget!.startedAtMs + ctx.budget!.budgetMs;
+        throw new Error("budget spent on the retry");
+      },
+    };
+    const retried = await collectAdapter(
+      retrying,
+      {
+        snapshotDate: "2026-11-03",
+        collectedAt: "2026-11-03T12:00:00.000Z",
+        dataDir: mkdtempSync(join(tmpdir(), "radar-budget-reuse-")),
+        now: new Date(origin),
+        env: { RADAR_PYPI_BUDGET_MS: String(budgetMs) },
+        http: createHttpClient({ fetchImpl: async () => { throw new Error("no http"); }, maxRetries: 0 }),
+        log: silent,
+        discovered: { githubRepos: new Map(), npmPackages: new Set(), pypiPackages: new Set() },
+        monotonicNow: () => now,
+      },
+      3,
+      async () => {
+        slept = true;
+        now += 50;
+      },
+    );
+    expect(calls).toBe(2);
+    expect(slept).toBe(true);
+    expect(reused[0]).toBe(reused[1]);
+    expect(reused[0]?.startedAtMs).toBe(origin);
+    expect(reused[1]?.startedAtMs).toBe(origin);
+    expect(now - origin).toBeLessThanOrEqual(budgetMs);
+    expect(retried.truncated).toBe(true);
+    expect(retried.failed).toBe(false);
   });
 });
