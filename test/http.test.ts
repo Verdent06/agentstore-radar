@@ -126,6 +126,33 @@ describe("http client", () => {
     });
   });
 
+  it("honors a positive Retry-After instead of raising it to 15s", () => {
+    expect(
+      retryWaitMs({
+        attempt: 0,
+        retryAfterMs: 2_000,
+        rateLimited: true,
+        cloudflare: false,
+      }),
+    ).toBe(2_000);
+  });
+
+  it("lets a single request disable client retries", async () => {
+    let calls = 0;
+    const http = createHttpClient({
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response("slow down", { status: 429, headers: { "retry-after": "1" } });
+      },
+      maxRetries: 4,
+      sleep: async () => {},
+    });
+    await expect(
+      http.fetchJson("https://api.npmjs.org/downloads/point/last-week/left-pad", { maxRetries: 0 }),
+    ).rejects.toMatchObject({ status: 429, retryAfterMs: 1_000 });
+    expect(calls).toBe(1);
+  });
+
   it("ignores Retry-After 0 for Cloudflare 429s and waits at least 15s", () => {
     expect(
       retryWaitMs({

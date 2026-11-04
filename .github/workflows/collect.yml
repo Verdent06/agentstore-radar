@@ -4,7 +4,13 @@ on:
   schedule:
     # Primary daily collect (UTC morning). Off the :00/:15/:17/:30 cluster that
     # GitHub Actions delays under load (the 06:17 job was starting ~13:08).
+    # GitHub still often delivers this 6–8h late, and the 2026-11-04 05:41
+    # trigger never created a run. The 08:47 cron below is the backup.
     - cron: "41 5 * * *"
+    # Morning backup, off the hour. --if-incomplete, so it fills a missing or
+    # partial day and leaves a complete snapshot alone. A late 05:41 then
+    # refuses to overwrite that complete day.
+    - cron: "47 8 * * *"
     # Same-day backstop: only collects if today's snapshot is missing or incomplete.
     - cron: "23 19 * * *"
   workflow_dispatch:
@@ -44,7 +50,7 @@ env:
   DATA_REPO: Verdent06/agentstore-radar-data
   DATA_DIR: ${{ github.workspace }}/.radar-data/data
   COLLECTOR_ISSUE_REPO: Verdent06/agentstore-radar
-  IS_BACKSTOP: ${{ github.event.schedule == '23 19 * * *' }}
+  IS_BACKSTOP: ${{ github.event.schedule == '23 19 * * *' || github.event.schedule == '47 8 * * *' }}
 
 jobs:
   collect:

@@ -3,7 +3,7 @@ import { HttpError, type HttpClient } from "../lib/http.ts";
 import type { Logger } from "../lib/logger.ts";
 import type { GithubRepoRef } from "../lib/matching.ts";
 import type { SleepFn } from "../lib/retry.ts";
-import type { SourceName, SourceRow, SourceStoppedAt } from "../lib/schema.ts";
+import type { SourceLane, SourceName, SourceRow, SourceStoppedAt } from "../lib/schema.ts";
 import { errorMessage } from "../lib/util.ts";
 
 export type DiscoveredRefs = {
@@ -67,6 +67,8 @@ export type SourceResult = {
   fetchStartedAt?: string;
   fetchEndedAt?: string;
   weeklyGtMonthlyCount?: number;
+  /** npm bulk vs scoped: path, calls, and 429s. Other sources omit this. */
+  lanes?: SourceLane[];
 };
 
 export class CollectSourceError extends Error {

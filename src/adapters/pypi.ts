@@ -152,13 +152,17 @@ function recordsFromCache(
   const liveFrozen = new Map(live.map((item, index) => [item.row.source_id, freeze.freezeRow[index] === true]));
   return pending.map((item) => {
     const monthlyStale = item.monthUnchanged && (freeze.sourceFrozen || item.weekMoved);
-    const frozen =
-      item.inconsistent ||
-      monthlyStale ||
-      liveFrozen.get(item.row.source_id) === true ||
-      (freezeUnfetched && item.fetchedCarried);
-    const carried = item.fetchedCarried || item.inconsistent;
-    const row = item.inconsistent ? { ...item.row, pypi_weekly_gt_monthly: true } : item.row;
+    const monthlyFrozen =
+      item.inconsistent || monthlyStale || liveFrozen.get(item.row.source_id) === true;
+    // Weekly fetched today keeps the row fresh. Only the monthly field is held
+    // when it is inconsistent or stale, so fetchedShare and freshToday agree.
+    const frozen = freezeUnfetched && item.fetchedCarried;
+    const carried = item.fetchedCarried;
+    const row = {
+      ...item.row,
+      ...(item.inconsistent ? { pypi_weekly_gt_monthly: true } : {}),
+      ...(monthlyFrozen ? { pypi_monthly_frozen: true } : {}),
+    };
     return withObservation(row, item.fetchedAt, carried, frozen);
   });
 }

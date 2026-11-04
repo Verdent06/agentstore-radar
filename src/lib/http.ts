@@ -53,6 +53,12 @@ export type HttpRequestInit = RequestInit & {
    * Other status codes, including 429, do not call this.
    */
   continueOnFailure?: (failure: { status?: number; network: boolean }) => boolean;
+  /**
+   * Overrides the client retry count for this call. `0` surfaces the first
+   * 429 so the caller can pause a shared pool instead of sleeping inside
+   * this client (npm scoped downloads).
+   */
+  maxRetries?: number;
 };
 
 export interface HttpClient {
@@ -132,7 +138,12 @@ export function retryWaitMs(input: {
   }
   if (input.rateLimited) {
     const backoff = Math.min(180_000, 30_000 * 2 ** input.attempt);
-    return Math.min(Math.max(headerWait ?? backoff, RATE_LIMIT_MIN_WAIT_MS), MAX_RATE_LIMIT_WAIT_MS);
+    // A positive Retry-After is the wait. Floor at 15s only when the header
+    // is missing or zero (the 2026-10-25 Retry-After: 0 storm).
+    if (headerWait != null) {
+      return Math.min(headerWait, MAX_RATE_LIMIT_WAIT_MS);
+    }
+    return Math.min(Math.max(backoff, RATE_LIMIT_MIN_WAIT_MS), MAX_RATE_LIMIT_WAIT_MS);
   }
   if (headerWait != null) {
     return Math.min(headerWait, MAX_RATE_LIMIT_WAIT_MS);
@@ -158,6 +169,7 @@ export async function fetchJsonWithRateLimitWait<T>(
     init?: HttpRequestInit;
     sleep?: SleepFn;
     onWait?: (waitMs: number, attempt: number, error: HttpError) => void;
+    onAttempt?: () => void;
     maxWaitMs?: number;
   },
 ): Promise<T> {
@@ -166,6 +178,7 @@ export async function fetchJsonWithRateLimitWait<T>(
   let waitedMs = 0;
   let attempt = 0;
   while (true) {
+    options?.onAttempt?.();
     try {
       return await http.fetchJson<T>(url, options?.init);
     } catch (error) {
@@ -248,7 +261,8 @@ export function createHttpClient(options?: {
 
   async function request(url: string, init?: HttpRequestInit): Promise<string> {
     let lastError: unknown;
-    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    const attemptLimit = init?.maxRetries ?? maxRetries;
+    for (let attempt = 0; attempt <= attemptLimit; attempt += 1) {
       await throttle(url, init?.minIntervalMs, init?.deadlineMs);
       const timeoutMs = init?.timeoutMs ?? defaultTimeoutMs;
       const headers = new Headers(init?.headers);
@@ -269,6 +283,7 @@ export function createHttpClient(options?: {
         delete fetchInit.deadlineMs;
         delete fetchInit.minIntervalMs;
         delete fetchInit.timeoutMs;
+        delete fetchInit.maxRetries;
         const response = await fetchImpl(url, {
           ...fetchInit,
           headers,
@@ -296,7 +311,7 @@ export function createHttpClient(options?: {
         if (stopForBreaker) {
           throw httpError;
         }
-        if ((isRetryableHttpStatus(response.status) || rateLimited || cloudflare) && attempt < maxRetries) {
+        if ((isRetryableHttpStatus(response.status) || rateLimited || cloudflare) && attempt < attemptLimit) {
           const waitMs = retryWaitMs({
             attempt,
             retryAfterMs,
@@ -316,7 +331,7 @@ export function createHttpClient(options?: {
           throw error;
         }
         const proceed = init?.continueOnFailure?.({ network: true }) ?? true;
-        if (proceed && attempt < maxRetries) {
+        if (proceed && attempt < attemptLimit) {
           const waitMs = Math.min(16_000, 500 * 2 ** attempt);
           if (retryExceedsDeadline(waitMs, init?.deadlineMs)) {
             throw error;
