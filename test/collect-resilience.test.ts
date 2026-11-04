@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { npmAdapter } from "../src/adapters/npm.ts";
+import { smitheryAdapter } from "../src/adapters/smithery.ts";
+import type { SourceResult } from "../src/adapters/types.ts";
 import { collect, collectAdapter } from "../src/commands/collect.ts";
 import type { SourceAdapter } from "../src/adapters/types.ts";
 import type { SourceBudget } from "../src/lib/budget.ts";
@@ -19,7 +21,7 @@ import {
 } from "../src/lib/io.ts";
 import { createLogger } from "../src/lib/logger.ts";
 import { mergeApps } from "../src/lib/merge.ts";
-import { emptySourceRow, type SnapshotManifest } from "../src/lib/schema.ts";
+import { emptySourceRow, type SnapshotManifest, type SourceName, type SourceRow } from "../src/lib/schema.ts";
 import { fixtureFetch, loadFixture } from "./helpers.ts";
 
 vi.mock("../src/lib/io.ts", async (importOriginal) => {
@@ -874,6 +876,7 @@ describe("collect resilience", () => {
       extensionName: id,
       stars: 9,
     });
+    const warnings: string[] = [];
     let calls = 0;
     const worse = await collect({
       date,
@@ -891,14 +894,21 @@ describe("collect resilience", () => {
         },
         maxRetries: 0,
       }),
-      log: silent,
+      log: {
+        info() {},
+        warn(message) {
+          warnings.push(message);
+        },
+        error() {},
+      },
       sourceAttempts: 1,
       sleep: async () => {},
     });
     expect(calls).toBe(1);
     expect(worse.skipped).toBe(false);
     expect(worse.wrote).toBe(false);
-    expect(worse.skipReason).toMatch(/fresh rows would drop from 3 to 1/);
+    expect(worse.skipReason).toBeUndefined();
+    expect(warnings.join("\n")).toMatch(/blocked by gemini-cli fresh 3 -> 1/);
     expect(readFileSync(join(dataDir, "normalized", date, "manifest.json"), "utf8")).toBe(before);
     expect(freshRowCount(readSourceRows(date, dataDir))).toBe(3);
 
@@ -927,5 +937,143 @@ describe("collect resilience", () => {
     expect(better.wrote).toBe(true);
     expect(freshRowCount(readSourceRows(date, dataDir))).toBe(4);
     expect(readManifest(date, dataDir).collectedAt).toBe("2026-11-05T13:40:00.000Z");
+  });
+
+  it("does not replace a partial day when the total rises but one source loses fresh rows", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-late-primary-mixed-"));
+    const date = "2026-11-05";
+    const collectedAt = "2026-11-05T08:47:00.000Z";
+    const npmRows = ["n0", "n1"].map((id) =>
+      emptySourceRow({
+        snapshot_date: date,
+        app_id: `npm:${id}`,
+        source: "npm",
+        source_id: id,
+        name: id,
+        npm_package: id,
+        npm_weekly_downloads: 10,
+        fetched_at: collectedAt,
+        carried_forward: false,
+        frozen: false,
+      }),
+    );
+    const smitheryRow = emptySourceRow({
+      snapshot_date: date,
+      app_id: "smithery:held",
+      source: "smithery",
+      source_id: "held",
+      name: "held",
+      use_count: 1,
+      fetched_at: "2026-11-04T00:00:00.000Z",
+      carried_forward: true,
+      frozen: true,
+    });
+    const rows = [...npmRows, smitheryRow];
+    const manifest: SnapshotManifest = {
+      snapshotDate: date,
+      collectedAt,
+      appCount: rows.length,
+      sourceRowCount: rows.length,
+      partial: true,
+      completedSources: [],
+      failedSourceCount: 1,
+      sources: [
+        {
+          source: "npm",
+          rowCount: npmRows.length,
+          skipped: false,
+          truncated: true,
+          collectedAt,
+          freshTodayCount: npmRows.length,
+          fetchedShare: 0.9,
+        },
+        {
+          source: "smithery",
+          rowCount: 1,
+          skipped: false,
+          failed: true,
+          collectedAt,
+          freshTodayCount: 0,
+          fetchedShare: 0,
+          error: "circuit_breaker_5xx",
+        },
+      ],
+    };
+    writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
+    const before = readFileSync(join(dataDir, "normalized", date, "manifest.json"), "utf8");
+    const summaryPath = join(dataDir, "step-summary.md");
+    writeFileSync(summaryPath, "");
+    const warnings: string[] = [];
+    const freshRecords = (source: SourceName, count: number, at: string): SourceRow[] =>
+      Array.from({ length: count }, (_, index) =>
+        emptySourceRow({
+          snapshot_date: date,
+          app_id: `${source}:new-${index}`,
+          source,
+          source_id: `new-${index}`,
+          name: `new-${index}`,
+          fetched_at: at,
+          carried_forward: false,
+          frozen: false,
+        }),
+      );
+    const resultFor = (source: SourceName, records: SourceRow[], at: string): SourceResult => ({
+      source,
+      collectedAt: at,
+      rowCount: records.length,
+      skipped: false,
+      records,
+      raw: { rows: records.length },
+      freshTodayCount: freshRowCount(records),
+      eligibleCount: Math.max(records.length, 1),
+    });
+    const originalNpm = npmAdapter.collect;
+    const originalSmithery = smitheryAdapter.collect;
+    npmAdapter.collect = async () => resultFor("npm", [], "2026-11-05T13:30:00.000Z");
+    smitheryAdapter.collect = async () =>
+      resultFor("smithery", freshRecords("smithery", 5, "2026-11-05T13:30:00.000Z"), "2026-11-05T13:30:00.000Z");
+    try {
+      const outcome = await collect({
+        date,
+        dataDir,
+        now: new Date("2026-11-05T13:30:00.000Z"),
+        force: false,
+        sources: ["npm", "smithery"],
+        env: { GITHUB_STEP_SUMMARY: summaryPath },
+        http: createHttpClient({
+          fetchImpl: async () => {
+            throw new Error("stubbed sources must not fetch");
+          },
+          maxRetries: 0,
+        }),
+        log: {
+          info() {},
+          warn(message) {
+            warnings.push(message);
+          },
+          error() {},
+        },
+        sourceAttempts: 1,
+        sleep: async () => {},
+      });
+      expect(outcome.skipped).toBe(false);
+      expect(outcome.wrote).toBe(false);
+      expect(outcome.skipReason).toBeUndefined();
+      expect(readFileSync(join(dataDir, "normalized", date, "manifest.json"), "utf8")).toBe(before);
+      expect(readManifest(date, dataDir).partial).toBe(true);
+      expect(freshRowCount(readSourceRows(date, dataDir).filter((row) => row.source === "npm"))).toBe(2);
+      const warning = warnings.join("\n");
+      expect(warning).toMatch(/blocked by npm fresh 2 -> 0/);
+      expect(warning).toMatch(/would have improved smithery fresh 0 -> 5/);
+      const summary = readFileSync(summaryPath, "utf8");
+      expect(summary).toMatch(/blocked by npm fresh 2 -> 0/);
+      expect(summary).toMatch(/would have improved smithery fresh 0 -> 5/);
+      expect(summary).toMatch(/npm: 2 -> 0/);
+      expect(summary).toMatch(/smithery: 0 -> 5/);
+      expect(summary).toMatch(/day stays partial/);
+    } finally {
+      npmAdapter.collect = originalNpm;
+      smitheryAdapter.collect = originalSmithery;
+    }
   });
 });

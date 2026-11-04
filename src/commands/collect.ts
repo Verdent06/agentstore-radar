@@ -1,11 +1,11 @@
-import { existsSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { adaptersByKind } from "../adapters/index.ts";
 import { createDiscoveredRefs, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "../adapters/types.ts";
 import { budgetExhausted, budgetExhaustedError, isBudgetExhaustedError, openSourceBudget } from "../lib/budget.ts";
 import { budgetPartialRows } from "../lib/budget-partial.ts";
 import { SOURCE_COLLECT_ATTEMPTS } from "../lib/config.ts";
-import { computeCoverage, freshFetchedShare, freshRowCount } from "../lib/coverage.ts";
+import { computeCoverage, freshFetchedShare, isFreshRow } from "../lib/coverage.ts";
 import { utcDateString } from "../lib/dates.ts";
 import { createHttpClient, type HttpClient } from "../lib/http.ts";
 import {
@@ -95,6 +95,30 @@ function sourceCompleted(result: SourceResult): boolean {
 
 function sourceIncomplete(result: SourceResult): boolean {
   return Boolean(result.failed || result.truncated);
+}
+
+type FreshChange = { source: string; previousFresh: number; nextFresh: number };
+
+function freshCountsBySource(rows: readonly SourceRow[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const current = counts.get(row.source) ?? 0;
+    counts.set(row.source, current + (isFreshRow(row) ? 1 : 0));
+  }
+  return counts;
+}
+
+function formatFreshChange(change: FreshChange): string {
+  return `${change.source} fresh ${change.previousFresh} -> ${change.nextFresh}`;
+}
+
+/** Visible in the Actions run summary. A missing env var means this is not a job step. */
+function appendJobSummary(env: NodeJS.ProcessEnv | undefined, markdown: string): void {
+  const path = env?.GITHUB_STEP_SUMMARY;
+  if (!path) {
+    return;
+  }
+  appendFileSync(path, markdown.endsWith("\n") ? markdown : `${markdown}\n`);
 }
 
 function stampFetchWindow(result: SourceResult, startedMs: number, endedMs: number): SourceResult {
@@ -274,23 +298,57 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     }
   }
   if (!options.force && previousManifest) {
-    let previousFresh = 0;
+    let previousRows: SourceRow[] = [];
     try {
-      previousFresh = freshRowCount(readSourceRows(snapshotDate, dataDir));
+      previousRows = readSourceRows(snapshotDate, dataDir);
     } catch {
-      previousFresh = 0;
+      previousRows = [];
     }
-    const nextFresh = freshRowCount(sourceRows);
-    if (nextFresh < previousFresh) {
-      log.warn("refusing to replace snapshot with fewer fresh rows", {
-        date: snapshotDate,
-        previousFresh,
-        nextFresh,
-      });
+    const previousCounts = freshCountsBySource(previousRows);
+    const nextCounts = freshCountsBySource(sourceRows);
+    const sources = [...new Set([...previousCounts.keys(), ...nextCounts.keys()])].sort();
+    const blocked: FreshChange[] = [];
+    const improved: FreshChange[] = [];
+    for (const source of sources) {
+      const previousFresh = previousCounts.get(source) ?? 0;
+      const nextFresh = nextCounts.get(source) ?? 0;
+      if (nextFresh < previousFresh) {
+        blocked.push({ source, previousFresh, nextFresh });
+      } else if (nextFresh > previousFresh) {
+        improved.push({ source, previousFresh, nextFresh });
+      }
+    }
+    if (blocked.length > 0) {
+      const blockedText = blocked.map(formatFreshChange).join(", ");
+      const improvedText = improved.length > 0 ? improved.map(formatFreshChange).join(", ") : "none";
+      const message = `refusing to replace ${snapshotDate}: blocked by ${blockedText}; would have improved ${improvedText}`;
+      log.warn(message, { date: snapshotDate, blocked, improved });
+      const improvedLines =
+        improved.length > 0
+          ? improved.map((change) => `- ${change.source}: ${change.previousFresh} -> ${change.nextFresh}`).join("\n")
+          : "- none";
+      appendJobSummary(
+        options.env ?? process.env,
+        [
+          `### Collect refused to replace ${snapshotDate}`,
+          "",
+          "The on-disk manifest was not modified. The day stays partial.",
+          "",
+          message,
+          "",
+          "Blocked (fresh rows would drop):",
+          "",
+          ...blocked.map((change) => `- ${change.source}: ${change.previousFresh} -> ${change.nextFresh}`),
+          "",
+          "Would have improved:",
+          "",
+          improvedLines,
+          "",
+        ].join("\n"),
+      );
       return {
         ok: true,
         skipped: false,
-        skipReason: `refusing to replace ${snapshotDate}: fresh rows would drop from ${previousFresh} to ${nextFresh}`,
         wrote: false,
         manifest: previousManifest,
         failedSources,
