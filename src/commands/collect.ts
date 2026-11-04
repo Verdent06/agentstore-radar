@@ -5,7 +5,7 @@ import { createDiscoveredRefs, sourceStoppedAt, type CollectContext, type Source
 import { budgetExhausted, budgetExhaustedError, isBudgetExhaustedError, openSourceBudget } from "../lib/budget.ts";
 import { budgetPartialRows } from "../lib/budget-partial.ts";
 import { SOURCE_COLLECT_ATTEMPTS } from "../lib/config.ts";
-import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
+import { computeCoverage, freshFetchedShare, freshRowCount } from "../lib/coverage.ts";
 import { utcDateString } from "../lib/dates.ts";
 import { createHttpClient, type HttpClient } from "../lib/http.ts";
 import {
@@ -14,6 +14,7 @@ import {
   dataPaths,
   inspectSnapshot,
   readManifest,
+  readSourceRows,
   resolveDataDir,
   restoreNormalizedSnapshot,
   snapshotBackupStamp,
@@ -270,6 +271,32 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
       previousManifest = readManifest(snapshotDate, dataDir);
     } catch {
       previousManifest = undefined;
+    }
+  }
+  if (!options.force && previousManifest) {
+    let previousFresh = 0;
+    try {
+      previousFresh = freshRowCount(readSourceRows(snapshotDate, dataDir));
+    } catch {
+      previousFresh = 0;
+    }
+    const nextFresh = freshRowCount(sourceRows);
+    if (nextFresh < previousFresh) {
+      log.warn("refusing to replace snapshot with fewer fresh rows", {
+        date: snapshotDate,
+        previousFresh,
+        nextFresh,
+      });
+      return {
+        ok: true,
+        skipped: false,
+        skipReason: `refusing to replace ${snapshotDate}: fresh rows would drop from ${previousFresh} to ${nextFresh}`,
+        wrote: false,
+        manifest: previousManifest,
+        failedSources,
+        cleaned,
+        date: snapshotDate,
+      };
     }
   }
   const sourceManifests: SourceManifest[] = [];

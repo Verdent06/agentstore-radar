@@ -7,6 +7,7 @@ import { npmAdapter } from "../src/adapters/npm.ts";
 import { collect, collectAdapter } from "../src/commands/collect.ts";
 import type { SourceAdapter } from "../src/adapters/types.ts";
 import type { SourceBudget } from "../src/lib/budget.ts";
+import { freshRowCount } from "../src/lib/coverage.ts";
 import { createHttpClient } from "../src/lib/http.ts";
 import {
   cleanupBrokenNormalizedEntries,
@@ -765,5 +766,166 @@ describe("collect resilience", () => {
     } finally {
       npmAdapter.collect = original;
     }
+  });
+
+  it("leaves a complete manifest unchanged when a late primary runs without --force", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-late-primary-complete-"));
+    const date = "2026-11-05";
+    const collectedAt = "2026-11-05T08:47:00.000Z";
+    const rows = [
+      emptySourceRow({
+        snapshot_date: date,
+        app_id: "github:example/kept",
+        source: "gemini-cli",
+        source_id: "kept",
+        name: "kept",
+        stars: 4,
+        fetched_at: collectedAt,
+        carried_forward: false,
+        frozen: false,
+      }),
+    ];
+    const manifest: SnapshotManifest = {
+      snapshotDate: date,
+      collectedAt,
+      appCount: 1,
+      sourceRowCount: 1,
+      partial: false,
+      completedSources: ["gemini-cli"],
+      sources: [
+        {
+          source: "gemini-cli",
+          rowCount: 1,
+          skipped: false,
+          collectedAt,
+          freshTodayCount: 1,
+          fetchedShare: 1,
+        },
+      ],
+    };
+    writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
+    const before = readFileSync(join(dataDir, "normalized", date, "manifest.json"), "utf8");
+    let calls = 0;
+    const outcome = await collect({
+      date,
+      dataDir,
+      now: new Date("2026-11-05T13:30:00.000Z"),
+      force: false,
+      sources: ["gemini-cli"],
+      http: createHttpClient({
+        fetchImpl: async () => {
+          calls += 1;
+          throw new Error("late primary must not fetch a complete day");
+        },
+        maxRetries: 0,
+      }),
+      log: silent,
+    });
+    expect(outcome.skipped).toBe(true);
+    expect(outcome.wrote).toBe(false);
+    expect(outcome.skipReason).toMatch(/already complete/);
+    expect(calls).toBe(0);
+    expect(readFileSync(join(dataDir, "normalized", date, "manifest.json"), "utf8")).toBe(before);
+    expect(readManifest(date, dataDir).collectedAt).toBe(collectedAt);
+    expect(freshRowCount(readSourceRows(date, dataDir))).toBe(1);
+  });
+
+  it("re-collects a partial day but does not replace it with fewer fresh rows", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-late-primary-partial-"));
+    const date = "2026-11-05";
+    const collectedAt = "2026-11-05T08:47:00.000Z";
+    const rows = ["a", "b", "c"].map((id) =>
+      emptySourceRow({
+        snapshot_date: date,
+        app_id: `github:example/${id}`,
+        source: "gemini-cli",
+        source_id: id,
+        name: id,
+        stars: 4,
+        repo_url: `https://github.com/example/${id}`,
+        fetched_at: collectedAt,
+        carried_forward: false,
+        frozen: false,
+      }),
+    );
+    const manifest: SnapshotManifest = {
+      snapshotDate: date,
+      collectedAt,
+      appCount: rows.length,
+      sourceRowCount: rows.length,
+      partial: true,
+      completedSources: [],
+      sources: [
+        {
+          source: "gemini-cli",
+          rowCount: rows.length,
+          skipped: false,
+          truncated: true,
+          collectedAt,
+          freshTodayCount: rows.length,
+        },
+      ],
+    };
+    writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
+    const before = readFileSync(join(dataDir, "normalized", date, "manifest.json"), "utf8");
+    const extension = (id: string) => ({
+      id,
+      url: `https://github.com/example/${id}`,
+      extensionName: id,
+      stars: 9,
+    });
+    let calls = 0;
+    const worse = await collect({
+      date,
+      dataDir,
+      now: new Date("2026-11-05T13:30:00.000Z"),
+      force: false,
+      sources: ["gemini-cli"],
+      http: createHttpClient({
+        fetchImpl: async () => {
+          calls += 1;
+          return new Response(JSON.stringify([extension("only")]), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        },
+        maxRetries: 0,
+      }),
+      log: silent,
+      sourceAttempts: 1,
+      sleep: async () => {},
+    });
+    expect(calls).toBe(1);
+    expect(worse.skipped).toBe(false);
+    expect(worse.wrote).toBe(false);
+    expect(worse.skipReason).toMatch(/fresh rows would drop from 3 to 1/);
+    expect(readFileSync(join(dataDir, "normalized", date, "manifest.json"), "utf8")).toBe(before);
+    expect(freshRowCount(readSourceRows(date, dataDir))).toBe(3);
+
+    const better = await collect({
+      date,
+      dataDir,
+      now: new Date("2026-11-05T13:40:00.000Z"),
+      force: false,
+      sources: ["gemini-cli"],
+      http: createHttpClient({
+        fetchImpl: async () => {
+          calls += 1;
+          return new Response(JSON.stringify(["w", "x", "y", "z"].map(extension)), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        },
+        maxRetries: 0,
+      }),
+      log: silent,
+      sourceAttempts: 1,
+      sleep: async () => {},
+    });
+    expect(calls).toBe(2);
+    expect(better.skipped).toBe(false);
+    expect(better.wrote).toBe(true);
+    expect(freshRowCount(readSourceRows(date, dataDir))).toBe(4);
+    expect(readManifest(date, dataDir).collectedAt).toBe("2026-11-05T13:40:00.000Z");
   });
 });
