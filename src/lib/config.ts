@@ -50,11 +50,12 @@ export const NPM_BULK_LIMIT = 128;
 export const NPM_SCOPED_MIN_INTERVAL_MS = 250;
 export const NPM_BULK_MIN_INTERVAL_MS = 200;
 /**
- * Scoped npm packages cannot use the bulk endpoint. 4 in flight with a shared
- * 429 pause. A live sample of 80 scoped names at this concurrency finished in
- * 19.8s (~4 req/s, 25 HTTP 429s); extrapolating 8,054 scoped names is ~33 min.
+ * Scoped npm packages cannot use the bulk endpoint. 8 in flight, one shared
+ * 429 pause. Downloads pass `maxRetries: 0` so the first 429 reaches that
+ * pause instead of sleeping inside the HTTP client. A positive Retry-After
+ * is honored; a missing or zero header still floors at 15s.
  */
-export const NPM_SCOPED_CONCURRENCY = 4;
+export const NPM_SCOPED_CONCURRENCY = 8;
 export const PYPI_MIN_INTERVAL_MS = 400;
 /** pypistats recent calls in flight. Host interval still spaces starts. */
 export const PYPI_CONCURRENCY = 4;
@@ -77,9 +78,11 @@ export const PYPI_CONCURRENCY = 4;
  * Override with RADAR_<SOURCE>_BUDGET_MS.
  *
  * npm and PyPI are sized from a live sample on 2026-11-03 (see docs/SOURCES.md):
- * full npm pass ~34 min, full PyPI pass ~33 min, plus margin. The other
- * sources keep headroom over the 2026-11-03 run (mcp ~2m, smithery ~6m,
- * gemini <1m, github ~24m).
+ * full npm pass ~34 min once scoped 429s hit the shared pool, full PyPI pass
+ * ~33 min, plus margin. The 2026-11-04 run spent the whole npm budget inside
+ * scoped packages because the HTTP client retried 429s itself at a 15s floor.
+ * The other sources keep headroom over the 2026-11-03 run (mcp ~2m, smithery
+ * ~6m, gemini <1m, github ~24m).
  */
 export const MCP_COLLECT_BUDGET_MS = 15 * 60 * 1000;
 export const SMITHERY_COLLECT_BUDGET_MS = 20 * 60 * 1000;

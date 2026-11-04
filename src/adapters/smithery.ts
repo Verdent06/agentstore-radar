@@ -507,11 +507,13 @@ export const smitheryAdapter: SourceAdapter = {
     // fetchedShare counts only fresh rows: carried_forward false and frozen not true.
     // A source-frozen catalog, a tripped useCount breaker, or a wall-clock budget
     // that holds due rows all score ~0 even when the seeded list completed.
-    // Held rows keep last-known values and are excluded from fetchedThisRunCount.
-    const fetchedThisRunCount = records.reduce(
-      (count, row) => count + (heldNames.has(row.source_id) ? 0 : 1),
+    // Carried-forward and frozen rows are not fetches. A failed or breaker-tripped
+    // source reports 0 even if a few searches succeeded before the trip.
+    const freshThisRun = records.reduce(
+      (count, row) => count + (row.carried_forward !== true && row.frozen !== true ? 1 : 0),
       0,
     );
+    const fetchedThisRunCount = circuitOpen ? 0 : freshThisRun;
     const eligibleCount = Math.max(records.length, totalCount ?? 0);
     const fetchedShare = freshFetchedShare(records, eligibleCount);
     const freshTodayCount = records.filter((row) => row.carried_forward !== true && row.frozen !== true).length;

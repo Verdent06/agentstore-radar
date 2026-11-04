@@ -216,7 +216,7 @@ describe("smithery useCount circuit breaker", () => {
     expect(result.error).toBeUndefined();
     expect(result.skipReason).toBeUndefined();
     expect(result.fetchedShare).toBeCloseTo(3 / count);
-    expect(result.fetchedThisRunCount).toBe(count);
+    expect(result.fetchedThisRunCount).toBe(3);
     expect((result.raw as { useCountRefresh?: { circuitOpen?: boolean } }).useCountRefresh?.circuitOpen).toBe(false);
     for (const sourceId of ["srv/04", "srv/09", "srv/14"]) {
       expect(result.records.find((row) => row.source_id === sourceId)).toMatchObject({
@@ -272,5 +272,46 @@ describe("smithery useCount circuit breaker", () => {
     expect(result.records.every((row) => row.carried_forward === true && row.frozen === true)).toBe(true);
     expect(result.fetchedThisRunCount).toBe(0);
     expect(result.fetchedShare).toBe(0);
+  });
+
+  it("reports fetchedThisRunCount 0 when the breaker trips after live hits", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-smithery-breaker-partial-"));
+    const count = SMITHERY_USECOUNT_CIRCUIT_BREAKER_THRESHOLD + 2;
+    const list = smitheryList(count);
+    const result = await smitheryAdapter.collect({
+      snapshotDate: "2026-11-02",
+      collectedAt: "2026-11-02T12:00:00Z",
+      now: new Date("2026-11-02T12:00:00Z"),
+      dataDir,
+      env: {},
+      log: silent,
+      discovered: createDiscoveredRefs(),
+      sleep: async () => {},
+      http: createHttpClient({
+        maxRetries: 0,
+        sleep: async () => {},
+        fetchImpl: async (input) => {
+          const url = String(input);
+          if (!new URL(url).searchParams.has("q")) {
+            return jsonResponse(list);
+          }
+          const name = new URL(url).searchParams.get("q") ?? "";
+          const index = Number(name.split("/")[1]);
+          if (index < 2) {
+            return jsonResponse({
+              servers: [{ qualifiedName: name, useCount: 77 }],
+              pagination: { currentPage: 1, pageSize: 10, totalPages: 1, totalCount: 1 },
+            });
+          }
+          return new Response("upstream down", { status: 500 });
+        },
+      }),
+    });
+
+    expect(result.failed).toBe(true);
+    expect(result.error).toBe("circuit_breaker_5xx");
+    expect(result.records.filter((row) => row.carried_forward !== true && row.frozen !== true)).toHaveLength(2);
+    expect(result.fetchedThisRunCount).toBe(0);
+    expect(result.fetchedShare).toBeGreaterThan(0);
   });
 });

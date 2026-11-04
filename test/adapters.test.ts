@@ -140,7 +140,7 @@ describe("source normalizers", () => {
       carried_forward: true,
       fetched_at: "2026-10-24T12:00:00Z",
     });
-    expect(result.fetchedThisRunCount).toBe(1);
+    expect(result.fetchedThisRunCount).toBe(0);
     expect(result.fetchedShare).toBe(0);
   });
 
@@ -216,9 +216,8 @@ describe("source normalizers", () => {
       frozen: true,
     });
     expect(result.freshTodayCount).toBe(0);
-    expect(result.fetchedThisRunCount).toBe(1);
+    expect(result.fetchedThisRunCount).toBe(0);
     expect(result.fetchedShare).toBeCloseTo(0);
-    expect(result.fetchedThisRunCount).toBe(result.records.length);
     expect((result.raw as { useCountRefresh?: { unchanged: number; frozen: number; sourceFrozen: boolean } }).useCountRefresh).toMatchObject({
       unchanged: 1,
       frozen: 1,
@@ -403,9 +402,9 @@ describe("source normalizers", () => {
       sleep: async () => {},
     });
     expect(result.records).toHaveLength(2);
-    expect(result.fetchedThisRunCount).toBe(2);
-    // The 429 stops before the second due key is refreshed, so that row is
-    // carried forward and does not count toward fetchedShare.
+    expect(result.fetchedThisRunCount).toBe(1);
+    // The 429 stops before the second due key is refreshed. That carried row
+    // does not count as fetched this run or toward fetchedShare.
     expect(result.fetchedShare).toBe(0.5);
     expect(result.records.filter((row) => row.carried_forward !== true && row.frozen !== true)).toHaveLength(1);
     expect(result.truncated).toBe(true);

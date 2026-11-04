@@ -12,7 +12,7 @@ import {
   runBatchSize,
 } from "../lib/config.ts";
 import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
-import { fetchJsonWithRateLimitWait, isHttpRateLimit, retryWaitMs } from "../lib/http.ts";
+import { fetchJsonWithRateLimitWait, HttpError, isHttpRateLimit, retryWaitMs } from "../lib/http.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import {
   checkpointNextIndex,
@@ -152,10 +152,53 @@ export const npmAdapter: SourceAdapter = {
     );
     const unscoped = dueKeys.filter((name) => !isScopedNpmPackage(name));
     const scoped = dueKeys.filter(isScopedNpmPackage);
-    const walkOrder = [...unscoped, ...scoped];
+    const walkOrder = [...scoped, ...unscoped];
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
     const budget = adoptSourceBudget(ctx, "npm");
+    const nowMs = (): number => ctx.monotonicNow?.() ?? Date.now();
+    type LaneCounter = {
+      lane: "bulk" | "scoped";
+      path: "bulk" | "single";
+      requests: number;
+      fetched: number;
+      notFound: number;
+      rateLimits: number;
+      startedAt: number;
+      endedAt: number;
+    };
+    const bulkLane: LaneCounter = {
+      lane: "bulk",
+      path: "bulk",
+      requests: 0,
+      fetched: 0,
+      notFound: 0,
+      rateLimits: 0,
+      startedAt: 0,
+      endedAt: 0,
+    };
+    const scopedLane: LaneCounter = {
+      lane: "scoped",
+      path: "single",
+      requests: 0,
+      fetched: 0,
+      notFound: 0,
+      rateLimits: 0,
+      startedAt: 0,
+      endedAt: 0,
+    };
+    const publishLane = (lane: LaneCounter) => {
+      const ended = lane.endedAt > 0 ? lane.endedAt : lane.startedAt > 0 ? nowMs() : 0;
+      return {
+        lane: lane.lane,
+        path: lane.path,
+        requests: lane.requests,
+        fetched: lane.fetched,
+        notFound: lane.notFound,
+        rateLimits: lane.rateLimits,
+        durationMs: lane.startedAt > 0 && ended > 0 ? Math.max(0, ended - lane.startedAt) : 0,
+      };
+    };
 
     const finish = (input: {
       truncated: boolean;
@@ -203,6 +246,7 @@ export const npmAdapter: SourceAdapter = {
         lastFetchedAt: Object.values(lastFetched).sort().at(-1),
         stoppedAt: input.stoppedAt,
         error: input.stoppedAt?.error,
+        lanes: [publishLane(bulkLane), publishLane(scopedLane)],
         raw: {
           endpoint: NPM_DOWNLOADS_BASE,
           fetchedAt,
@@ -229,18 +273,34 @@ export const npmAdapter: SourceAdapter = {
       scoped: scoped.length,
       resumed,
       budgetMs: budget.budgetMs,
+      paths: ["bulk", "single"],
+      scopedConcurrency: runBatchSize(ctx.env, "RADAR_NPM_SCOPED_CONCURRENCY", NPM_SCOPED_CONCURRENCY),
     });
 
     let fetchedThisRun = 0;
     let truncated = false;
     let budgetStopped = false;
+    let budgetNoted = false;
     let processed = 0;
     let deferred = 0;
     let stoppedAt: SourceResult["stoppedAt"];
+    let io: Promise<void> = Promise.resolve();
+    const enqueueIo = (fn: () => void): Promise<void> => {
+      const run = io.then(fn, fn);
+      io = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run;
+    };
 
     const noteBudget = (where: string): void => {
       truncated = true;
       budgetStopped = true;
+      if (budgetNoted) {
+        return;
+      }
+      budgetNoted = true;
       stoppedAt = sourceStoppedAt("npm", budgetExhaustedError(budget, where));
       ctx.log.warn("npm wall-clock budget exhausted; persisting checkpoint", {
         where,
@@ -248,20 +308,35 @@ export const npmAdapter: SourceAdapter = {
         due: walkOrder.length,
         budgetMs: budget.budgetMs,
         fetchedThisRun,
+        lanes: [publishLane(bulkLane), publishLane(scopedLane)],
       });
     };
 
-    const fetchNpm = async (url: string, minIntervalMs: number): Promise<unknown> =>
+    const fetchNpm = async (
+      url: string,
+      minIntervalMs: number,
+      lane: LaneCounter,
+      onRateLimit?: (waitMs: number) => void,
+    ): Promise<unknown> =>
       fetchJsonWithRateLimitWait<unknown>(ctx.http, url, {
         sleep: sleepFn,
         maxWaitMs: budgetRemainingMs(budget),
-        init: { minIntervalMs, deadlineMs: budgetDeadlineMs(budget) },
+        init: { minIntervalMs, deadlineMs: budgetDeadlineMs(budget), maxRetries: 0 },
+        onAttempt() {
+          lane.requests += 1;
+        },
         onWait(waitMs, attempt, error) {
+          lane.rateLimits += 1;
+          onRateLimit?.(waitMs);
           ctx.log.warn("npm waiting out rate limit", {
+            lane: lane.lane,
+            path: lane.path,
             waitMs,
             attempt,
             status: error.status,
             cloudflare: error.cloudflare,
+            requests: lane.requests,
+            rateLimits: lane.rateLimits,
           });
         },
       });
@@ -270,125 +345,165 @@ export const npmAdapter: SourceAdapter = {
       persistCheckpoint(ctx.dataDir, "npm", {
         snapshotDate: ctx.snapshotDate,
         dueKeys: walkOrder,
-        nextIndex: processed,
+        nextIndex: checkpointNextIndex(walkOrder, lastFetched, ctx.snapshotDate, fetchedAt),
         startedAt: checkpoint?.startedAt ?? fetchedAt,
       });
     };
 
-    const batches = partitionNpmDownloads(walkOrder).bulk;
-    for (const [index, batch] of batches.entries()) {
-      if (budgetExhausted(budget)) {
-        noteBudget("before bulk batch");
-        break;
+    const countRemembered = (lane: LaneCounter, name: string, payload: unknown): void => {
+      if (rememberPoint(cache, lastFetched, name, payload, fetchedAt)) {
+        fetchedThisRun += 1;
+        lane.fetched += 1;
       }
-      rememberCheckpoint();
+    };
+
+    const runBulk = async (): Promise<void> => {
+      bulkLane.startedAt = nowMs();
       try {
-        const payload = await fetchNpm(npmBulkUrl(batch), NPM_BULK_MIN_INTERVAL_MS);
-        if (batch.length === 1) {
-          if (rememberPoint(cache, lastFetched, batch[0]!, payload, fetchedAt)) {
-            fetchedThisRun += 1;
-          }
-        } else if (payload && typeof payload === "object") {
-          for (const [name, item] of Object.entries(payload as Record<string, unknown>)) {
-            if (!dueSet.has(name)) {
-              continue;
-            }
-            if (rememberPoint(cache, lastFetched, name, item, fetchedAt)) {
-              fetchedThisRun += 1;
-            }
-          }
-        }
-      } catch (error) {
-        if (isHttpRateLimit(error)) {
-          if (budgetExhausted(budget) || budgetRemainingMs(budget) < RATE_LIMIT_MIN_WAIT_MS) {
-            noteBudget("bulk rate limit");
+        const batches = partitionNpmDownloads(unscoped).bulk;
+        for (const [index, batch] of batches.entries()) {
+          if (budgetStopped || budgetExhausted(budget)) {
+            noteBudget("before bulk batch");
             break;
           }
-          deferred += batch.length;
-          ctx.log.warn("npm bulk delayed past wait budget; leaving batch for next run", {
-            batch: index + 1,
-            size: batch.length,
-            error: String(error),
-          });
-          processed += batch.length;
-          continue;
-        }
-        throw error;
-      }
-      processed += batch.length;
-      persistLastFetched(ctx.dataDir, "npm", lastFetched);
-      persistEntityCache(ctx.dataDir, "npm", cache);
-      if ((index + 1) % 10 === 0 || index + 1 === batches.length) {
-        ctx.log.info("npm bulk progress", {
-          batch: index + 1,
-          batches: batches.length,
-          fetchedThisRun,
-        });
-      }
-    }
-
-    if (!budgetStopped && scoped.length > 0) {
-      const concurrency = runBatchSize(ctx.env, "RADAR_NPM_SCOPED_CONCURRENCY", NPM_SCOPED_CONCURRENCY);
-      const pool = createSharedBackoffPool(concurrency, sleepFn, ctx.monotonicNow ?? Date.now);
-      let io: Promise<void> = Promise.resolve();
-      const enqueueIo = (fn: () => void): Promise<void> => {
-        io = io.then(fn);
-        return io;
-      };
-      await Promise.all(
-        scoped.map(async (name) => {
-          if (budgetStopped || budgetExhausted(budget)) {
-            noteBudget("before scoped package");
-            return;
-          }
-          await pool.acquire();
+          await enqueueIo(rememberCheckpoint);
           try {
+            const payload = await fetchNpm(npmBulkUrl(batch), NPM_BULK_MIN_INTERVAL_MS, bulkLane);
+            if (batch.length === 1) {
+              countRemembered(bulkLane, batch[0]!, payload);
+            } else if (payload && typeof payload === "object") {
+              for (const [name, item] of Object.entries(payload as Record<string, unknown>)) {
+                if (!dueSet.has(name)) {
+                  continue;
+                }
+                countRemembered(bulkLane, name, item);
+              }
+            }
+          } catch (error) {
+            if (error instanceof HttpError && error.status === 404) {
+              bulkLane.notFound += batch.length;
+            }
+            if (isHttpRateLimit(error)) {
+              bulkLane.rateLimits += 1;
+              if (budgetExhausted(budget) || budgetRemainingMs(budget) < RATE_LIMIT_MIN_WAIT_MS) {
+                noteBudget("bulk rate limit");
+                break;
+              }
+              deferred += batch.length;
+              ctx.log.warn("npm bulk delayed past wait budget; leaving batch for next run", {
+                batch: index + 1,
+                size: batch.length,
+                path: "bulk",
+                requests: bulkLane.requests,
+                rateLimits: bulkLane.rateLimits,
+                error: String(error),
+              });
+              processed += batch.length;
+              continue;
+            }
+            throw error;
+          }
+          processed += batch.length;
+          await enqueueIo(() => {
+            persistLastFetched(ctx.dataDir, "npm", lastFetched);
+            persistEntityCache(ctx.dataDir, "npm", cache);
+          });
+          if ((index + 1) % 10 === 0 || index + 1 === batches.length) {
+            ctx.log.info("npm bulk progress", {
+              path: "bulk",
+              batch: index + 1,
+              batches: batches.length,
+              requests: bulkLane.requests,
+              rateLimits: bulkLane.rateLimits,
+              fetchedThisRun,
+            });
+          }
+        }
+      } finally {
+        bulkLane.endedAt = nowMs();
+        ctx.log.info("npm lane", publishLane(bulkLane));
+      }
+    };
+
+    const runScoped = async (): Promise<void> => {
+      scopedLane.startedAt = nowMs();
+      try {
+        if (scoped.length === 0) {
+          return;
+        }
+        const concurrency = runBatchSize(ctx.env, "RADAR_NPM_SCOPED_CONCURRENCY", NPM_SCOPED_CONCURRENCY);
+        const pool = createSharedBackoffPool(concurrency, sleepFn, ctx.monotonicNow ?? Date.now);
+        await Promise.all(
+          scoped.map(async (name) => {
             if (budgetStopped || budgetExhausted(budget)) {
-              noteBudget("before scoped package");
+              noteBudget(scopedLane.requests > 0 ? "scoped in flight" : "before scoped package");
               return;
             }
-            await enqueueIo(() => {
-              rememberCheckpoint();
-            });
+            await pool.acquire();
             try {
-              const payload = await fetchNpm(npmScopedUrl(name), NPM_SCOPED_MIN_INTERVAL_MS);
-              if (rememberPoint(cache, lastFetched, name, payload, fetchedAt)) {
-                fetchedThisRun += 1;
+              if (budgetStopped || budgetExhausted(budget)) {
+                noteBudget(scopedLane.requests > 0 ? "scoped in flight" : "before scoped package");
+                return;
               }
-            } catch (error) {
-              if (isHttpRateLimit(error)) {
-                const waitMs = retryWaitMs({
-                  attempt: 0,
-                  retryAfterMs: error.retryAfterMs,
-                  rateLimited: true,
-                  cloudflare: Boolean(error.cloudflare),
+              await enqueueIo(rememberCheckpoint);
+              try {
+                const payload = await fetchNpm(npmScopedUrl(name), NPM_SCOPED_MIN_INTERVAL_MS, scopedLane, (waitMs) => {
+                  pool.pauseAll(waitMs);
                 });
-                pool.pauseAll(waitMs);
-                if (budgetExhausted(budget) || budgetRemainingMs(budget) < RATE_LIMIT_MIN_WAIT_MS) {
-                  noteBudget("scoped rate limit");
-                  return;
+                countRemembered(scopedLane, name, payload);
+              } catch (error) {
+                if (error instanceof HttpError && error.status === 404) {
+                  scopedLane.notFound += 1;
                 }
-                deferred += 1;
-                ctx.log.warn("npm scoped delayed past wait budget; leaving key for next run", {
-                  name,
-                  error: String(error),
-                });
-              } else {
-                ctx.log.warn("npm scoped package fetch failed", { name, error: String(error) });
+                if (isHttpRateLimit(error)) {
+                  scopedLane.rateLimits += 1;
+                  const waitMs = retryWaitMs({
+                    attempt: 0,
+                    retryAfterMs: error.retryAfterMs,
+                    rateLimited: true,
+                    cloudflare: Boolean(error.cloudflare),
+                  });
+                  pool.pauseAll(waitMs);
+                  if (budgetExhausted(budget) || budgetRemainingMs(budget) < RATE_LIMIT_MIN_WAIT_MS) {
+                    noteBudget("scoped rate limit");
+                    return;
+                  }
+                  deferred += 1;
+                  ctx.log.warn("npm scoped delayed past wait budget; leaving key for next run", {
+                    name,
+                    path: "single",
+                    requests: scopedLane.requests,
+                    rateLimits: scopedLane.rateLimits,
+                    error: String(error),
+                  });
+                } else {
+                  ctx.log.warn("npm scoped package fetch failed", {
+                    name,
+                    path: "single",
+                    requests: scopedLane.requests,
+                    rateLimits: scopedLane.rateLimits,
+                    error: String(error),
+                  });
+                }
               }
+              processed += 1;
+              await enqueueIo(() => {
+                persistLastFetched(ctx.dataDir, "npm", lastFetched);
+                persistEntityCache(ctx.dataDir, "npm", cache);
+              });
+            } finally {
+              pool.release();
             }
-            processed += 1;
-            await enqueueIo(() => {
-              persistLastFetched(ctx.dataDir, "npm", lastFetched);
-              persistEntityCache(ctx.dataDir, "npm", cache);
-            });
-          } finally {
-            pool.release();
-          }
-        }),
-      );
-      await io;
-    }
+          }),
+        );
+      } finally {
+        scopedLane.endedAt = nowMs();
+        ctx.log.info("npm lane", publishLane(scopedLane));
+      }
+    };
+
+    await Promise.all([runBulk(), runScoped()]);
+    await io;
 
     if (!truncated && dueKeys.length > 0) {
       const failedDue = dueKeys.length - fetchedThisRun - deferred;
@@ -410,12 +525,14 @@ export const npmAdapter: SourceAdapter = {
       }
     }
 
+    const lanes = [publishLane(bulkLane), publishLane(scopedLane)];
     ctx.log.info("npm collected", {
       requested: allKeys.length,
       due: dueKeys.length,
       fetchedThisRun,
       truncated,
       budgetStopped,
+      lanes,
     });
     return finish({ truncated, fetchedThisRun, freezeUnfetched: budgetStopped, stoppedAt });
   },

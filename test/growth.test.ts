@@ -502,6 +502,10 @@ describe("npm growth adapter", () => {
     expect(result.rowCount).toBe(3);
     expect(result.coverage).toBe(1);
     expect(result.eligibleCount).toBe(3);
+    expect(result.lanes).toEqual([
+      expect.objectContaining({ lane: "bulk", path: "bulk", requests: 1, fetched: 2, notFound: 0, rateLimits: 0 }),
+      expect.objectContaining({ lane: "scoped", path: "single", requests: 1, fetched: 1, notFound: 0, rateLimits: 0 }),
+    ]);
   });
 
   it("resumes after Cloudflare 1015 with a partial snapshot", async () => {
@@ -650,6 +654,12 @@ describe("npm growth adapter", () => {
     );
     expect(calls).toBe(2);
     expect(waits.some((ms) => ms >= 30_000)).toBe(true);
+    expect(result.lanes?.find((lane) => lane.lane === "scoped")).toMatchObject({
+      path: "single",
+      requests: 2,
+      fetched: 1,
+      rateLimits: 1,
+    });
     expect(result.truncated).toBe(false);
     expect(result.fetchedThisRunCount).toBe(1);
     expect(result.fetchedShare).toBe(1);
@@ -744,7 +754,7 @@ describe("pypi growth adapter", () => {
     });
   });
 
-  it("treats last_month < last_week as an invalid PyPI row, not fresh", async () => {
+  it("keeps a weekly>monthly PyPI row fresh and freezes only the monthly field", async () => {
     expect(pypiMonthlyInconsistent(100, 0)).toBe(true);
     expect(pypiMonthlyInconsistent(80, 300)).toBe(false);
     const dataDir = mkdtempSync(join(tmpdir(), "radar-pypi-inconsistent-"));
@@ -773,16 +783,19 @@ describe("pypi growth adapter", () => {
       }),
     );
     expect(result.weeklyGtMonthlyCount).toBe(1);
+    expect(result.freshTodayCount).toBe(1);
+    expect(result.fetchedShare).toBe(1);
     expect(result.records[0]).toMatchObject({
       pypi_last_week_downloads: 100,
       pypi_last_month_downloads: 0,
       pypi_weekly_gt_monthly: true,
-      carried_forward: true,
-      frozen: true,
+      pypi_monthly_frozen: true,
+      carried_forward: false,
+      frozen: false,
     });
     const apps = mergeApps("2026-10-25", result.records);
     expect(apps[0]).toMatchObject({
-      pypi_last_week_downloads_carried_forward: true,
+      pypi_last_week_downloads_carried_forward: false,
       pypi_last_month_downloads_carried_forward: true,
     });
   });
@@ -846,11 +859,13 @@ describe("pypi growth adapter", () => {
     expect(result.records[0]).toMatchObject({
       pypi_last_week_downloads: 1400,
       pypi_last_month_downloads: 20314,
+      pypi_monthly_frozen: true,
       carried_forward: false,
-      frozen: true,
+      frozen: false,
     });
     expect(result.fetchedThisRunCount).toBe(1);
-    expect(result.fetchedShare).toBe(0);
+    expect(result.freshTodayCount).toBe(1);
+    expect(result.fetchedShare).toBe(1);
     expect(result.truncated).toBe(false);
     const apps = mergeApps("2026-10-25", result.records);
     expect(apps[0]).toMatchObject({
@@ -942,8 +957,9 @@ describe("pypi growth adapter", () => {
     expect(stuckRow).toMatchObject({
       pypi_last_week_downloads: 1400,
       pypi_last_month_downloads: 20314,
+      pypi_monthly_frozen: true,
       carried_forward: false,
-      frozen: true,
+      frozen: false,
     });
     const liveRows = result.records.filter((row) => row.source_id !== stuck);
     expect(liveRows).toHaveLength(19);
@@ -1050,7 +1066,7 @@ describe("pypi growth adapter", () => {
     expect(carried.every((row) => row.carried_forward === true)).toBe(true);
   });
 
-  it("does not count a frozen PyPI monthly value toward fetchedShare", async () => {
+  it("counts a PyPI row in fetchedShare when weekly was fetched today and only monthly is frozen", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-pypi-unchanged-fetched-"));
     const same = "pkg-same";
     const missed = "pkg-missed";
@@ -1117,13 +1133,16 @@ describe("pypi growth adapter", () => {
       }),
     );
     expect(result.fetchedThisRunCount).toBe(1);
-    expect(result.fetchedShare).toBe(0);
+    expect(result.freshTodayCount).toBe(1);
+    expect(result.fetchedShare).toBe(0.5);
+    expect(result.fetchedShare).toBe((result.freshTodayCount ?? 0) / (result.eligibleCount ?? 1));
     expect(result.truncated).toBe(false);
     expect(result.records.find((row) => row.source_id === same)).toMatchObject({
       pypi_last_month_downloads: 20314,
       pypi_last_week_downloads: 1400,
+      pypi_monthly_frozen: true,
       carried_forward: false,
-      frozen: true,
+      frozen: false,
       fetched_at: "2026-10-25T12:00:00Z",
     });
     expect(result.records.find((row) => row.source_id === missed)).toMatchObject({

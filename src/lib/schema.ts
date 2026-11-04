@@ -42,6 +42,12 @@ export const SourceRowSchema = z.object({
   pypi_last_month_downloads: z.number().int().nullable(),
   /** True when pypistats last_week is greater than last_month. */
   pypi_weekly_gt_monthly: z.boolean().optional(),
+  /**
+   * Monthly is not a fresh signal (weekly > monthly, monthly stuck while
+   * weekly moved, or the monthly catalog is source-frozen). The row stays
+   * fresh when weekly was fetched today; only the monthly field is held.
+   */
+  pypi_monthly_frozen: z.boolean().optional(),
   verified: z.boolean().nullable(),
   /** GitHub `isFork` when the collector saw it. Null means unknown. */
   fork: z.boolean().nullable().default(null),
@@ -104,6 +110,19 @@ export const SourceStoppedAtSchema = z.object({
 
 export type SourceStoppedAt = z.infer<typeof SourceStoppedAtSchema>;
 
+/** One npm download lane. `requests` is calls made; `rateLimits` is 429 waits. */
+export const SourceLaneSchema = z.object({
+  lane: z.enum(["bulk", "scoped"]),
+  path: z.enum(["bulk", "single"]),
+  requests: z.number().int().nonnegative(),
+  fetched: z.number().int().nonnegative(),
+  notFound: z.number().int().nonnegative(),
+  rateLimits: z.number().int().nonnegative(),
+  durationMs: z.number().int().nonnegative(),
+});
+
+export type SourceLane = z.infer<typeof SourceLaneSchema>;
+
 export const SourceManifestSchema = z.object({
   source: SourceNameSchema,
   rowCount: z.number().int().nonnegative(),
@@ -148,6 +167,12 @@ export const SourceManifestSchema = z.object({
   fetch_ended_at: z.string().optional(),
   /** Collect run ids that fetched this source for the snapshotDate, in order. */
   fetchRunIds: z.array(z.string()).optional(),
+  /**
+   * npm paths that ran. `bulk` is the comma-separated point endpoint;
+   * `single` is one scoped package per request. Present even when a lane
+   * made zero calls, so a run that never reached scoped packages is visible.
+   */
+  lanes: z.array(SourceLaneSchema).optional(),
 });
 
 export type SourceManifest = z.infer<typeof SourceManifestSchema>;

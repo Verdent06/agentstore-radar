@@ -30,3 +30,20 @@ jobs:
       - run: npm run build --workspace=web
       - run: npm run typecheck --workspace=mcp
       - run: npm run test --workspace=mcp
+
+  # Times the production npm bulk and scoped paths on a GitHub-hosted runner.
+  # Does not check out or push the private data repo. A rate limit must not
+  # fail the required check job; this job is separate and continues on error.
+  npm-lane-timing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Time npm lanes against api.npmjs.org
+        continue-on-error: true
+        run: npx tsx scripts/time-npm-lanes.ts

@@ -415,6 +415,7 @@ function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifes
     weeklyGtMonthlyCount: result.weeklyGtMonthlyCount,
     fetch_started_at: result.fetchStartedAt,
     fetch_ended_at: result.fetchEndedAt,
+    lanes: result.lanes,
   };
 }
 
