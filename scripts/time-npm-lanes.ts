@@ -1,5 +1,5 @@
 /**
- * Times the production npm bulk and scoped paths against api.npmjs.org.
+ * Times the production npm bulk, npm scoped, and PyPI paths.
  * Prints one NPM_LANE_TIMING JSON line. Does not write a data repo.
  * CI runs this on a GitHub-hosted runner; it is not a collect.
  */
@@ -7,6 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { npmAdapter } from "../src/adapters/npm.ts";
+import { pypiAdapter } from "../src/adapters/pypi.ts";
 import { createDiscoveredRefs } from "../src/adapters/types.ts";
 import { createHttpClient } from "../src/lib/http.ts";
 import { createLogger } from "../src/lib/logger.ts";
@@ -14,8 +15,53 @@ import type { SourceLane } from "../src/lib/schema.ts";
 
 const CATALOG_UNSCOPED = 6495;
 const CATALOG_SCOPED = 8089;
+const CATALOG_PYPI = 4915;
 const BULK_SAMPLE = 128;
 const SCOPED_SAMPLE = 32;
+const PYPI_SAMPLE = 40;
+
+const pypiPackages = [
+  "mcp",
+  "fastmcp",
+  "requests",
+  "urllib3",
+  "certifi",
+  "charset-normalizer",
+  "idna",
+  "pip",
+  "setuptools",
+  "wheel",
+  "numpy",
+  "pandas",
+  "flask",
+  "django",
+  "fastapi",
+  "uvicorn",
+  "pydantic",
+  "httpx",
+  "aiohttp",
+  "boto3",
+  "cryptography",
+  "pyyaml",
+  "click",
+  "rich",
+  "typer",
+  "sqlalchemy",
+  "alembic",
+  "pytest",
+  "black",
+  "ruff",
+  "mypy",
+  "virtualenv",
+  "packaging",
+  "six",
+  "python-dateutil",
+  "tqdm",
+  "pillow",
+  "scipy",
+  "starlette",
+  "anyio",
+];
 
 const fallbackUnscoped = ["lodash", "express", "react", "vue", "next", "typescript", "zod", "vitest"];
 const fallbackScoped = ["@types/node", "@modelcontextprotocol/sdk"];
@@ -50,6 +96,74 @@ function scopedExtrapolatedMs(lane: SourceLane | undefined, sample: number): num
     return null;
   }
   return Math.round((lane.durationMs / sample) * CATALOG_SCOPED);
+}
+
+function pypiExtrapolatedMs(lane: { durationMs: number } | undefined, sample: number): number | null {
+  if (!lane || sample <= 0 || lane.durationMs <= 0) {
+    return null;
+  }
+  return Math.round((lane.durationMs / sample) * CATALOG_PYPI);
+}
+
+type PypiLane = {
+  lane: "pypi";
+  path: "single";
+  requests: number;
+  fetched: number;
+  notFound: number;
+  rateLimits: number;
+  durationMs: number;
+  fetchedThisRun: number;
+  truncated: boolean;
+  error: string | null;
+};
+
+async function timePypi(names: string[]): Promise<PypiLane> {
+  let requests = 0;
+  let rateLimits = 0;
+  let notFound = 0;
+  const http = createHttpClient({
+    fetchImpl: async (input, init) => {
+      requests += 1;
+      const response = await fetch(input, init);
+      if (response.status === 429) {
+        rateLimits += 1;
+      }
+      if (response.status === 404) {
+        notFound += 1;
+      }
+      return response;
+    },
+  });
+  const dataDir = mkdtempSync(join(tmpdir(), "radar-pypi-lanes-"));
+  const discovered = createDiscoveredRefs();
+  for (const name of names) {
+    discovered.pypiPackages.add(name);
+  }
+  const now = new Date();
+  const started = Date.now();
+  const result = await pypiAdapter.collect({
+    snapshotDate: now.toISOString().slice(0, 10),
+    collectedAt: now.toISOString(),
+    now,
+    dataDir,
+    env: { RADAR_PYPI_BUDGET_MS: String(8 * 60 * 1000) },
+    http,
+    log: createLogger(),
+    discovered,
+  });
+  return {
+    lane: "pypi",
+    path: "single",
+    requests,
+    fetched: result.fetchedThisRunCount ?? 0,
+    notFound,
+    rateLimits,
+    durationMs: Date.now() - started,
+    fetchedThisRun: result.fetchedThisRunCount ?? 0,
+    truncated: result.truncated === true,
+    error: result.error ?? null,
+  };
 }
 
 async function main(): Promise<void> {
@@ -93,19 +207,24 @@ async function main(): Promise<void> {
   const lanes = result.lanes ?? [];
   const bulk = lanes.find((lane) => lane.lane === "bulk");
   const scopedLane = lanes.find((lane) => lane.lane === "scoped");
+  const pypi = await timePypi(pypiPackages.slice(0, PYPI_SAMPLE));
   const report = {
     measuredOn: process.env.GITHUB_ACTIONS === "true" ? "github-actions" : "other",
     elapsedMs: Date.now() - started,
-    sample: { unscoped: unscoped.length, scoped: scoped.length },
+    sample: { unscoped: unscoped.length, scoped: scoped.length, pypi: pypiPackages.slice(0, PYPI_SAMPLE).length },
     lanes,
+    pypi,
     fetchedThisRun: result.fetchedThisRunCount ?? 0,
     truncated: result.truncated === true,
     error: result.error ?? null,
     extrapolatedFullCatalogMs: {
       catalogUnscoped: CATALOG_UNSCOPED,
       catalogScoped: CATALOG_SCOPED,
+      catalogPypi: CATALOG_PYPI,
       bulkMs: bulkExtrapolatedMs(bulk, unscoped.length),
       scopedMs: scopedExtrapolatedMs(scopedLane, scoped.length),
+      pypiMs: pypiExtrapolatedMs(pypi, pypiPackages.slice(0, PYPI_SAMPLE).length),
+      npmParallelMs: Math.max(bulkExtrapolatedMs(bulk, unscoped.length) ?? 0, scopedExtrapolatedMs(scopedLane, scoped.length) ?? 0),
     },
   };
   console.log(`NPM_LANE_TIMING ${JSON.stringify(report)}`);
