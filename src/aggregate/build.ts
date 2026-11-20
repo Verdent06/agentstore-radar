@@ -2,6 +2,7 @@ import { coverageFromManifest } from "../commands/report.ts";
 import { addUtcDays } from "../lib/dates.ts";
 import { listSnapshotDates, readApps, readManifest, readSourceRows } from "../lib/io.ts";
 import { snapshotIsPartial, type AppRow, type SourceName, type SourceRow } from "../lib/schema.ts";
+import { coreClean, type CoreCleanResult } from "../lib/window-guard.ts";
 import { loadPublicAnswerShare } from "./answer-share.ts";
 import { classifyCategory } from "./classify.ts";
 import {
@@ -134,6 +135,14 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
   const previousDate = snapshotDates.length >= 2 ? snapshotDates.at(-2) ?? null : null;
   const latestCompleteDate = completeDates.at(-1) ?? null;
   const previousCompleteDate = completeDates.length >= 2 ? completeDates.at(-2) ?? null : null;
+  const coreCleanByDate: Record<string, CoreCleanResult> = {};
+  for (const date of snapshotDates) {
+    try {
+      coreCleanByDate[date] = coreClean(readManifest(date, dataDir));
+    } catch {
+      coreCleanByDate[date] = { clean: false, reasons: [`${date}: manifest unreadable`] };
+    }
+  }
   const week = latestCompleteDate ? weekAgoDate(completeDates, latestCompleteDate) : null;
 
   const firstSeen = new Map<string, string>();
@@ -252,6 +261,7 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
       previousDate,
       weekAgoDate: week === latestDate ? null : week,
       partialDates,
+      coreCleanByDate,
       latestCompleteDate,
       previousCompleteDate,
       coverage,

@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Shell } from "@/components/shell";
 import { Delta } from "@/components/table";
 import { formatCount, formatDate } from "@/lib/format";
-import { MOVERS_PER_SIDE, movers } from "@/lib/query";
+import { MOVERS_PER_SIDE, describeGrowthWindow, movers } from "@/lib/query";
 import { appHref, loadAggregate } from "@/lib/store";
 import { METRIC_LABELS } from "@/lib/types";
 
@@ -48,7 +48,10 @@ export default async function MoversPage({ searchParams }: { searchParams: Promi
   const agg = loadAggregate();
   const { shot: shotFlag } = await searchParams;
   const shot = shotFlag === "1";
-  const npm = movers(agg, { window: "7d", metric: "npm_weekly_downloads", limit: MOVERS_PER_SIDE });
+  const week = describeGrowthWindow(agg, "7d");
+  const npm = week?.allowed
+    ? movers(agg, { window: "7d", metric: "npm_weekly_downloads", limit: MOVERS_PER_SIDE })
+    : [];
   const split = (rows: typeof npm) => ({
     up: [...rows].filter((row) => row.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, MOVERS_PER_SIDE),
     down: [...rows].filter((row) => row.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, MOVERS_PER_SIDE),
@@ -63,7 +66,9 @@ export default async function MoversPage({ searchParams }: { searchParams: Promi
             <p className="text-xs uppercase tracking-[0.25em] text-accent">Weekly movers</p>
             <h1 className="mt-2 text-4xl font-semibold tracking-tight">AgentStore Radar</h1>
             <p className="mt-2 text-sm text-muted">
-              {formatDate(agg.meta.weekAgoDate)} → {formatDate(agg.meta.latestCompleteDate ?? agg.meta.latestDate)}
+              {week?.allowed && week.label
+                ? `${week.label}${week.missingDates.length > 0 ? ` · missing ${week.missingDates.join(", ")}` : ""} · ${formatDate(week.start)} → ${formatDate(week.end)}`
+                : week?.reasons.join(" ") || "Window withheld"}
               {agg.meta.source === "fixture" || agg.meta.origin === "fixture" ? " · demo data" : ""}
             </p>
           </div>
@@ -80,8 +85,8 @@ export default async function MoversPage({ searchParams }: { searchParams: Promi
         </div>
 
         <p className="mt-6 text-xs text-muted">
-          Absolute change in npm weekly downloads over the weekly window. Public aggregates only — not a bulk
-          history dump.
+          Absolute change in npm weekly downloads over the labelled window. A multi-day jump is never shown as 1d.
+          Public aggregates only — not a bulk history dump.
         </p>
       </div>
     </Shell>

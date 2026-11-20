@@ -4,7 +4,7 @@ import {
   categories,
   categoryTrends,
   competitors,
-  growthWindow,
+  describeGrowthWindow,
   homeLeaders,
   metricLabel,
   movers,
@@ -16,6 +16,7 @@ import {
   topChart,
 } from "./query.ts";
 import { PUBLIC_DEFAULT_LIMIT, PUBLIC_TOP_N, growthBucket, roundCount } from "./public.ts";
+import { omitPypiMonthly, pausedSourceText } from "../lib/window-guard.ts";
 import { CHART_IDS, CATEGORY_SLUGS, METRIC_KEYS, type Aggregate, type CategorySlug, type ChartId, type MetricKey } from "./types.ts";
 
 export const TOOL_NAMES = [
@@ -67,7 +68,7 @@ function asCategory(value: string | undefined): CategorySlug | undefined {
 }
 
 function jsonResult(data: unknown): { content: Array<{ type: "text"; text: string }> } {
-  return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  return { content: [{ type: "text", text: JSON.stringify(omitPypiMonthly(data), null, 2) }] };
 }
 
 export function runTool(
@@ -101,7 +102,15 @@ export function runTool(
       if (!detail) {
         return jsonResult({ error: `unknown app_id: ${id}` });
       }
-      return jsonResult(detail);
+      return jsonResult({
+        ...detail,
+        app: {
+          ...detail.app,
+          geminiStars: null,
+          gemini: detail.app.stores.includes("gemini-cli") ? pausedSourceText("gemini-cli") : null,
+          smithery: detail.app.stores.includes("smithery") ? pausedSourceText("smithery") : null,
+        },
+      });
     }
     case "rank_history": {
       const id = String(args.app_id ?? args.id ?? "");
@@ -122,6 +131,14 @@ export function runTool(
         return jsonResult(chart);
       }
       const limit = typeof args.limit === "number" ? args.limit : PUBLIC_DEFAULT_LIMIT;
+      if (chart === "gemini") {
+        return jsonResult({
+          chart,
+          dated: false,
+          text: pausedSourceText("gemini-cli"),
+          rows: [],
+        });
+      }
       return jsonResult({
         chart,
         rows: topChart(agg, chart, limit).map((row) => ({
@@ -148,13 +165,42 @@ export function runTool(
         }
         metric = parsed;
       }
-      const ends = growthWindow(agg, window);
+      if (metric === "pypi_last_week_downloads") {
+        return jsonResult({
+          window: null,
+          allowed: false,
+          label: null,
+          dayCount: null,
+          missingDates: [],
+          reasons: ["PyPI growth is disabled"],
+          rows: [],
+        });
+      }
+      if (metric === "gemini_stars") {
+        return jsonResult({
+          window: null,
+          allowed: false,
+          dated: false,
+          label: null,
+          dayCount: null,
+          missingDates: [],
+          reasons: [pausedSourceText("gemini-cli")],
+          rows: [],
+        });
+      }
+      const verdict = describeGrowthWindow(agg, window);
+      const allowed = verdict?.allowed === true && (window !== "1d" || verdict.label === "1d");
       return jsonResult({
-        window,
-        from: ends?.fromDate ?? null,
-        to: ends?.toDate ?? null,
+        window: allowed ? verdict?.label ?? null : null,
+        allowed,
+        label: allowed ? verdict?.label ?? null : null,
+        dayCount: verdict?.dayCount ?? null,
+        missingDates: verdict?.missingDates ?? [],
+        reasons: verdict?.reasons ?? [],
+        from: allowed ? verdict?.start ?? null : null,
+        to: allowed ? verdict?.end ?? null : null,
         partialDates: agg.meta.partialDates ?? [],
-        rows: movers(agg, { window, metric, limit: typeof args.limit === "number" ? args.limit : PUBLIC_DEFAULT_LIMIT }),
+        rows: allowed ? movers(agg, { window, metric, limit: typeof args.limit === "number" ? args.limit : PUBLIC_DEFAULT_LIMIT }) : [],
       });
     }
     case "competitors": {

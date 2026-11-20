@@ -227,10 +227,11 @@ describe("partial snapshot exclusion", () => {
     const agg = buildAggregate(dataDir, "fixture");
     expect(agg.meta.partialDates).toEqual(["2026-10-14"]);
     const rows = movers(agg, { window: "1d", metric: "stars" });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.previous).toBe(100);
-    expect(rows[0]?.current).toBe(130);
-    expect(rows[0]?.delta).toBe(30);
+    expect(rows).toEqual([]);
+    const verdict = JSON.parse(runTool(agg, "movers", { window: "1d", metric: "stars" }).content[0]!.text);
+    expect(verdict.rows).toEqual([]);
+    expect(verdict.label).not.toBe("1d");
+    expect(verdict.window).not.toBe("1d");
   });
 
   it("uses the latest complete day when the newest snapshot is partial", () => {
@@ -242,10 +243,13 @@ describe("partial snapshot exclusion", () => {
     expect(agg.meta.latestCompleteDate).toBe("2026-10-14");
     expect(agg.meta.previousCompleteDate).toBe("2026-10-13");
     const rows = movers(agg, { window: "1d", metric: "stars" });
-    expect(rows[0]).toMatchObject({ previous: 100, current: 130, delta: 30 });
+    expect(rows).toEqual([]);
     const payload = JSON.parse(runTool(agg, "movers", { window: "1d", metric: "stars" }).content[0]!.text);
-    expect(payload.from).toBe("2026-10-13");
-    expect(payload.to).toBe("2026-10-14");
+    expect(payload.allowed).toBe(false);
+    expect(payload.rows).toEqual([]);
+    expect(payload.from).toBeNull();
+    expect(payload.to).toBeNull();
+    expect(payload.label).not.toBe("1d");
     expect(agg.meta.snapshotDates).not.toContain("2026-10-15");
     expect(agg.meta.partialDates).toEqual([]);
   });
@@ -341,7 +345,7 @@ describe("appDetail public history", () => {
     expect(JSON.stringify(history)).not.toMatch(/useCount|use_count/);
     expect(history.every((point) => !("useCount" in point))).toBe(true);
     expect(history.every((point) => point.stars == null || point.stars === round2sf(point.stars))).toBe(true);
-    expect(history.some((point) => point.starsGrowth != null || point.npmGrowth != null)).toBe(true);
+    expect(history.some((point) => point.starsGrowth != null || point.npmGrowth != null)).toBe(false);
     expect(history.every((point) => point.starsGrowth == null || /%$/.test(point.starsGrowth))).toBe(true);
     expect(history.every((point) => point.npmGrowth == null || /%$/.test(point.npmGrowth))).toBe(true);
     const afterPartial = history.find((point) => point.date === "2026-10-13");
@@ -563,7 +567,7 @@ describe("gap marking and window anchoring", () => {
       starsGrowth: null,
       gap: null,
     });
-    expect(points.find((point) => point.date === "2026-10-12")?.starsGrowth).toBeTruthy();
+    expect(points.find((point) => point.date === "2026-10-12")?.starsGrowth).toBeNull();
   });
 });
 
@@ -620,7 +624,8 @@ describe("hidden smithery chart and public use_count", () => {
 
   it("movers page keeps the complete-day window and layers the fixture source check", () => {
     const page = readFileSync(join(repoRoot, "web/app/movers/page.tsx"), "utf8");
-    expect(page).toContain("agg.meta.latestCompleteDate ?? agg.meta.latestDate");
+    expect(page).toContain("describeGrowthWindow");
+    expect(page).toContain("never shown as 1d");
     expect(page).toContain('agg.meta.source === "fixture" || agg.meta.origin === "fixture"');
     expect(page).not.toMatch(/formatDate\(agg\.meta\.weekAgoDate\)\} → \{formatDate\(agg\.meta\.latestDate\)\}/);
   });

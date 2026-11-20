@@ -153,6 +153,17 @@ export const SourceManifestSchema = z.object({
   failed: z.boolean().optional(),
   error: z.string().optional(),
   truncated: z.boolean().optional(),
+  /**
+   * Existing source ids (already in the catalog before this snapshot).
+   * Denominator for refetch share. Written by the collector; absent on older days.
+   */
+  existingCount: z.number().optional(),
+  /** Existing ids that received a fresh row today. */
+  refetchedExisting: z.number().optional(),
+  /** Rows that changed without being flagged fresh. */
+  A: z.number().optional(),
+  /** Rows flagged fresh but unchanged. Not used to decide core-clean. */
+  B: z.number().optional(),
   backfilled: z.boolean().optional(),
   backfilledFields: z.array(z.string()).optional(),
   stoppedAt: SourceStoppedAtSchema.optional(),

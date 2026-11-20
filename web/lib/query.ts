@@ -1,4 +1,16 @@
+import {
+  combinedScore,
+  evaluateMoversWindow,
+  growthMetricEnabled,
+  membershipCount,
+  pausedSourceText,
+  pointGrowthAllowed,
+  verified_from,
+  type PopularityWindow,
+} from "../../src/lib/window-guard";
 import { growthBucket, round2sf } from "./format";
+
+export { pausedSourceText, verified_from };
 import {
   CATEGORY_LABELS,
   CHART_IDS,
@@ -42,25 +54,21 @@ function completeDates(agg: Aggregate): string[] {
   return agg.meta.snapshotDates.filter((date) => !partial.has(date));
 }
 
+export function describeGrowthWindow(agg: Aggregate, requested: "1d" | "7d"): PopularityWindow | null {
+  return evaluateMoversWindow(requested, agg.meta.snapshotDates, completeDates(agg), agg.meta.coreCleanByDate ?? {});
+}
+
 function growthWindow(
   agg: Aggregate,
   window: "1d" | "7d",
-): { fromDate: string; toDate: string; fromIndex: number; toIndex: number } | null {
-  const complete = completeDates(agg);
-  const toDate = complete.at(-1);
-  if (!toDate) return null;
-  let fromDate: string | undefined;
-  if (window === "7d") {
-    const target = addUtcDays(toDate, -7);
-    fromDate = complete.filter((date) => date <= target).at(-1) ?? complete[0];
-  } else {
-    fromDate = complete.length >= 2 ? complete.at(-2) : undefined;
-  }
-  if (!fromDate || fromDate === toDate) return null;
-  const fromIndex = agg.meta.snapshotDates.indexOf(fromDate);
-  const toIndex = agg.meta.snapshotDates.indexOf(toDate);
+): { fromDate: string; toDate: string; fromIndex: number; toIndex: number; label: string } | null {
+  const verdict = describeGrowthWindow(agg, window);
+  if (!verdict?.allowed || verdict.label == null) return null;
+  if (window === "1d" && verdict.label !== "1d") return null;
+  const fromIndex = agg.meta.snapshotDates.indexOf(verdict.start);
+  const toIndex = agg.meta.snapshotDates.indexOf(verdict.end);
   if (fromIndex < 0 || toIndex < 0) return null;
-  return { fromDate, toDate, fromIndex, toIndex };
+  return { fromDate: verdict.start, toDate: verdict.end, fromIndex, toIndex, label: verdict.label };
 }
 
 export function findApp(agg: Aggregate, id: string): AppSummary | undefined {
@@ -159,7 +167,7 @@ function publicHistoryWindow(agg: Aggregate, capDays = HISTORY_CAP_DAYS): Public
 }
 
 function publicMetricSeries(agg: Aggregate, id: string, metric: MetricKey): PublicMetricPoint[] {
-  let previous: { index: number; value: number } | null = null;
+  let previous: { index: number; date: string; value: number } | null = null;
   return publicHistoryWindow(agg).map((day) => {
     if (day.gap) {
       previous = null;
@@ -170,9 +178,14 @@ function publicMetricSeries(agg: Aggregate, id: string, metric: MetricKey): Publ
       previous = null;
       return { date: day.date, value: null, growth: null, gap: "missing" };
     }
-    if (seriesCarried(agg, id, metric, index)) {
+    if (metric === "gemini_stars" || seriesCarried(agg, id, metric, index)) {
       previous = null;
-      return { date: day.date, value: null, growth: null, gap: "carried_forward" };
+      return {
+        date: day.date,
+        value: null,
+        growth: null,
+        gap: metric === "gemini_stars" ? null : "carried_forward",
+      };
     }
     const raw = seriesValue(agg, id, metric, index);
     const value = raw == null ? null : round2sf(raw);
@@ -181,8 +194,15 @@ function publicMetricSeries(agg: Aggregate, id: string, metric: MetricKey): Publ
       return { date: day.date, value: null, growth: null, gap: "missing" };
     }
     const broken = previous != null && starsSourceBreak(agg, id, metric, previous.index, index);
-    const growth = broken || previous == null || previous.value === 0 ? null : growthBucket((value - previous.value) / previous.value);
-    previous = { index, value };
+    const rawGrowth = broken || previous == null || previous.value === 0 ? null : growthBucket((value - previous.value) / previous.value);
+    const growth =
+      rawGrowth != null &&
+      growthMetricEnabled(metric) &&
+      previous != null &&
+      pointGrowthAllowed(previous.date, day.date, agg.meta.snapshotDates, agg.meta.coreCleanByDate)
+        ? rawGrowth
+        : null;
+    previous = { index, date: day.date, value };
     return { date: day.date, value, growth, gap: null };
   });
 }
@@ -219,8 +239,9 @@ export function topChart(agg: Aggregate, chart: ChartId, limit = PUBLIC_TOP_N): 
     .map((app) => ({ app, value: metricFromApp(app, metric) }))
     .filter((row): row is { app: AppSummary; value: number } => row.value != null)
     .sort((a, b) => b.value - a.value || a.app.id.localeCompare(b.app.id));
-  const prevDate = agg.meta.previousCompleteDate ?? agg.meta.previousDate;
-  const prevIndex = prevDate ? agg.meta.snapshotDates.indexOf(prevDate) : -1;
+  const dayWindow = describeGrowthWindow(agg, "1d");
+  const showDelta = dayWindow?.allowed === true && dayWindow.label === "1d";
+  const prevIndex = showDelta ? agg.meta.snapshotDates.indexOf(dayWindow.start) : -1;
   const prevRank = new Map<string, number>();
   if (prevIndex >= 0) {
     agg.apps
@@ -239,11 +260,11 @@ export function topChart(agg: Aggregate, chart: ChartId, limit = PUBLIC_TOP_N): 
         : null;
     return {
       rank: index + 1,
-      previousRank: prevRank.get(row.app.id) ?? null,
+      previousRank: showDelta ? (prevRank.get(row.app.id) ?? null) : null,
       app: row.app,
       value: row.value,
-      previousValue,
-      delta: previousValue == null ? null : row.value - previousValue,
+      previousValue: showDelta ? previousValue : null,
+      delta: showDelta && previousValue != null ? row.value - previousValue : null,
     };
   });
 }
@@ -256,7 +277,9 @@ export function movers(
   const range = growthWindow(agg, window);
   if (!range) return [];
   const { fromIndex, toIndex } = range;
-  const metrics: MetricKey[] = options?.metric ? [options.metric] : DEFAULT_MOVER_METRICS;
+  const metrics: MetricKey[] = (options?.metric ? [options.metric] : DEFAULT_MOVER_METRICS).filter((metric) =>
+    growthMetricEnabled(metric),
+  );
   const limit = clamp(options?.limit, MOVERS_PER_SIDE);
   const out: MoverRow[] = [];
   for (const metric of metrics) {
@@ -264,7 +287,7 @@ export function movers(
     for (const app of agg.apps) {
       if (seriesCarried(agg, app.id, metric, toIndex)) continue;
       const current = seriesValue(agg, app.id, metric, toIndex);
-      const prevIndex = previousFreshIndex(agg, app.id, metric, fromIndex, window === "7d");
+      const prevIndex = previousFreshIndex(agg, app.id, metric, fromIndex, false);
       if (prevIndex == null || current == null) continue;
       if (starsSourceBreak(agg, app.id, metric, prevIndex, toIndex)) continue;
       const previous = seriesValue(agg, app.id, metric, prevIndex);
@@ -326,8 +349,20 @@ export function searchApps(agg: Aggregate, query: string, limit = PUBLIC_TOP_N):
 
 export function multiStoreApps(agg: Aggregate, limit = PUBLIC_TOP_N): AppSummary[] {
   return agg.apps
-    .filter((app) => app.stores.length >= 2)
-    .sort((a, b) => b.stores.length - a.stores.length || (b.stars ?? -1) - (a.stars ?? -1))
+    .filter((app) => membershipCount(app.stores) >= 2)
+    .sort(
+      (a, b) =>
+        membershipCount(b.stores) - membershipCount(a.stores) ||
+        combinedScore({
+          github: b.starsSource === "gemini-cli" ? null : b.stars,
+          npm: b.npmWeeklyDownloads,
+        }) -
+          combinedScore({
+            github: a.starsSource === "gemini-cli" ? null : a.stars,
+            npm: a.npmWeeklyDownloads,
+          }) ||
+        a.id.localeCompare(b.id),
+    )
     .slice(0, clamp(limit, PUBLIC_TOP_N));
 }
 
