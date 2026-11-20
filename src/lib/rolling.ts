@@ -83,7 +83,11 @@ export function selectRunBatch(
   return takeRunBatch(prioritizeStalestFirst(dueKeys, lastFetched, scoreOf), limit);
 }
 
-/** True when the stored value was not fetched for this snapshot day (and is not this run's live fetch). */
+/**
+ * True when the stored value was not fetched for this snapshot day.
+ * Due-key selection uses this so a later run the same day does not call the
+ * API again. Row freshness is stricter: `isFetchedThisRun`.
+ */
 export function isCarriedForward(
   lastFetchedAt: string | null | undefined,
   snapshotDate: string,
@@ -96,6 +100,11 @@ export function isCarriedForward(
     return false;
   }
   return lastFetchedAt.slice(0, 10) !== snapshotDate;
+}
+
+/** This run wrote the stamp. An earlier same-day fetch is not this run. */
+export function isFetchedThisRun(lastFetchedAt: string | null | undefined, collectedAt: string): boolean {
+  return Boolean(lastFetchedAt) && lastFetchedAt === collectedAt;
 }
 
 export function selectDueKeys(

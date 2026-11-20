@@ -10,8 +10,8 @@ import {
   clearCheckpoint,
   countFresh,
   countFreshToday,
-  isCarriedForward,
   isDueUnresolved,
+  isFetchedThisRun,
   loadCheckpoint,
   loadEntityCache,
   loadLastFetched,
@@ -21,8 +21,8 @@ import {
   persistLastFetched,
   persistUnresolved,
   resumeDailyDueKeys,
-  selectRunBatch,
 } from "../lib/rolling.ts";
+import { planExistingRefetch } from "../lib/refetch-coverage.ts";
 import { emptySourceRow, withObservation, type SourceRow } from "../lib/schema.ts";
 import { chunk, sleep as defaultSleep } from "../lib/util.ts";
 import { sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "./types.ts";
@@ -222,9 +222,10 @@ function recordsFromCache(
     if (row) {
       const fetchedAt = lastFetched[key] ?? null;
       const unresolved = unresolvedKeys.has(key);
-      records.push(
-        withObservation(row, fetchedAt, unresolved || isCarriedForward(fetchedAt, snapshotDate, collectedAt)),
-      );
+      // Fresh only when this run stored its own stamp. A same-day stamp from
+      // an earlier collect stays carried_forward and keeps that older time.
+      const carried = unresolved || !isFetchedThisRun(fetchedAt, collectedAt);
+      records.push(withObservation(row, fetchedAt, carried));
     }
   }
   return records;
@@ -249,12 +250,16 @@ export const githubAdapter: SourceAdapter = {
       }
     }
     const fetchDue = unorderedDue.filter((key) => isDueUnresolved(unresolvedMap[key], ctx.now));
-    const dueKeys = selectRunBatch(
+    const rotation = planExistingRefetch(
       fetchDue,
       lastFetched,
       runBatchSize(ctx.env, "RADAR_GITHUB_BATCH", GITHUB_RUN_BATCH),
-      (key) => cachedStars(cache[key]),
+      {
+        hasPrior: (key) => lastFetched[key] != null || cache[key] != null,
+        scoreOf: (key) => cachedStars(cache[key]),
+      },
     );
+    const dueKeys = rotation.keys;
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
     const budget = adoptSourceBudget(ctx, "github");
@@ -277,6 +282,9 @@ export const githubAdapter: SourceAdapter = {
       const unresolvedCount = allKeys.filter((key) => unresolvedKeys.has(key)).length;
       const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
       const fetchedShare = freshFetchedShare(records, allKeys.length, unresolvedCount);
+      const stampedThisRun = records.filter(
+        (row) => isFetchedThisRun(row.fetched_at, fetchedAt) && row.carried_forward !== true,
+      ).length;
       const lastFetchedAt = Object.values(lastFetched).sort().at(-1);
       persistLastFetched(ctx.dataDir, "github", lastFetched);
       persistEntityCache(ctx.dataDir, "github", cache);
@@ -306,7 +314,7 @@ export const githubAdapter: SourceAdapter = {
         eligibleCount: allKeys.length,
         freshTodayCount,
         freshWithin7dCount,
-        fetchedThisRunCount: input.fetchedThisRun,
+        fetchedThisRunCount: stampedThisRun,
         fetchedShare,
         coverage,
         lastFetchedAt,
@@ -358,6 +366,9 @@ export const githubAdapter: SourceAdapter = {
       due: unorderedDue.length,
       fetchDue: fetchDue.length,
       knownUnresolved: unresolvedKeys.size,
+      existing: rotation.existingKeys.length,
+      existingTarget: rotation.existingTarget,
+      newIds: rotation.newKeys.length,
       batch: dueKeys.length,
       resumed,
       batches: Math.ceil(dueKeys.length / GITHUB_GRAPHQL_BATCH),
