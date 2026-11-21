@@ -192,7 +192,7 @@ describe("github growth adapter", () => {
     expect(calls).toBe(0);
     expect(result.fetchedThisRunCount).toBe(0);
     expect(result.freshTodayCount).toBe(1);
-    expect(result.records[0]?.carried_forward).toBe(true);
+    expect(result.records[0]?.carried_forward).toBe(false);
     expect(result.records[0]?.fetched_at).toBe("2026-10-15T06:00:00Z");
     expect(result.records[0]?.fetched_at).not.toBe("2026-10-15T12:00:00Z");
   });

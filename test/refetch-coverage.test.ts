@@ -434,4 +434,146 @@ describe("collect refetch manifest", () => {
     expect(summary).toContain("| pass |");
     expect(summary).not.toContain("| pypi |");
   });
+
+  it("keeps the first run's fresh rows on a second same-day collect and lets that run finish npm", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-same-day-"));
+    const day = "2026-11-03";
+    const morning = `${day}T05:41:00.000Z`;
+    const evening = `${day}T19:23:00.000Z`;
+    let nowMs = 0;
+    const servers = ["one", "two"].map((name) => ({
+      server: {
+        name: `io.github.example/${name}`,
+        version: "1.0.0",
+        repository: { url: `https://github.com/example/${name}`, source: "github" },
+        packages: [{ registryType: "npm", identifier: `@scope/${name}` }],
+      },
+    }));
+    let githubCalls = 0;
+    const http = createHttpClient({
+      maxRetries: 0,
+      sleep: async () => {},
+      fetchImpl: async (input, init) => {
+        const url = String(input);
+        if (url.includes("registry.modelcontextprotocol.io")) {
+          return new Response(JSON.stringify({ servers, metadata: { count: servers.length } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url.includes("api.github.com/graphql")) {
+          githubCalls += 1;
+          const raw = String(init?.body ?? "");
+          let query = raw;
+          try {
+            const parsed = JSON.parse(raw) as { query?: string };
+            if (parsed.query) query = parsed.query;
+          } catch {
+            // raw query
+          }
+          const data: Record<string, unknown> = {};
+          const pattern = /r(\d+): repository\(owner: "([^"]+)", name: "([^"]+)"\)/g;
+          for (const match of query.matchAll(pattern)) {
+            const owner = match[2] ?? "";
+            const repo = match[3] ?? "";
+            data[`r${match[1]}`] = {
+              nameWithOwner: `${owner}/${repo}`,
+              url: `https://github.com/${owner}/${repo}`,
+              stargazerCount: 9,
+              forkCount: 1,
+              pushedAt: "2026-11-01T00:00:00Z",
+              isArchived: false,
+              issues: { totalCount: 0 },
+            };
+          }
+          return new Response(JSON.stringify({ data }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        if (url.includes("api.npmjs.org")) {
+          nowMs += 120_000;
+          const name = url.includes("two") ? "@scope/two" : "@scope/one";
+          return new Response(JSON.stringify({ downloads: 4, package: name }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      },
+    });
+    const base = {
+      dataDir,
+      log: silent,
+      sourceAttempts: 1,
+      sleep: async () => {},
+      http,
+      monotonicNow: () => nowMs,
+      sources: ["mcp-registry", "github", "npm"] as const,
+    };
+
+    const baseline = await collect({
+      ...base,
+      sources: [...base.sources],
+      date: "2026-11-02",
+      now: new Date("2026-11-02T12:00:00.000Z"),
+      env: { GH_STATS_TOKEN: "stats-token", RADAR_NPM_SCOPED_CONCURRENCY: "1" },
+    });
+    expect(baseline.wrote).toBe(true);
+
+    githubCalls = 0;
+    const first = await collect({
+      ...base,
+      sources: [...base.sources],
+      date: day,
+      now: new Date(morning),
+      runId: "primary",
+      env: {
+        GH_STATS_TOKEN: "stats-token",
+        RADAR_NPM_BUDGET_MS: "60000",
+        RADAR_NPM_SCOPED_CONCURRENCY: "1",
+      },
+    });
+    expect(first.wrote).toBe(true);
+    expect(first.manifest?.partial).toBe(true);
+    expect(first.manifest?.sources.find((source) => source.source === "npm")?.truncated).toBe(true);
+    const morningGithub = readSourceRows(day, dataDir).filter((row) => row.source === "github");
+    expect(morningGithub.length).toBe(2);
+    expect(morningGithub.every((row) => row.carried_forward === false && row.fetched_at === morning)).toBe(true);
+    expect(githubCalls).toBe(1);
+
+    githubCalls = 0;
+    const second = await collect({
+      ...base,
+      sources: [...base.sources],
+      date: day,
+      now: new Date(evening),
+      runId: "backstop",
+      ifIncomplete: true,
+      env: { GH_STATS_TOKEN: "stats-token", RADAR_NPM_SCOPED_CONCURRENCY: "1" },
+    });
+    expect(second.wrote).toBe(true);
+    expect(second.skipReason).toBeUndefined();
+    expect(second.manifest?.partial).toBe(false);
+
+    const rows = readSourceRows(day, dataDir);
+    const githubRows = rows.filter((row) => row.source === "github");
+    expect(githubRows).toHaveLength(2);
+    expect(githubRows.every((row) => row.carried_forward === false && row.fetched_at === morning)).toBe(true);
+    expect(githubCalls).toBe(0);
+
+    const npmRows = rows.filter((row) => row.source === "npm");
+    expect(npmRows.map((row) => row.source_id).sort()).toEqual(["@scope/one", "@scope/two"]);
+    expect(npmRows.every((row) => row.carried_forward === false && row.frozen !== true)).toBe(true);
+    expect(new Set(npmRows.map((row) => row.fetched_at))).toEqual(new Set([morning, evening]));
+
+    const manifest = readManifest(day, dataDir);
+    const github = manifest.sources.find((source) => source.source === "github");
+    const npm = manifest.sources.find((source) => source.source === "npm");
+    expect(github?.fetchedThisRunCount).toBe(0);
+    expect(github?.refetchedExisting).toBe(2);
+    expect(github?.refetchedExistingShare).toBe(1);
+    expect(github?.existingRows).toBe(2);
+    expect(npm?.truncated).toBe(false);
+    expect(npm?.refetchedExisting).toBe(2);
+    expect(npm?.refetchedExistingShare).toBe(1);
+    expect(npm?.fetchRunIds).toEqual(["primary", "backstop"]);
+  });
 });

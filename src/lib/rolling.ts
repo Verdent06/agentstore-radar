@@ -84,9 +84,9 @@ export function selectRunBatch(
 }
 
 /**
- * True when the stored value was not fetched for this snapshot day.
- * Due-key selection uses this so a later run the same day does not call the
- * API again. Row freshness is stricter: `isFetchedThisRun`.
+ * True when no run has fetched this key on the snapshot's UTC date.
+ * The stamp is written only by a real fetch. A later run the same day keeps
+ * that earlier stamp and still counts the row fresh.
  */
 export function isCarriedForward(
   lastFetchedAt: string | null | undefined,
@@ -100,11 +100,6 @@ export function isCarriedForward(
     return false;
   }
   return lastFetchedAt.slice(0, 10) !== snapshotDate;
-}
-
-/** This run wrote the stamp. An earlier same-day fetch is not this run. */
-export function isFetchedThisRun(lastFetchedAt: string | null | undefined, collectedAt: string): boolean {
-  return Boolean(lastFetchedAt) && lastFetchedAt === collectedAt;
 }
 
 export function selectDueKeys(

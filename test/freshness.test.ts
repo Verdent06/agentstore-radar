@@ -83,7 +83,7 @@ describe("metric freshness", () => {
     });
   });
 
-  it("keeps an earlier same-day fetch carried_forward with its original fetched_at", async () => {
+  it("keeps an earlier same-day fetch fresh and does not rewrite its fetched_at", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-fresh-sameday-"));
     persistLastFetched(dataDir, "github", { "example/weather": "2026-10-16T06:00:00Z" });
     persistEntityCache(dataDir, "github", {
@@ -111,14 +111,15 @@ describe("metric freshness", () => {
     expect(calls).toBe(0);
     expect(result.records[0]).toMatchObject({
       stars: 42,
-      carried_forward: true,
+      carried_forward: false,
       fetched_at: "2026-10-16T06:00:00Z",
     });
     expect(result.records[0]?.fetched_at).not.toBe("2026-10-16T18:00:00Z");
     expect(result.fetchedThisRunCount).toBe(0);
+    expect(result.freshTodayCount).toBe(1);
   });
 
-  it("never flags an unfetched GitHub or npm row fresh and never gives it this run's fetched_at", async () => {
+  it("keeps a same-day stamp fresh and leaves a row no run fetched that day carried_forward", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-fresh-unfetched-"));
     const collectedAt = "2026-10-16T18:00:00Z";
     const morning = "2026-10-16T06:00:00Z";
@@ -206,12 +207,10 @@ describe("metric freshness", () => {
     const morningRow = github.records.find((row) => row.source_id === "example/morning");
     const yesterdayRow = github.records.find((row) => row.source_id === "example/yesterday");
     expect(live).toMatchObject({ carried_forward: false, frozen: false, fetched_at: collectedAt, stars: 11 });
-    expect(morningRow).toMatchObject({ carried_forward: true, fetched_at: morning, stars: 3 });
+    expect(morningRow).toMatchObject({ carried_forward: false, frozen: false, fetched_at: morning, stars: 3 });
     expect(yesterdayRow).toMatchObject({ carried_forward: true, fetched_at: yesterday, stars: 4 });
-    for (const row of [morningRow, yesterdayRow]) {
-      expect(row?.carried_forward).toBe(true);
-      expect(row?.fetched_at).not.toBe(collectedAt);
-    }
+    expect(morningRow?.fetched_at).not.toBe(collectedAt);
+    expect(yesterdayRow?.fetched_at).not.toBe(collectedAt);
     expect(github.fetchedThisRunCount).toBe(1);
 
     const npm = await npmAdapter.collect(
@@ -242,16 +241,16 @@ describe("metric freshness", () => {
       }),
     );
     const freshNpm = npm.records.filter((row) => row.carried_forward !== true && row.frozen !== true);
-    expect(freshNpm.map((row) => row.source_id).sort()).toEqual(["also-live", "live-pkg"]);
-    expect(freshNpm.every((row) => row.fetched_at === collectedAt)).toBe(true);
-    expect(npm.fetchedThisRunCount).toBe(freshNpm.length);
+    expect(freshNpm.map((row) => row.source_id).sort()).toEqual(["also-live", "live-pkg", "morning-pkg"]);
+    expect(npm.fetchedThisRunCount).toBe(2);
     expect(npm.lanes?.find((lane) => lane.lane === "bulk")?.fetched).toBe(2);
     const npmMorning = npm.records.find((row) => row.source_id === "morning-pkg");
     const npmSkipped = npm.records.find((row) => row.source_id === "skipped-pkg");
-    expect(npmMorning).toMatchObject({ carried_forward: true, fetched_at: morning, npm_weekly_downloads: 8 });
+    expect(npmMorning).toMatchObject({ carried_forward: false, fetched_at: morning, npm_weekly_downloads: 8 });
     expect(npmSkipped).toMatchObject({ carried_forward: true, fetched_at: yesterday, npm_weekly_downloads: 9 });
     expect(npmMorning?.fetched_at).not.toBe(collectedAt);
     expect(npmSkipped?.fetched_at).not.toBe(collectedAt);
+    expect(freshNpm.find((row) => row.source_id === "live-pkg")?.fetched_at).toBe(collectedAt);
   });
 
   it("marks cached GitHub rows as carried_forward with the original fetched_at when this run did not refresh them", async () => {

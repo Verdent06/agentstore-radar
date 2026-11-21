@@ -10,8 +10,8 @@ import {
   clearCheckpoint,
   countFresh,
   countFreshToday,
+  isCarriedForward,
   isDueUnresolved,
-  isFetchedThisRun,
   loadCheckpoint,
   loadEntityCache,
   loadLastFetched,
@@ -222,9 +222,9 @@ function recordsFromCache(
     if (row) {
       const fetchedAt = lastFetched[key] ?? null;
       const unresolved = unresolvedKeys.has(key);
-      // Fresh only when this run stored its own stamp. A same-day stamp from
-      // an earlier collect stays carried_forward and keeps that older time.
-      const carried = unresolved || !isFetchedThisRun(fetchedAt, collectedAt);
+      // Fresh when any run fetched this key on the snapshot day. The stamp
+      // stays the time of that fetch; this run does not rewrite it.
+      const carried = unresolved || isCarriedForward(fetchedAt, snapshotDate, collectedAt);
       records.push(withObservation(row, fetchedAt, carried));
     }
   }
@@ -282,9 +282,6 @@ export const githubAdapter: SourceAdapter = {
       const unresolvedCount = allKeys.filter((key) => unresolvedKeys.has(key)).length;
       const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
       const fetchedShare = freshFetchedShare(records, allKeys.length, unresolvedCount);
-      const stampedThisRun = records.filter(
-        (row) => isFetchedThisRun(row.fetched_at, fetchedAt) && row.carried_forward !== true,
-      ).length;
       const lastFetchedAt = Object.values(lastFetched).sort().at(-1);
       persistLastFetched(ctx.dataDir, "github", lastFetched);
       persistEntityCache(ctx.dataDir, "github", cache);
@@ -314,7 +311,7 @@ export const githubAdapter: SourceAdapter = {
         eligibleCount: allKeys.length,
         freshTodayCount,
         freshWithin7dCount,
-        fetchedThisRunCount: stampedThisRun,
+        fetchedThisRunCount: input.fetchedThisRun,
         fetchedShare,
         coverage,
         lastFetchedAt,

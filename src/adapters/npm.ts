@@ -19,7 +19,7 @@ import {
   clearCheckpoint,
   countFresh,
   countFreshToday,
-  isFetchedThisRun,
+  isCarriedForward,
   loadCheckpoint,
   loadEntityCache,
   loadLastFetched,
@@ -128,7 +128,7 @@ function recordsFromCache(
     const row = normalizeNpmPoint(snapshotDate, name, item);
     if (row) {
       const fetchedAt = lastFetched[name] ?? null;
-      const carried = !isFetchedThisRun(fetchedAt, collectedAt);
+      const carried = isCarriedForward(fetchedAt, snapshotDate, collectedAt);
       records.push(withObservation(row, fetchedAt, carried, freezeUnfetched && carried));
     }
   }
@@ -218,9 +218,6 @@ export const npmAdapter: SourceAdapter = {
       const freshWithin7dCount = countFresh(allKeys, lastFetched, ctx.now);
       const { coverage } = computeCoverage(allKeys.length, freshTodayCount);
       const fetchedShare = freshFetchedShare(records, allKeys.length);
-      const stampedThisRun = records.filter(
-        (row) => isFetchedThisRun(row.fetched_at, fetchedAt) && row.carried_forward !== true,
-      ).length;
       persistLastFetched(ctx.dataDir, "npm", lastFetched);
       persistEntityCache(ctx.dataDir, "npm", cache);
       const nextIndex = checkpointNextIndex(walkOrder, lastFetched, ctx.snapshotDate, fetchedAt);
@@ -243,7 +240,7 @@ export const npmAdapter: SourceAdapter = {
         eligibleCount: allKeys.length,
         freshTodayCount,
         freshWithin7dCount,
-        fetchedThisRunCount: stampedThisRun,
+        fetchedThisRunCount: input.fetchedThisRun,
         fetchedShare,
         coverage,
         lastFetchedAt: Object.values(lastFetched).sort().at(-1),
