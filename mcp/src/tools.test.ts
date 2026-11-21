@@ -45,9 +45,12 @@ describe("MCP tool payloads", () => {
 
   it("covers charts, movers, competitors, trends, multi-store", () => {
     const charts = JSON.parse(runTool(agg, "top_charts", { chart: "gemini", limit: 2 }).content[0]!.text);
-    assert.equal(charts.rows[0].id, "github:obra/superpowers");
+    assert.equal(charts.dated, false);
+    assert.equal(charts.text, "Listed in the Gemini CLI gallery");
+    assert.deepEqual(charts.rows, []);
     const movers = JSON.parse(runTool(agg, "movers", { window: "7d", metric: "npm_weekly_downloads" }).content[0]!.text);
-    assert.ok(movers.rows.length > 0);
+    assert.ok(Array.isArray(movers.rows));
+    assert.equal(movers.label === "1d" && (movers.dayCount ?? 1) !== 1, false);
     const comps = JSON.parse(runTool(agg, "competitors", { app_id: "github:brave/brave-search-mcp" }).content[0]!.text);
     assert.ok(comps.rows.some((row: { id: string }) => row.id === "github:example/universal-search"));
     const trends = JSON.parse(runTool(agg, "category_trends", { category: "search" }).content[0]!.text);

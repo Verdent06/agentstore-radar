@@ -185,6 +185,8 @@ export type AggregateMeta = {
   weekAgoDate: string | null;
   /** Snapshot dates `snapshotIsPartial` treated as incomplete. */
   partialDates: string[];
+  /** Per-day core-clean decision read from that day's manifest. Not a hardcoded date list. */
+  coreCleanByDate?: Record<string, { clean: boolean; reasons: string[] }>;
   latestCompleteDate?: string | null;
   previousCompleteDate?: string | null;
   coverage: CoverageRow[];
