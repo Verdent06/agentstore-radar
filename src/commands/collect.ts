@@ -13,6 +13,7 @@ import {
   cleanupBrokenNormalizedEntries,
   dataPaths,
   inspectSnapshot,
+  previousSnapshotDate,
   readManifest,
   readSourceRows,
   resolveDataDir,
@@ -25,6 +26,7 @@ import {
 import { createLogger, type Logger } from "../lib/logger.ts";
 import { linkCrossStore, linkSourceRows, ownerDecisionCounts, tieDecidedPackageOwners } from "../lib/matching.ts";
 import { mergeApps } from "../lib/merge.ts";
+import { formatRefetchStepSummary, withRefetchStats } from "../lib/refetch-coverage.ts";
 import { retryAsync, type SleepFn } from "../lib/retry.ts";
 import type { SnapshotManifest, SourceManifest, SourceName, SourceRow } from "../lib/schema.ts";
 import { SOURCE_NAMES } from "../lib/schema.ts";
@@ -358,6 +360,18 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     }
   }
   const sourceManifests: SourceManifest[] = [];
+  const priorDate = previousSnapshotDate(snapshotDate, dataDir);
+  let priorRows: SourceRow[] = [];
+  if (priorDate) {
+    try {
+      priorRows = readSourceRows(priorDate, dataDir);
+    } catch (error) {
+      log.warn("could not read previous snapshot for refetch counts", {
+        date: priorDate,
+        error: errorMessage(error),
+      });
+    }
+  }
 
   for (const result of results) {
     let rawFile: string | undefined;
@@ -367,7 +381,12 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
       log.info(`wrote ${rawFile}`, { source: result.source, rows: result.rowCount });
     }
     const previousSource = previousManifest?.sources.find((source) => source.source === result.source);
-    sourceManifests.push(mergeFetchSpan(previousSource, toSourceManifest(result, rawFile), runId));
+    const sourceManifest = withRefetchStats(
+      mergeFetchSpan(previousSource, toSourceManifest(result, rawFile), runId),
+      sourceRows,
+      priorRows,
+    );
+    sourceManifests.push(sourceManifest);
   }
 
   const partial = incompleteSources.length > 0;
@@ -440,6 +459,7 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     incompleteSources,
     completedSources,
   });
+  appendJobSummary(options.env ?? process.env, formatRefetchStepSummary(snapshotDate, sourceManifests));
   return {
     ok: true,
     skipped: false,

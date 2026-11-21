@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { githubAdapter } from "../src/adapters/github.ts";
+import { npmAdapter } from "../src/adapters/npm.ts";
 import { createDiscoveredRefs, type CollectContext } from "../src/adapters/types.ts";
 import { buildAggregate } from "../src/aggregate/build.ts";
 import { movers } from "../src/aggregate/query.ts";
@@ -82,7 +83,7 @@ describe("metric freshness", () => {
     });
   });
 
-  it("does not mark a same-day last_fetched cache hit as carried_forward", async () => {
+  it("keeps an earlier same-day fetch fresh and does not rewrite its fetched_at", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-fresh-sameday-"));
     persistLastFetched(dataDir, "github", { "example/weather": "2026-10-16T06:00:00Z" });
     persistEntityCache(dataDir, "github", {
@@ -113,6 +114,143 @@ describe("metric freshness", () => {
       carried_forward: false,
       fetched_at: "2026-10-16T06:00:00Z",
     });
+    expect(result.records[0]?.fetched_at).not.toBe("2026-10-16T18:00:00Z");
+    expect(result.fetchedThisRunCount).toBe(0);
+    expect(result.freshTodayCount).toBe(1);
+  });
+
+  it("keeps a same-day stamp fresh and leaves a row no run fetched that day carried_forward", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-fresh-unfetched-"));
+    const collectedAt = "2026-10-16T18:00:00Z";
+    const morning = "2026-10-16T06:00:00Z";
+    const yesterday = "2026-10-15T12:00:00Z";
+    persistLastFetched(dataDir, "github", {
+      "example/morning": morning,
+      "example/yesterday": yesterday,
+    });
+    persistEntityCache(dataDir, "github", {
+      "example/morning": {
+        nameWithOwner: "example/morning",
+        url: "https://github.com/example/morning",
+        stargazerCount: 3,
+        forkCount: 0,
+        pushedAt: "2026-10-01T00:00:00Z",
+        isArchived: false,
+        issues: { totalCount: 0 },
+      },
+      "example/yesterday": {
+        nameWithOwner: "example/yesterday",
+        url: "https://github.com/example/yesterday",
+        stargazerCount: 4,
+        forkCount: 0,
+        pushedAt: "2026-10-01T00:00:00Z",
+        isArchived: false,
+        issues: { totalCount: 0 },
+      },
+    });
+    persistLastFetched(dataDir, "npm", {
+      "morning-pkg": morning,
+      "skipped-pkg": yesterday,
+    });
+    persistEntityCache(dataDir, "npm", {
+      "morning-pkg": { downloads: 8, package: "morning-pkg" },
+      "skipped-pkg": { downloads: 9, package: "skipped-pkg" },
+    });
+    const discovered = createDiscoveredRefs();
+    discovered.githubRepos.set("example/live", { owner: "example", repo: "live" });
+    discovered.githubRepos.set("example/morning", { owner: "example", repo: "morning" });
+    discovered.githubRepos.set("example/yesterday", { owner: "example", repo: "yesterday" });
+    discovered.npmPackages.add("live-pkg");
+    discovered.npmPackages.add("also-live");
+    discovered.npmPackages.add("morning-pkg");
+    discovered.npmPackages.add("skipped-pkg");
+
+    const github = await githubAdapter.collect(
+      ctx({
+        snapshotDate: "2026-10-16",
+        collectedAt,
+        now: new Date(collectedAt),
+        dataDir,
+        discovered,
+        http: createHttpClient({
+          fetchImpl: async (_input, init) => {
+            const raw = String(init?.body ?? "");
+            let query = raw;
+            try {
+              const parsed = JSON.parse(raw) as { query?: string };
+              if (parsed.query) query = parsed.query;
+            } catch {
+              // raw query
+            }
+            const data: Record<string, unknown> = {};
+            const pattern = /r(\d+): repository\(owner: "([^"]+)", name: "([^"]+)"\)/g;
+            for (const match of query.matchAll(pattern)) {
+              if (match[3] !== "live" && match[3] !== "yesterday") continue;
+              if (match[3] === "yesterday") continue;
+              data[`r${match[1]}`] = {
+                nameWithOwner: "example/live",
+                url: "https://github.com/example/live",
+                stargazerCount: 11,
+                forkCount: 0,
+                pushedAt: "2026-10-01T00:00:00Z",
+                isArchived: false,
+                issues: { totalCount: 0 },
+              };
+            }
+            return new Response(JSON.stringify({ data }), { status: 200, headers: { "content-type": "application/json" } });
+          },
+          maxRetries: 0,
+        }),
+      }),
+    );
+    const live = github.records.find((row) => row.source_id === "example/live");
+    const morningRow = github.records.find((row) => row.source_id === "example/morning");
+    const yesterdayRow = github.records.find((row) => row.source_id === "example/yesterday");
+    expect(live).toMatchObject({ carried_forward: false, frozen: false, fetched_at: collectedAt, stars: 11 });
+    expect(morningRow).toMatchObject({ carried_forward: false, frozen: false, fetched_at: morning, stars: 3 });
+    expect(yesterdayRow).toMatchObject({ carried_forward: true, fetched_at: yesterday, stars: 4 });
+    expect(morningRow?.fetched_at).not.toBe(collectedAt);
+    expect(yesterdayRow?.fetched_at).not.toBe(collectedAt);
+    expect(github.fetchedThisRunCount).toBe(1);
+
+    const npm = await npmAdapter.collect(
+      ctx({
+        snapshotDate: "2026-10-16",
+        collectedAt,
+        now: new Date(collectedAt),
+        dataDir,
+        discovered,
+        env: { GITHUB_TOKEN: "test-token" },
+        http: createHttpClient({
+          fetchImpl: async (input) => {
+            const url = String(input);
+            expect(url).not.toContain("morning-pkg");
+            if (url.includes("live-pkg")) {
+              return new Response(
+                JSON.stringify({
+                  "live-pkg": { downloads: 21, package: "live-pkg" },
+                  "also-live": { downloads: 22, package: "also-live" },
+                }),
+                { status: 200, headers: { "content-type": "application/json" } },
+              );
+            }
+            return new Response("not found", { status: 404 });
+          },
+          maxRetries: 0,
+        }),
+      }),
+    );
+    const freshNpm = npm.records.filter((row) => row.carried_forward !== true && row.frozen !== true);
+    expect(freshNpm.map((row) => row.source_id).sort()).toEqual(["also-live", "live-pkg", "morning-pkg"]);
+    expect(npm.fetchedThisRunCount).toBe(2);
+    expect(npm.lanes?.find((lane) => lane.lane === "bulk")?.fetched).toBe(2);
+    const npmMorning = npm.records.find((row) => row.source_id === "morning-pkg");
+    const npmSkipped = npm.records.find((row) => row.source_id === "skipped-pkg");
+    expect(npmMorning).toMatchObject({ carried_forward: false, fetched_at: morning, npm_weekly_downloads: 8 });
+    expect(npmSkipped).toMatchObject({ carried_forward: true, fetched_at: yesterday, npm_weekly_downloads: 9 });
+    expect(npmMorning?.fetched_at).not.toBe(collectedAt);
+    expect(npmSkipped?.fetched_at).not.toBe(collectedAt);
+    expect(freshNpm.find((row) => row.source_id === "live-pkg")?.fetched_at).toBe(collectedAt);
   });
 
   it("marks cached GitHub rows as carried_forward with the original fetched_at when this run did not refresh them", async () => {

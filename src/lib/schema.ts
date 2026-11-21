@@ -143,6 +143,22 @@ export const SourceManifestSchema = z.object({
    * denominator. A frozen or carried-forward row does not count.
    */
   fetchedShare: z.number().min(0).max(1).optional(),
+  /**
+   * Ids present in the previous snapshot and today. New ids are not included.
+   * Recorded for github, npm, and mcp-registry.
+   */
+  existingRows: z.number().int().nonnegative().optional(),
+  /** Existing ids with a fresh row today (`carried_forward` not true and `frozen` not true). */
+  refetchedExisting: z.number().int().nonnegative().optional(),
+  /** `refetchedExisting / existingRows`, or 1 when `existingRows` is 0. */
+  refetchedExistingShare: z.number().min(0).max(1).optional(),
+  /**
+   * A: popularity changed vs the previous snapshot, but the row is not fresh.
+   * GitHub uses `stars`, npm uses `npm_weekly_downloads`. Omitted for mcp-registry.
+   */
+  mismatchChangedNotFresh: z.number().int().nonnegative().optional(),
+  /** B: the row is fresh, but the popularity value is unchanged. Omitted for mcp-registry. */
+  mismatchFreshUnchanged: z.number().int().nonnegative().optional(),
   /** @deprecated Legacy alias of freshWithin7dCount, kept so older snapshots still parse. */
   fetchedCount: z.number().int().nonnegative().optional(),
   coverage: z.number().min(0).max(1).optional(),
