@@ -2,17 +2,16 @@ import { z } from "zod";
 import { adoptSourceBudget, budgetDeadlineMs, budgetExhausted, budgetExhaustedError, budgetRemainingMs } from "../lib/budget.ts";
 import {
   NPM_BULK_LIMIT,
-  NPM_BULK_MIN_INTERVAL_MS,
   NPM_DOWNLOADS_BASE,
   NPM_PARTIAL_FAILURE_RATIO,
   NPM_RUN_BATCH,
   NPM_SCOPED_CONCURRENCY,
   NPM_SCOPED_MIN_INTERVAL_MS,
-  RATE_LIMIT_MIN_WAIT_MS,
   runBatchSize,
 } from "../lib/config.ts";
 import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
-import { fetchJsonWithRateLimitWait, HttpError, isHttpRateLimit, retryWaitMs } from "../lib/http.ts";
+import { fetchJsonWithRateLimitWait, HttpError, isHttpRateLimit } from "../lib/http.ts";
+import { createNpmScopedPacer, orderNpmScopedNames, scopedRateLimitWaitMs } from "../lib/npm-scoped-pace.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import {
   checkpointNextIndex,
@@ -151,7 +150,11 @@ export const npmAdapter: SourceAdapter = {
       (key) => cachedDownloads(cache[key]),
     );
     const unscoped = dueKeys.filter((name) => !isScopedNpmPackage(name));
-    const scoped = dueKeys.filter(isScopedNpmPackage);
+    const scoped = orderNpmScopedNames(
+      dueKeys.filter(isScopedNpmPackage),
+      lastFetched,
+      (key) => cachedDownloads(cache[key]),
+    );
     const walkOrder = [...scoped, ...unscoped];
     const fetchedAt = ctx.collectedAt;
     const sleepFn = ctx.sleep ?? defaultSleep;
@@ -275,6 +278,7 @@ export const npmAdapter: SourceAdapter = {
       budgetMs: budget.budgetMs,
       paths: ["bulk", "single"],
       scopedConcurrency: runBatchSize(ctx.env, "RADAR_NPM_SCOPED_CONCURRENCY", NPM_SCOPED_CONCURRENCY),
+      scopedIntervalMs: NPM_SCOPED_MIN_INTERVAL_MS,
     });
 
     let fetchedThisRun = 0;
@@ -312,16 +316,24 @@ export const npmAdapter: SourceAdapter = {
       });
     };
 
+    const pacer = createNpmScopedPacer({ sleep: sleepFn, now: nowMs });
+    // Host throttle stays at 0. The pacer is the only start gap; a second
+    // 200ms/400ms reservation would cut the measured rate in half.
     const fetchNpm = async (
       url: string,
-      minIntervalMs: number,
       lane: LaneCounter,
       onRateLimit?: (waitMs: number) => void,
     ): Promise<unknown> =>
       fetchJsonWithRateLimitWait<unknown>(ctx.http, url, {
         sleep: sleepFn,
         maxWaitMs: budgetRemainingMs(budget),
-        init: { minIntervalMs, deadlineMs: budgetDeadlineMs(budget), maxRetries: 0 },
+        init: { minIntervalMs: 0, deadlineMs: budgetDeadlineMs(budget), maxRetries: 0 },
+        rateLimitWaitMs: (attempt, error) =>
+          pacer.onRateLimit({
+            attempt,
+            retryAfterMs: error.retryAfterMs,
+            cloudflare: Boolean(error.cloudflare),
+          }),
         onAttempt() {
           lane.requests += 1;
         },
@@ -367,8 +379,14 @@ export const npmAdapter: SourceAdapter = {
             break;
           }
           await enqueueIo(rememberCheckpoint);
+          await pacer.beforeRequest();
+          if (budgetStopped || budgetExhausted(budget)) {
+            noteBudget("before bulk batch");
+            break;
+          }
           try {
-            const payload = await fetchNpm(npmBulkUrl(batch), NPM_BULK_MIN_INTERVAL_MS, bulkLane);
+            const payload = await fetchNpm(npmBulkUrl(batch), bulkLane);
+            pacer.onSuccess();
             if (batch.length === 1) {
               countRemembered(bulkLane, batch[0]!, payload);
             } else if (payload && typeof payload === "object") {
@@ -385,7 +403,12 @@ export const npmAdapter: SourceAdapter = {
             }
             if (isHttpRateLimit(error)) {
               bulkLane.rateLimits += 1;
-              if (budgetExhausted(budget) || budgetRemainingMs(budget) < RATE_LIMIT_MIN_WAIT_MS) {
+              const waitMs = scopedRateLimitWaitMs({
+                attempt: 0,
+                retryAfterMs: error.retryAfterMs,
+                cloudflare: Boolean(error.cloudflare),
+              });
+              if (budgetExhausted(budget) || budgetRemainingMs(budget) < waitMs) {
                 noteBudget("bulk rate limit");
                 break;
               }
@@ -446,25 +469,31 @@ export const npmAdapter: SourceAdapter = {
                 return;
               }
               await enqueueIo(rememberCheckpoint);
+              await pacer.beforeRequest();
+              if (budgetStopped || budgetExhausted(budget)) {
+                noteBudget(scopedLane.requests > 0 ? "scoped in flight" : "before scoped package");
+                return;
+              }
               try {
-                const payload = await fetchNpm(npmScopedUrl(name), NPM_SCOPED_MIN_INTERVAL_MS, scopedLane, (waitMs) => {
+                const payload = await fetchNpm(npmScopedUrl(name), scopedLane, (waitMs) => {
                   pool.pauseAll(waitMs);
                 });
+                pacer.onSuccess();
                 countRemembered(scopedLane, name, payload);
               } catch (error) {
                 if (error instanceof HttpError && error.status === 404) {
                   scopedLane.notFound += 1;
+                  pacer.onSuccess();
                 }
                 if (isHttpRateLimit(error)) {
                   scopedLane.rateLimits += 1;
-                  const waitMs = retryWaitMs({
+                  const waitMs = scopedRateLimitWaitMs({
                     attempt: 0,
                     retryAfterMs: error.retryAfterMs,
-                    rateLimited: true,
                     cloudflare: Boolean(error.cloudflare),
                   });
                   pool.pauseAll(waitMs);
-                  if (budgetExhausted(budget) || budgetRemainingMs(budget) < RATE_LIMIT_MIN_WAIT_MS) {
+                  if (budgetExhausted(budget) || budgetRemainingMs(budget) < waitMs) {
                     noteBudget("scoped rate limit");
                     return;
                   }
