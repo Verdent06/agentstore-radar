@@ -83,7 +83,11 @@ export function selectRunBatch(
   return takeRunBatch(prioritizeStalestFirst(dueKeys, lastFetched, scoreOf), limit);
 }
 
-/** True when the stored value was not fetched for this snapshot day (and is not this run's live fetch). */
+/**
+ * True when no run has fetched this key on the snapshot's UTC date.
+ * The stamp is written only by a real fetch. A later run the same day keeps
+ * that earlier stamp and still counts the row fresh.
+ */
 export function isCarriedForward(
   lastFetchedAt: string | null | undefined,
   snapshotDate: string,

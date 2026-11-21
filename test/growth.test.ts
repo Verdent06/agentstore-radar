@@ -63,7 +63,7 @@ describe("github growth adapter", () => {
     expect(result.truncated).toBe(false);
   });
 
-  it("fetches a bounded stalest-first GitHub batch without marking the source truncated", async () => {
+  it("keeps the existing-repo floor and new ids when the batch cap is 1", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-gh-batch-"));
     persistLastFetched(dataDir, "github", {
       "example/weather": "2026-10-24T12:00:00Z",
@@ -74,6 +74,7 @@ describe("github growth adapter", () => {
     discovered.githubRepos.set("example/mid", { owner: "example", repo: "mid" });
     discovered.githubRepos.set("example/old", { owner: "example", repo: "old" });
     let calls = 0;
+    let requested = "";
     const result = await githubAdapter.collect(
       ctx({
         snapshotDate: "2026-10-25",
@@ -82,12 +83,32 @@ describe("github growth adapter", () => {
         dataDir,
         env: { GH_STATS_TOKEN: "test-token", RADAR_GITHUB_BATCH: "1" },
         http: createHttpClient({
-          fetchImpl: async () => {
+          fetchImpl: async (_input, init) => {
             calls += 1;
-            return new Response(JSON.stringify(loadFixture("github-graphql.json")), {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            });
+            const raw = String(init?.body ?? "");
+            requested = raw;
+            try {
+              const parsed = JSON.parse(raw) as { query?: string };
+              if (parsed.query) {
+                requested = parsed.query;
+              }
+            } catch {
+              // body is the raw query
+            }
+            const data: Record<string, unknown> = {};
+            const pattern = /r(\d+): repository\(owner: "([^"]+)", name: "([^"]+)"\)/g;
+            for (const match of requested.matchAll(pattern)) {
+              data[`r${match[1]}`] = {
+                nameWithOwner: `${match[2]}/${match[3]}`,
+                url: `https://github.com/${match[2]}/${match[3]}`,
+                stargazerCount: 3,
+                forkCount: 0,
+                pushedAt: "2026-10-01T00:00:00Z",
+                isArchived: false,
+                issues: { totalCount: 0 },
+              };
+            }
+            return new Response(JSON.stringify({ data }), { status: 200, headers: { "content-type": "application/json" } });
           },
           maxRetries: 0,
         }),
@@ -96,8 +117,11 @@ describe("github growth adapter", () => {
     );
     expect(calls).toBe(1);
     expect(result.truncated).toBe(false);
-    expect(result.fetchedThisRunCount).toBe(1);
+    expect(result.fetchedThisRunCount).toBe(3);
     expect(result.eligibleCount).toBe(3);
+    expect(requested).toContain('name: "mid"');
+    expect(requested).toContain('name: "old"');
+    expect(requested).toContain('name: "weather"');
   });
 
   it("refetches repos last seen on a previous UTC day", async () => {
@@ -170,6 +194,7 @@ describe("github growth adapter", () => {
     expect(result.freshTodayCount).toBe(1);
     expect(result.records[0]?.carried_forward).toBe(false);
     expect(result.records[0]?.fetched_at).toBe("2026-10-15T06:00:00Z");
+    expect(result.records[0]?.fetched_at).not.toBe("2026-10-15T12:00:00Z");
   });
 
   it("keeps a partial snapshot after a mid-run rate limit", async () => {

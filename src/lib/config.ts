@@ -90,6 +90,13 @@ export const GEMINI_COLLECT_BUDGET_MS = 5 * 60 * 1000;
 export const GITHUB_COLLECT_BUDGET_MS = 50 * 60 * 1000;
 export const NPM_COLLECT_BUDGET_MS = 100 * 60 * 1000;
 export const PYPI_COLLECT_BUDGET_MS = 55 * 60 * 1000;
+/**
+ * Above the ~33k catalog, so a normal day fetches every due repo.
+ * `planExistingRefetch` still keeps the stalest 90% of existing repos and
+ * every new id when this cap is smaller. Measured on ubuntu-latest
+ * (Actions job 126290599753, 2026-11-04): 28,785 resolvable repos in
+ * 24m03s with no GraphQL rate-limit wait, inside the 50-minute budget.
+ */
 export const GITHUB_RUN_BATCH = 50_000;
 export const NPM_RUN_BATCH = 20_000;
 export const PYPI_RUN_BATCH = 10_000;
