@@ -140,7 +140,7 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
     try {
       coreCleanByDate[date] = coreClean(readManifest(date, dataDir));
     } catch {
-      coreCleanByDate[date] = { clean: false, reasons: [`${date}: manifest unreadable`] };
+      coreCleanByDate[date] = { clean: false, reasons: [`${date}: manifest unreadable`], mismatchFreshUnchanged: {} };
     }
   }
   const week = latestCompleteDate ? weekAgoDate(completeDates, latestCompleteDate) : null;

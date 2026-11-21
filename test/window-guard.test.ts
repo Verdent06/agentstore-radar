@@ -22,20 +22,30 @@ import {
 const CORE: SourceName[] = ["mcp-registry", "github", "npm"];
 
 function source(name: SourceName, overrides: Record<string, unknown> = {}) {
-  return {
+  const popularity = name === "github" || name === "npm";
+  const existingRows = 100;
+  const refetchedExisting = popularity ? 95 : 100;
+  const row: Record<string, unknown> = {
     source: name,
     rowCount: 10,
     skipped: false,
     failed: false,
     truncated: false,
     collectedAt: "2026-11-05T12:00:00.000Z",
-    existingCount: 100,
-    refetchedExisting: 95,
-    A: 0,
-    B: 5,
+    existingRows,
+    refetchedExisting,
     eligibleCount: 120,
+    ...(popularity ? { mismatchChangedNotFresh: 0, mismatchFreshUnchanged: 5 } : {}),
     ...overrides,
   };
+  if (
+    !("refetchedExistingShare" in overrides) &&
+    typeof row.existingRows === "number" &&
+    typeof row.refetchedExisting === "number"
+  ) {
+    row.refetchedExistingShare = row.existingRows <= 0 ? 1 : row.refetchedExisting / row.existingRows;
+  }
+  return row;
 }
 
 function manifest(date: string, overrides: Partial<Record<SourceName, Record<string, unknown>>> = {}): SnapshotManifest {
@@ -77,8 +87,12 @@ describe("core-clean from the snapshot manifest", () => {
   it("allows 2026-11-05 → 2026-11-06 when both fixtures are clean", () => {
     const nov5 = manifest("2026-11-05");
     const nov6 = manifest("2026-11-06");
-    expect(coreClean(nov5)).toEqual({ clean: true, reasons: [] });
-    expect(coreClean(nov6)).toEqual({ clean: true, reasons: [] });
+    expect(coreClean(nov5)).toMatchObject({
+      clean: true,
+      reasons: [],
+      mismatchFreshUnchanged: { github: 5, npm: 5 },
+    });
+    expect(coreClean(nov6).clean).toBe(true);
     const verdict = popularityWindow({
       start: "2026-11-05",
       end: "2026-11-06",
@@ -93,7 +107,7 @@ describe("core-clean from the snapshot manifest", () => {
   });
 
   it("refuses a later day whose refetch share is 0.85", () => {
-    const day = manifest("2026-11-07", { github: { refetchedExisting: 85, existingCount: 100 } });
+    const day = manifest("2026-11-07", { github: { refetchedExisting: 85, existingRows: 100 } });
     const result = coreClean(day);
     expect(result.clean).toBe(false);
     expect(result.reasons).toContain(`github: refetch share 0.85 is below ${REFETCH_SHARE_FLOOR}`);
@@ -109,10 +123,10 @@ describe("core-clean from the snapshot manifest", () => {
   });
 
   it("refuses a later day whose mismatch count A is above 0", () => {
-    const day = manifest("2026-11-08", { npm: { A: 3 } });
+    const day = manifest("2026-11-08", { npm: { mismatchChangedNotFresh: 3 } });
     const result = coreClean(day);
     expect(result.clean).toBe(false);
-    expect(result.reasons).toContain("npm: A is 3");
+    expect(result.reasons).toContain("npm: mismatchChangedNotFresh is 3");
     const verdict = popularityWindow({
       start: "2026-11-07",
       end: "2026-11-08",
@@ -121,7 +135,7 @@ describe("core-clean from the snapshot manifest", () => {
       requested: "1d",
     });
     expect(verdict.allowed).toBe(false);
-    expect(verdict.reasons.join(" ")).toContain("npm: A is 3");
+    expect(verdict.reasons.join(" ")).toContain("npm: mismatchChangedNotFresh is 3");
   });
 
   it("refuses windows that start on 2026-10-24 or 2026-11-01", () => {
@@ -185,15 +199,94 @@ describe("core-clean from the snapshot manifest", () => {
     expect(result.reasons).toContain("npm: missing field refetchedExisting");
   });
 
-  it("fails closed when existingCount is missing even if rowCount and eligibleCount are present", () => {
+  it("fails closed when existingRows is missing even if rowCount and eligibleCount are present", () => {
     const day = manifest("2026-11-06", {
-      github: { existingCount: undefined, rowCount: 80, eligibleCount: 80 },
+      github: { existingRows: undefined, rowCount: 80, eligibleCount: 80 },
     });
     const github = day.sources.find((entry) => entry.source === "github");
-    delete (github as { existingCount?: number }).existingCount;
+    delete (github as { existingRows?: number }).existingRows;
     const result = coreClean(day);
     expect(result.clean).toBe(false);
-    expect(result.reasons).toContain("github: missing field existingCount");
+    expect(result.reasons).toContain("github: missing field existingRows");
+  });
+
+  it("accepts a fully clean day in the collector manifest shape, including absent mcp A/B", () => {
+    const day = {
+      snapshotDate: "2026-11-06",
+      collectedAt: "2026-11-06T12:00:00.000Z",
+      appCount: 1,
+      sourceRowCount: 3,
+      partial: false,
+      sources: [
+        {
+          source: "mcp-registry",
+          rowCount: 40,
+          skipped: false,
+          failed: false,
+          truncated: false,
+          collectedAt: "2026-11-06T12:00:00.000Z",
+          existingRows: 40,
+          refetchedExisting: 40,
+          refetchedExistingShare: 1,
+        },
+        {
+          source: "github",
+          rowCount: 100,
+          skipped: false,
+          failed: false,
+          truncated: false,
+          collectedAt: "2026-11-06T12:00:00.000Z",
+          existingRows: 100,
+          refetchedExisting: 95,
+          refetchedExistingShare: 0.95,
+          mismatchChangedNotFresh: 0,
+          mismatchFreshUnchanged: 12,
+        },
+        {
+          source: "npm",
+          rowCount: 80,
+          skipped: false,
+          failed: false,
+          truncated: false,
+          collectedAt: "2026-11-06T12:00:00.000Z",
+          existingRows: 80,
+          refetchedExisting: 72,
+          refetchedExistingShare: 0.9,
+          mismatchChangedNotFresh: 0,
+          mismatchFreshUnchanged: 70,
+        },
+      ],
+    };
+    const mcp = day.sources[0];
+    expect(mcp).not.toHaveProperty("mismatchChangedNotFresh");
+    expect(mcp).not.toHaveProperty("mismatchFreshUnchanged");
+    const result = coreClean(day);
+    expect(result.clean).toBe(true);
+    expect(result.reasons).toEqual([]);
+    expect(result.mismatchFreshUnchanged).toEqual({ github: 12, npm: 70 });
+    expect(result.reasons.join(" ")).not.toMatch(/mismatchFreshUnchanged/);
+  });
+
+  it("rejects mcp-registry at 90% because membership must be fully fetched", () => {
+    const day = manifest("2026-11-09", {
+      "mcp-registry": { existingRows: 100, refetchedExisting: 90, refetchedExistingShare: 0.9 },
+    });
+    const mcp = day.sources.find((entry) => entry.source === "mcp-registry");
+    expect(mcp).not.toHaveProperty("mismatchChangedNotFresh");
+    expect(mcp).not.toHaveProperty("mismatchFreshUnchanged");
+    const result = coreClean(day);
+    expect(result.clean).toBe(false);
+    expect(result.reasons).toContain("mcp-registry: refetch share 0.9 is below 1");
+    expect(result.reasons.join(" ")).not.toMatch(/mismatchChangedNotFresh|mismatchFreshUnchanged/);
+  });
+
+  it("fails closed when github omits mismatchChangedNotFresh", () => {
+    const day = manifest("2026-11-06");
+    const github = day.sources.find((entry) => entry.source === "github");
+    delete (github as { mismatchChangedNotFresh?: number }).mismatchChangedNotFresh;
+    const result = coreClean(day);
+    expect(result.clean).toBe(false);
+    expect(result.reasons).toContain("github: missing field mismatchChangedNotFresh");
   });
 
   it("fails closed when truncated is absent", () => {

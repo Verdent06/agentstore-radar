@@ -9,14 +9,16 @@ import {
 } from "../../src/lib/window-guard.ts";
 
 function source(name: string, overrides: Record<string, unknown> = {}) {
+  const popularity = name === "github" || name === "npm";
   return {
     source: name,
     skipped: false,
     failed: false,
     truncated: false,
-    existingCount: 100,
-    refetchedExisting: 95,
-    A: 0,
+    existingRows: 100,
+    refetchedExisting: popularity ? 95 : 100,
+    refetchedExistingShare: popularity ? 0.95 : 1,
+    ...(popularity ? { mismatchChangedNotFresh: 0, mismatchFreshUnchanged: 1 } : {}),
     ...overrides,
   };
 }
@@ -52,7 +54,7 @@ describe("mcp imports the shared window guard", () => {
     const result = coreClean(day);
     assert.equal(result.clean, false);
     assert.ok(result.reasons.includes("npm: missing field refetchedExisting"));
-    const low = coreClean(manifest({ github: { refetchedExisting: 85, existingCount: 100 } }));
+    const low = coreClean(manifest({ github: { refetchedExisting: 85, existingRows: 100, refetchedExistingShare: 0.85 } }));
     assert.ok(low.reasons.some((reason) => reason.includes("refetch share 0.85")));
     assert.equal(combinedScore({ github: 2, npm: 3, mcp: 4, smithery: 9, gemini: 8, pypi: 7 }), 9);
     const gap = popularityWindow({

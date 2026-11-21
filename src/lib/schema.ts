@@ -154,16 +154,22 @@ export const SourceManifestSchema = z.object({
   error: z.string().optional(),
   truncated: z.boolean().optional(),
   /**
-   * Existing source ids (already in the catalog before this snapshot).
-   * Denominator for refetch share. Written by the collector; absent on older days.
+   * Ids present in the previous snapshot and today. New ids are not included.
+   * Recorded for github, npm, and mcp-registry. Read by the window guard; the
+   * collector writes them.
    */
-  existingCount: z.number().optional(),
-  /** Existing ids that received a fresh row today. */
-  refetchedExisting: z.number().optional(),
-  /** Rows that changed without being flagged fresh. */
-  A: z.number().optional(),
-  /** Rows flagged fresh but unchanged. Not used to decide core-clean. */
-  B: z.number().optional(),
+  existingRows: z.number().int().nonnegative().optional(),
+  /** Existing ids with a fresh row today. */
+  refetchedExisting: z.number().int().nonnegative().optional(),
+  /** `refetchedExisting / existingRows`, or 1 when `existingRows` is 0. */
+  refetchedExistingShare: z.number().min(0).max(1).optional(),
+  /**
+   * A: popularity changed vs the previous snapshot, but the row is not fresh.
+   * GitHub uses stars, npm uses weekly downloads. Omitted for mcp-registry.
+   */
+  mismatchChangedNotFresh: z.number().int().nonnegative().optional(),
+  /** B: the row is fresh, but the popularity value is unchanged. Omitted for mcp-registry. */
+  mismatchFreshUnchanged: z.number().int().nonnegative().optional(),
   backfilled: z.boolean().optional(),
   backfilledFields: z.array(z.string()).optional(),
   stoppedAt: SourceStoppedAtSchema.optional(),

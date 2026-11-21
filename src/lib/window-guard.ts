@@ -7,13 +7,19 @@
 export const verified_from = "2026-11-04";
 
 /**
- * Minimum share of existing rows refetched (`refetchedExisting / existingCount`)
- * for a core source to count as clean.
+ * Minimum `refetchedExisting / existingRows` for github and npm.
+ * mcp-registry must be fully fetched (share 1), not this floor.
  */
 export const REFETCH_SHARE_FLOOR = 0.9;
 
+/** mcp-registry is membership-only and must be fully fetched. */
+export const MCP_FULL_FETCH_SHARE = 1;
+
 export const CORE_SOURCES = ["mcp-registry", "github", "npm"] as const;
 export type CoreSource = (typeof CORE_SOURCES)[number];
+
+/** Sources with a popularity metric. A is required; B is diagnostic only. */
+export const POPULARITY_SOURCES = ["github", "npm"] as const;
 
 /** Frozen or paused catalogs. Kept out of combined scores and growth. */
 export const FROZEN_SOURCES = ["smithery", "gemini-cli", "pypi"] as const;
@@ -23,6 +29,12 @@ const DAY_MS = 86_400_000;
 export type CoreCleanResult = {
   clean: boolean;
   reasons: string[];
+  /**
+   * `mismatchFreshUnchanged` (B) when the manifest recorded it.
+   * Diagnostic only: there is no numeric rejection threshold.
+   * Omitted by callers that only store the pass/fail decision.
+   */
+  mismatchFreshUnchanged?: Partial<Record<(typeof POPULARITY_SOURCES)[number], number>>;
 };
 
 export type PopularityWindow = {
@@ -99,7 +111,22 @@ function sourceEntry(sources: unknown[], name: CoreSource): Record<string, unkno
   return null;
 }
 
-function checkSource(record: Record<string, unknown>, source: CoreSource): string[] {
+/** Same rule as the collector: no previous rows scores 1. */
+function computedRefetchShare(refetchedExisting: number, existingRows: number): number {
+  if (existingRows <= 0) {
+    return 1;
+  }
+  return refetchedExisting / existingRows;
+}
+
+function sharesMatch(recorded: number, computed: number): boolean {
+  return Math.abs(recorded - computed) <= 1e-9;
+}
+
+function checkSource(
+  record: Record<string, unknown>,
+  source: CoreSource,
+): { reasons: string[]; mismatchFreshUnchanged?: number } {
   const reasons: string[] = [];
   if (!("skipped" in record)) {
     reasons.push(`${source}: missing field skipped`);
@@ -115,56 +142,72 @@ function checkSource(record: Record<string, unknown>, source: CoreSource): strin
     reasons.push(`${source}: truncated`);
   }
 
-  const mismatch = readNumber(record, "A");
-  if (mismatch == null) {
-    reasons.push(`${source}: missing field A`);
-  } else if (mismatch !== 0) {
-    reasons.push(`${source}: A is ${mismatch}`);
+  const popularity = (POPULARITY_SOURCES as readonly string[]).includes(source);
+  if (popularity) {
+    const mismatch = readNumber(record, "mismatchChangedNotFresh");
+    if (mismatch == null) {
+      reasons.push(`${source}: missing field mismatchChangedNotFresh`);
+    } else if (mismatch !== 0) {
+      reasons.push(`${source}: mismatchChangedNotFresh is ${mismatch}`);
+    }
   }
 
   const refetched = readNumber(record, "refetchedExisting");
   if (refetched == null) {
     reasons.push(`${source}: missing field refetchedExisting`);
   }
-  const existing = readNumber(record, "existingCount");
+  const existing = readNumber(record, "existingRows");
   if (existing == null) {
-    reasons.push(`${source}: missing field existingCount`);
+    reasons.push(`${source}: missing field existingRows`);
   }
   if (refetched != null && existing != null) {
-    if (existing <= 0) {
-      reasons.push(`${source}: existingCount is ${existing}`);
-    } else {
-      const share = refetched / existing;
-      if (share < REFETCH_SHARE_FLOOR) {
-        reasons.push(`${source}: refetch share ${formatShare(share)} is below ${REFETCH_SHARE_FLOOR}`);
-      }
+    const share = computedRefetchShare(refetched, existing);
+    const recorded = readNumber(record, "refetchedExistingShare");
+    if (recorded != null && !sharesMatch(recorded, share)) {
+      reasons.push(
+        `${source}: refetchedExistingShare ${formatShare(recorded)} does not match refetchedExisting/existingRows ${formatShare(share)}`,
+      );
+    }
+    const required = source === "mcp-registry" ? MCP_FULL_FETCH_SHARE : REFETCH_SHARE_FLOOR;
+    if (share < required) {
+      reasons.push(`${source}: refetch share ${formatShare(share)} is below ${required}`);
     }
   }
-  return reasons;
+
+  const unchanged = popularity ? readNumber(record, "mismatchFreshUnchanged") : null;
+  return unchanged == null ? { reasons } : { reasons, mismatchFreshUnchanged: unchanged };
 }
 
 /**
- * A day is core-clean only when every core source is complete, `truncated` is false,
- * `A` is 0, and `refetchedExisting / existingCount` is at least {@link REFETCH_SHARE_FLOOR}.
- * `existingCount` is the stored existing-row count. `rowCount` and `eligibleCount` are not
- * that count (they include new ids), so a manifest without `existingCount` fails closed.
+ * A day is core-clean only from that day's manifest.
+ * GitHub and npm: complete, `truncated` false, `mismatchChangedNotFresh` (A) is 0,
+ * and `refetchedExisting / existingRows` is at least {@link REFETCH_SHARE_FLOOR}.
+ * mcp-registry has no popularity metric, so A/B are not required. It must still be
+ * complete, not truncated, and fully fetched (share 1).
+ * `mismatchFreshUnchanged` (B) is returned and never rejects a day.
+ * `rowCount` and `eligibleCount` are not the existing-row count.
  */
 export function coreClean(manifest: unknown): CoreCleanResult {
   const record = asRecord(manifest);
   const sources = record?.sources;
   if (!Array.isArray(sources)) {
-    return { clean: false, reasons: ["missing field sources"] };
+    return { clean: false, reasons: ["missing field sources"], mismatchFreshUnchanged: {} };
   }
   const reasons: string[] = [];
+  const mismatchFreshUnchanged: CoreCleanResult["mismatchFreshUnchanged"] = {};
   for (const source of CORE_SOURCES) {
     const entry = sourceEntry(sources, source);
     if (!entry) {
       reasons.push(`${source}: missing source`);
       continue;
     }
-    reasons.push(...checkSource(entry, source));
+    const checked = checkSource(entry, source);
+    reasons.push(...checked.reasons);
+    if (checked.mismatchFreshUnchanged != null && (source === "github" || source === "npm")) {
+      mismatchFreshUnchanged[source] = checked.mismatchFreshUnchanged;
+    }
   }
-  return { clean: reasons.length === 0, reasons };
+  return { clean: reasons.length === 0, reasons, mismatchFreshUnchanged };
 }
 
 function datesStrictlyBetween(start: string, end: string): string[] {

@@ -8,14 +8,16 @@ import {
 } from "../../src/lib/window-guard";
 
 function source(name: string, overrides: Record<string, unknown> = {}) {
+  const popularity = name === "github" || name === "npm";
   return {
     source: name,
     skipped: false,
     failed: false,
     truncated: false,
-    existingCount: 100,
-    refetchedExisting: 95,
-    A: 0,
+    existingRows: 100,
+    refetchedExisting: popularity ? 95 : 100,
+    refetchedExistingShare: popularity ? 0.95 : 1,
+    ...(popularity ? { mismatchChangedNotFresh: 0, mismatchFreshUnchanged: 1 } : {}),
     ...overrides,
   };
 }
