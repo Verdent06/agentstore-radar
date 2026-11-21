@@ -171,6 +171,12 @@ export async function fetchJsonWithRateLimitWait<T>(
     onWait?: (waitMs: number, attempt: number, error: HttpError) => void;
     onAttempt?: () => void;
     maxWaitMs?: number;
+    /**
+     * Replaces `retryWaitMs` for this call. npm downloads use it so a
+     * Cloudflare 429 without Retry-After does not floor at 15s. Other
+     * callers keep the shared schedule.
+     */
+    rateLimitWaitMs?: (attempt: number, error: HttpError) => number;
   },
 ): Promise<T> {
   const sleepFn = options?.sleep ?? sleep;
@@ -185,12 +191,14 @@ export async function fetchJsonWithRateLimitWait<T>(
       if (!isHttpRateLimit(error)) {
         throw error;
       }
-      const waitMs = retryWaitMs({
-        attempt,
-        retryAfterMs: error.retryAfterMs,
-        rateLimited: true,
-        cloudflare: Boolean(error.cloudflare),
-      });
+      const waitMs = options?.rateLimitWaitMs
+        ? options.rateLimitWaitMs(attempt, error)
+        : retryWaitMs({
+            attempt,
+            retryAfterMs: error.retryAfterMs,
+            rateLimited: true,
+            cloudflare: Boolean(error.cloudflare),
+          });
       if (waitedMs + waitMs > maxWaitMs || retryExceedsDeadline(waitMs, options?.init?.deadlineMs)) {
         throw error;
       }

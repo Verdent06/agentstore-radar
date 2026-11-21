@@ -17,7 +17,7 @@ v1 uses **only sanctioned public APIs**. We do **not** scrape ChatGPT or claude.
 | Smithery | `GET /servers` (`useCount`, stable `seed` pagination) | connections |
 | Gemini CLI gallery | `https://geminicli.com/extensions.json` | stars, lastUpdated |
 | GitHub GraphQL | batches of 100 `repository` nodes via `GH_STATS_TOKEN` or Actions `GITHUB_TOKEN` | stars, forks, open issues, `pushed_at` (daily) |
-| npm | bulk `downloads/point/last-week` (128 unscoped; scoped one-by-one with 429 patience) | weekly downloads (daily) |
+| npm | bulk `downloads/point/last-week` (128 unscoped; scoped one-by-one at 2.5 req/s) | weekly downloads (daily) |
 | PyPI | `pypistats.org/api/packages/{pkg}/recent` (throttled, daily) | weekly / monthly downloads |
 
 Research notes, rate-limit behavior, and skipped ideas: [docs/SOURCES.md](docs/SOURCES.md).
@@ -170,7 +170,7 @@ Each source's `eligibleCount`, `freshTodayCount` (keys fetched on this UTC date 
 | Source | Eligible set | One-run target | Fallback |
 | --- | --- | --- | --- |
 | GitHub | every discovered repo with a GitHub URL | `fetchedShare` ≥0.80 and `refetchedExistingShare` ≥0.90 via 100-wide GraphQL. The batch is the stalest 90% of existing repos, then new ids, then the rest. Known `NOT_FOUND` aliases are persisted and skipped | carry forward last-known stars; resume from checkpoint |
-| npm | every discovered npm package | fresh `fetchedShare` ≥0.80 across the day: unscoped bulk of 128 and scoped singles run together; scoped 8 at a time with a shared 429 pause. Wall-clock budget 100 minutes. The manifest `lanes` array records path, calls, and 429s | checkpoint + resume; unfetched rows stay carried_forward and frozen |
+| npm | every discovered npm package | fresh `fetchedShare` ≥0.80 across the day: unscoped bulk of 128 and scoped singles share a 2.5 req/s start pacer (25 per 10s, concurrency 3). A package already fetched on this UTC date is skipped and stays fresh. Wall-clock budget 100 minutes. The manifest `lanes` array records path, calls, and 429s | checkpoint + resume; unfetched rows stay carried_forward and frozen |
 | PyPI | every discovered PyPI package | fresh `fetchedShare` ≥0.80 across the day: 4 in flight, ~400ms between starts. Wall-clock budget 55 minutes. Monthly downloads are not a growth signal | checkpoint + resume; unfetched rows stay carried_forward and frozen |
 | MCP | catalog page rows | full catalog in the run | n/a |
 | Gemini | gallery JSON rows | fresh `fetchedShare` (an all-frozen gallery scores ~0). The JSON is still one GET of ~2.2k rows | source freeze on unchanged gallery `stars` (≥95% for N days); live GitHub stars still win on merge |

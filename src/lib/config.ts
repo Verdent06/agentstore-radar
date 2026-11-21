@@ -47,15 +47,19 @@ export const PYPISTATS_BASE = "https://pypistats.org/api/packages";
 export const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 
 export const NPM_BULK_LIMIT = 128;
-export const NPM_SCOPED_MIN_INTERVAL_MS = 250;
+/**
+ * Shared npm downloads start gap (bulk and scoped). Actions runs 44846503852
+ * and 44910143087 tripped Cloudflare at 44 and 47 requests inside 10s.
+ * 400ms is 25 starts per 10s. The pacer in `npm-scoped-pace.ts` applies it.
+ */
+export const NPM_SCOPED_MIN_INTERVAL_MS = 400;
+/** Previous bulk host gap. The shared downloads pacer is the only start gap now. */
 export const NPM_BULK_MIN_INTERVAL_MS = 200;
 /**
- * Scoped npm packages cannot use the bulk endpoint. 8 in flight, one shared
- * 429 pause. Downloads pass `maxRetries: 0` so the first 429 reaches that
- * pause instead of sleeping inside the HTTP client. A positive Retry-After
- * is honored; a missing or zero header still floors at 15s.
+ * Scoped requests in flight. Starts are already spaced by
+ * `NPM_SCOPED_MIN_INTERVAL_MS`, so this only covers response time.
  */
-export const NPM_SCOPED_CONCURRENCY = 8;
+export const NPM_SCOPED_CONCURRENCY = 3;
 export const PYPI_MIN_INTERVAL_MS = 400;
 /** pypistats recent calls in flight. Host interval still spaces starts. */
 export const PYPI_CONCURRENCY = 4;
