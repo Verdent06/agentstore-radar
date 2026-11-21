@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildAggregate } from "../src/aggregate/build.ts";
-import { movers } from "../src/aggregate/query.ts";
+import { describeGrowthWindow, movers } from "../src/aggregate/query.ts";
+import type { Aggregate } from "../src/aggregate/types.ts";
 import { runTool } from "../src/aggregate/tools.ts";
 import { writeNormalized } from "../src/lib/io.ts";
 import { mergeApps } from "../src/lib/merge.ts";
@@ -14,6 +15,7 @@ import {
   coreClean,
   membershipCount,
   omitPypiMonthly,
+  evaluateMoversWindow,
   popularityWindow,
   verified_from,
   type CoreCleanResult,
@@ -294,6 +296,102 @@ describe("core-clean from the snapshot manifest", () => {
     const entry = day.sources.find((row) => row.source === "mcp-registry");
     delete (entry as { truncated?: boolean }).truncated;
     expect(coreClean(day).reasons).toContain("mcp-registry: missing field truncated");
+  });
+});
+
+describe("paused sources do not choose window endpoints", () => {
+  function coreSource(name: "mcp-registry" | "github" | "npm", overrides: Record<string, unknown> = {}) {
+    const popularity = name !== "mcp-registry";
+    return {
+      source: name,
+      rowCount: 10,
+      skipped: false,
+      failed: false,
+      truncated: false,
+      collectedAt: "2026-11-05T12:00:00.000Z",
+      existingRows: 100,
+      refetchedExisting: 100,
+      refetchedExistingShare: 1,
+      ...(popularity ? { mismatchChangedNotFresh: 0, mismatchFreshUnchanged: 4 } : {}),
+      ...overrides,
+    };
+  }
+
+  function pausedDay(date: string, npmTruncated = false) {
+    return {
+      snapshotDate: date,
+      collectedAt: `${date}T12:00:00.000Z`,
+      appCount: 1,
+      sourceRowCount: 1,
+      partial: true,
+      sources: [
+        coreSource("mcp-registry"),
+        coreSource("github"),
+        coreSource("npm", npmTruncated ? { truncated: true } : {}),
+        {
+          source: "smithery",
+          rowCount: 0,
+          skipped: false,
+          failed: true,
+          truncated: false,
+          collectedAt: `${date}T12:00:00.000Z`,
+          error: "paused",
+        },
+        {
+          source: "gemini-cli",
+          rowCount: 0,
+          skipped: false,
+          failed: true,
+          truncated: false,
+          collectedAt: `${date}T12:00:00.000Z`,
+          error: "paused",
+        },
+      ],
+    };
+  }
+
+  it("allows a window when partial is only paused Smithery and the core sources are clean", () => {
+    const nov5 = pausedDay("2026-11-05");
+    const nov6 = pausedDay("2026-11-06");
+    expect(nov5.partial).toBe(true);
+    expect(nov5.sources.find((row) => row.source === "pypi")).toBeUndefined();
+    expect(coreClean(nov5).clean).toBe(true);
+    expect(coreClean(nov6).clean).toBe(true);
+    const present = ["2026-11-05", "2026-11-06"];
+    const verdict = evaluateMoversWindow("1d", present, cleanMap({ "2026-11-05": nov5, "2026-11-06": nov6 }));
+    expect(verdict).not.toBeNull();
+    expect(verdict?.allowed).toBe(true);
+    expect(verdict?.start).toBe("2026-11-05");
+    expect(verdict?.end).toBe("2026-11-06");
+    expect(verdict?.label).toBe("1d");
+    const agg = {
+      meta: {
+        snapshotDates: present,
+        partialDates: present,
+        coreCleanByDate: cleanMap({ "2026-11-05": nov5, "2026-11-06": nov6 }),
+      },
+    } as Aggregate;
+    const described = describeGrowthWindow(agg, "1d");
+    expect(described?.allowed).toBe(true);
+    expect(described?.start).toBe("2026-11-05");
+    expect(described?.end).toBe("2026-11-06");
+  });
+
+  it("refuses the same paused-source day when npm is truncated", () => {
+    const nov5 = pausedDay("2026-11-05");
+    const nov6 = pausedDay("2026-11-06", true);
+    expect(coreClean(nov6).clean).toBe(false);
+    expect(coreClean(nov6).reasons).toContain("npm: truncated");
+    const verdict = evaluateMoversWindow(
+      "1d",
+      ["2026-11-05", "2026-11-06"],
+      cleanMap({ "2026-11-05": nov5, "2026-11-06": nov6 }),
+    );
+    expect(verdict?.allowed).toBe(false);
+    expect(verdict?.start).toBe("2026-11-05");
+    expect(verdict?.end).toBe("2026-11-06");
+    expect(verdict?.label).toBeNull();
+    expect(verdict?.reasons.join(" ")).toContain("npm: truncated");
   });
 });
 

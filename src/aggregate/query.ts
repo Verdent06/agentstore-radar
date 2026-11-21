@@ -17,7 +17,6 @@ import {
   PUBLIC_MAX_LIMIT,
   PUBLIC_TOP_N,
   completeHistoryBounds,
-  completeSnapshotDates,
   growthBucket,
   roundCount,
 } from "./public.ts";
@@ -102,7 +101,7 @@ function cleanByDate(agg: Aggregate): Record<string, { clean: boolean; reasons: 
 }
 
 export function describeGrowthWindow(agg: Aggregate, requested: "1d" | "7d"): PopularityWindow | null {
-  return evaluateMoversWindow(requested, agg.meta.snapshotDates, completeSnapshotDates(agg), cleanByDate(agg));
+  return evaluateMoversWindow(requested, agg.meta.snapshotDates, cleanByDate(agg));
 }
 
 function guardedGrowth(
@@ -241,9 +240,7 @@ function previousFreshIndex(
   fromIndex: number,
   walkBack: boolean,
 ): number | null {
-  const partial = new Set(agg.meta.partialDates ?? []);
-  const skip = (index: number): boolean =>
-    partial.has(agg.meta.snapshotDates[index] ?? "") || metricCarriedForward(series, metric, index);
+  const skip = (index: number): boolean => metricCarriedForward(series, metric, index);
   if (walkBack) {
     for (let index = fromIndex; index >= 0; index -= 1) {
       if (skip(index)) {

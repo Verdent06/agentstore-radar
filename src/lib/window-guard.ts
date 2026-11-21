@@ -287,13 +287,17 @@ export function popularityWindow(input: {
   };
 }
 
-/** Endpoints for a movers request. A 1d request that skips a day keeps the real previous snapshot. */
+/**
+ * Endpoints for a movers request, taken from dates that exist.
+ * A paused source must not choose the end: coreClean, verified_from, and the gap
+ * rules decide whether the window is allowed. A 1d request that skips a day keeps
+ * the real previous snapshot.
+ */
 export function moverEndpoints(
   requested: "1d" | "7d",
   presentDates: readonly string[],
-  completeDates: readonly string[],
 ): { start: string; end: string } | null {
-  const end = completeDates.at(-1);
+  const end = presentDates.at(-1);
   if (!end) {
     return null;
   }
@@ -311,10 +315,9 @@ export function moverEndpoints(
 export function evaluateMoversWindow(
   requested: "1d" | "7d",
   presentDates: readonly string[],
-  completeDates: readonly string[],
   cleanByDate: Readonly<Record<string, CoreCleanResult | undefined>> = {},
 ): PopularityWindow | null {
-  const ends = moverEndpoints(requested, presentDates, completeDates);
+  const ends = moverEndpoints(requested, presentDates);
   if (!ends) {
     return null;
   }

@@ -169,23 +169,6 @@ export const SourceManifestSchema = z.object({
   failed: z.boolean().optional(),
   error: z.string().optional(),
   truncated: z.boolean().optional(),
-  /**
-   * Ids present in the previous snapshot and today. New ids are not included.
-   * Recorded for github, npm, and mcp-registry. Read by the window guard; the
-   * collector writes them.
-   */
-  existingRows: z.number().int().nonnegative().optional(),
-  /** Existing ids with a fresh row today. */
-  refetchedExisting: z.number().int().nonnegative().optional(),
-  /** `refetchedExisting / existingRows`, or 1 when `existingRows` is 0. */
-  refetchedExistingShare: z.number().min(0).max(1).optional(),
-  /**
-   * A: popularity changed vs the previous snapshot, but the row is not fresh.
-   * GitHub uses stars, npm uses weekly downloads. Omitted for mcp-registry.
-   */
-  mismatchChangedNotFresh: z.number().int().nonnegative().optional(),
-  /** B: the row is fresh, but the popularity value is unchanged. Omitted for mcp-registry. */
-  mismatchFreshUnchanged: z.number().int().nonnegative().optional(),
   backfilled: z.boolean().optional(),
   backfilledFields: z.array(z.string()).optional(),
   stoppedAt: SourceStoppedAtSchema.optional(),

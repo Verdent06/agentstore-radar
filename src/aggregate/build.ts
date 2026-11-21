@@ -117,18 +117,26 @@ function compact(points: PackedPoint[], dates: string[]): CompactSeries {
 
 export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir"): Aggregate {
   const allDates = listSnapshotDates(dataDir);
-  const allPartial = allDates.filter((date) => {
+  const allPartial: string[] = [];
+  const coreCleanByAll: Record<string, CoreCleanResult> = {};
+  for (const date of allDates) {
     try {
-      return snapshotIsPartial(readManifest(date, dataDir));
+      const manifest = readManifest(date, dataDir);
+      if (snapshotIsPartial(manifest)) {
+        allPartial.push(date);
+      }
+      coreCleanByAll[date] = coreClean(manifest);
     } catch {
-      return false;
+      coreCleanByAll[date] = { clean: false, reasons: [`${date}: manifest unreadable`], mismatchFreshUnchanged: {} };
     }
-  });
-  const allComplete = allDates.filter((date) => !allPartial.includes(date));
-  const fromComplete = allComplete.at(-HISTORY_CAP_DAYS) ?? allComplete[0] ?? null;
-  const toComplete = allComplete.at(-1) ?? null;
+  }
+  // A paused non-core source can mark every recent day partial. Core-clean days
+  // still anchor the published span. A trailing day that is not core-clean stays out.
+  const usable = allDates.filter((date) => !allPartial.includes(date) || coreCleanByAll[date]?.clean === true);
+  const fromUsable = usable.at(-HISTORY_CAP_DAYS) ?? usable[0] ?? null;
+  const toUsable = usable.at(-1) ?? null;
   const snapshotDates =
-    fromComplete && toComplete ? allDates.filter((date) => date >= fromComplete && date <= toComplete) : [];
+    fromUsable && toUsable ? allDates.filter((date) => date >= fromUsable && date <= toUsable) : [];
   const partialDates = snapshotDates.filter((date) => allPartial.includes(date));
   const completeDates = snapshotDates.filter((date) => !partialDates.includes(date));
   const latestDate = snapshotDates.at(-1) ?? null;
@@ -137,11 +145,11 @@ export function buildAggregate(dataDir: string, origin: DataOrigin = "data_dir")
   const previousCompleteDate = completeDates.length >= 2 ? completeDates.at(-2) ?? null : null;
   const coreCleanByDate: Record<string, CoreCleanResult> = {};
   for (const date of snapshotDates) {
-    try {
-      coreCleanByDate[date] = coreClean(readManifest(date, dataDir));
-    } catch {
-      coreCleanByDate[date] = { clean: false, reasons: [`${date}: manifest unreadable`], mismatchFreshUnchanged: {} };
-    }
+    coreCleanByDate[date] = coreCleanByAll[date] ?? {
+      clean: false,
+      reasons: [`${date}: manifest unreadable`],
+      mismatchFreshUnchanged: {},
+    };
   }
   const week = latestCompleteDate ? weekAgoDate(completeDates, latestCompleteDate) : null;
 

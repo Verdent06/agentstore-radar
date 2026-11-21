@@ -55,7 +55,7 @@ function completeDates(agg: Aggregate): string[] {
 }
 
 export function describeGrowthWindow(agg: Aggregate, requested: "1d" | "7d"): PopularityWindow | null {
-  return evaluateMoversWindow(requested, agg.meta.snapshotDates, completeDates(agg), agg.meta.coreCleanByDate ?? {});
+  return evaluateMoversWindow(requested, agg.meta.snapshotDates, agg.meta.coreCleanByDate ?? {});
 }
 
 function growthWindow(
@@ -124,9 +124,7 @@ function previousFreshIndex(
   fromIndex: number,
   walkBack: boolean,
 ): number | null {
-  const partial = partialDates(agg);
-  const skip = (index: number) =>
-    partial.has(agg.meta.snapshotDates[index] ?? "") || seriesCarried(agg, id, metric, index);
+  const skip = (index: number) => seriesCarried(agg, id, metric, index);
   if (walkBack) {
     for (let index = fromIndex; index >= 0; index -= 1) {
       if (skip(index)) continue;
