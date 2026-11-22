@@ -7,11 +7,12 @@ on:
     # GitHub still often delivers this 6–8h late, and the 2026-11-04 05:41
     # trigger never created a run. The 08:47 cron below is the backup.
     - cron: "41 5 * * *"
-    # Morning backup, off the hour. --if-incomplete, so it fills a missing or
-    # partial day and leaves a complete snapshot alone. A late 05:41 then
-    # refuses to overwrite that complete day.
+    # Morning backup, off the hour. --if-incomplete collects only when the core
+    # sources (mcp-registry, github, npm) are incomplete. Smithery, gemini-cli,
+    # and pypi do not trigger this rerun. A late 05:41 then refuses to
+    # overwrite a six-source-complete snapshot.
     - cron: "47 8 * * *"
-    # Same-day backstop: only collects if today's snapshot is missing or incomplete.
+    # Same-day backstop. Same --if-incomplete core check as the morning backup.
     - cron: "23 19 * * *"
   workflow_dispatch:
     inputs:
@@ -20,7 +21,7 @@ on:
         type: boolean
         default: false
       if_incomplete:
-        description: "Only collect if today's snapshot is missing or incomplete"
+        description: "Only collect if core sources (mcp-registry, github, npm) are incomplete"
         type: boolean
         default: false
       force:
@@ -74,36 +75,28 @@ jobs:
       - name: Seed private repo from public data/ history
         run: bash scripts/seed-data-repo.sh "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/.radar-data"
 
-      - name: Skip backstop when today's snapshot is already complete
-        id: gate
-        env:
-          MANIFEST_DIR: ${{ github.workspace }}/.radar-data/data/normalized
-        run: |
-          DATE=$(date -u +%F)
-          MANIFEST="${MANIFEST_DIR}/${DATE}/manifest.json"
-          SKIP=false
-          if [[ "${IS_BACKSTOP}" == "true" && -f "$MANIFEST" ]]; then
-            if python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); sys.exit(1 if m.get("partial") is True or any(s.get("failed") or s.get("truncated") for s in (m.get("sources") or [])) else 0)' "$MANIFEST"; then
-              SKIP=true
-              echo "Today's snapshot ${DATE} is already complete; skipping backstop collect"
-            else
-              echo "Today's snapshot ${DATE} exists but is incomplete; backstop will collect"
-            fi
-          fi
-          echo "skip=${SKIP}" >> "$GITHUB_OUTPUT"
-
       - uses: actions/setup-node@v4
-        if: ${{ inputs.seed_only != true && steps.gate.outputs.skip != 'true' }}
+        if: ${{ inputs.seed_only != true }}
         with:
           node-version: "22"
           cache: npm
 
       - run: npm ci
-        if: ${{ inputs.seed_only != true && steps.gate.outputs.skip != 'true' }}
+        if: ${{ inputs.seed_only != true }}
+
+      - name: Skip backstop when core sources are already complete
+        id: gate
+        run: |
+          if [[ "${IS_BACKSTOP}" != "true" ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          DATE=$(date -u +%F)
+          npx tsx scripts/if-incomplete-gate.ts "$DATA_DIR" "$DATE"
 
       - name: Collect sanctioned public snapshots
         id: collect
-        if: ${{ inputs.seed_only != true && steps.gate.outputs.skip != 'true' }}
+        if: ${{ inputs.seed_only != true && steps.gate.outcome == 'success' && steps.gate.outputs.skip != 'true' }}
         timeout-minutes: 330
         env:
           DATA_DIR: ${{ env.DATA_DIR }}
@@ -141,7 +134,7 @@ jobs:
         run: npm run health -- --data "$DATA_DIR"
 
       - name: Alert if today's snapshot is still missing
-        if: ${{ always() && inputs.seed_only != true && inputs.skip_push != true && steps.gate.outputs.skip != 'true' }}
+        if: ${{ always() && inputs.seed_only != true && inputs.skip_push != true && steps.gate.outcome == 'success' && steps.gate.outputs.skip != 'true' }}
         env:
           DATA_DIR: ${{ env.DATA_DIR }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
