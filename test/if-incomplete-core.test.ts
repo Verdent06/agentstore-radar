@@ -33,7 +33,11 @@ function source(name: SourceName, extra: Partial<SourceManifest> = {}): SourceMa
 
 function coreCompleteSources(overrides: Partial<Record<SourceName, Partial<SourceManifest>>> = {}): SourceManifest[] {
   const base: SourceManifest[] = [
-    source("mcp-registry"),
+    source("mcp-registry", {
+      existingRows: 10,
+      refetchedExisting: 10,
+      refetchedExistingShare: 1,
+    }),
     source("smithery"),
     source("gemini-cli"),
     source("github", {
@@ -222,6 +226,24 @@ describe("--if-incomplete core sources", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "radar-core-npm-mismatch-"));
     const day = manifest(false, coreCompleteSources({
       npm: { mismatchChangedNotFresh: 1 },
+    }));
+    writeDay(dataDir, day);
+    const { result, calls } = await throwingCollect(dataDir);
+    expect(result.skipped).toBe(false);
+    expect(calls).toBeGreaterThan(0);
+  });
+
+  it("proceeds when mcp-registry fetched share is below 1", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-core-mcp-share-"));
+    const day = manifest(false, coreCompleteSources({
+      "mcp-registry": {
+        skipped: false,
+        failed: false,
+        truncated: false,
+        existingRows: 10,
+        refetchedExisting: 9,
+        refetchedExistingShare: 0.9,
+      },
     }));
     writeDay(dataDir, day);
     const { result, calls } = await throwingCollect(dataDir);

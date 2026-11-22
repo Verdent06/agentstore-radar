@@ -396,6 +396,9 @@ describe("collect resilience", () => {
           failed: false,
           truncated: false,
           collectedAt: "2026-10-24T12:00:00Z",
+          existingRows: 1,
+          refetchedExisting: 1,
+          refetchedExistingShare: 1,
         },
         {
           source: "github",

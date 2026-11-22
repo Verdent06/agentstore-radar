@@ -14,6 +14,9 @@ export type BackupCoreSource = (typeof BACKUP_CORE_SOURCES)[number];
 /** Core sources whose refetch share and mismatch A also gate a backup rerun. */
 const BACKUP_REFETCH_SOURCES = ["github", "npm"] as const satisfies readonly BackupCoreSource[];
 
+/** mcp-registry must be fully fetched. Same bar as `coreClean` in window-guard. */
+const MCP_FULL_FETCH_SHARE = 1;
+
 export type IfIncompleteDecision = {
   /** True when the backup should collect. */
   proceed: boolean;
@@ -40,10 +43,50 @@ function sourceByName(manifest: SnapshotManifest, name: SourceName): SourceManif
   return manifest.sources.find((source) => source.source === name);
 }
 
+/** Same rule as the collector and `coreClean`: no previous rows scores 1. */
+function computedRefetchShare(refetchedExisting: number, existingRows: number): number {
+  if (existingRows <= 0) {
+    return 1;
+  }
+  return refetchedExisting / existingRows;
+}
+
+/**
+ * mcp-registry refetch share, from `refetchedExisting / existingRows` when those
+ * counts are present. Recorded `refetchedExistingShare` is the fallback.
+ */
+function mcpRefetchShare(source: SourceManifest): number | null {
+  if (typeof source.refetchedExisting === "number" && typeof source.existingRows === "number") {
+    return computedRefetchShare(source.refetchedExisting, source.existingRows);
+  }
+  return typeof source.refetchedExistingShare === "number" ? source.refetchedExistingShare : null;
+}
+
+function mcpRefetchShareProblem(source: SourceManifest): string | undefined {
+  const refetched = source.refetchedExisting;
+  const existing = source.existingRows;
+  if (typeof refetched === "number" && typeof existing === "number") {
+    const share = computedRefetchShare(refetched, existing);
+    const recorded = source.refetchedExistingShare;
+    if (typeof recorded === "number" && Math.abs(recorded - share) > 1e-9) {
+      return `mcp-registry refetchedExistingShare ${formatShare(recorded)} does not match refetchedExisting/existingRows ${formatShare(share)}`;
+    }
+  }
+  const share = mcpRefetchShare(source);
+  if (share == null) {
+    return "mcp-registry refetchedExistingShare is missing";
+  }
+  if (share < MCP_FULL_FETCH_SHARE) {
+    return `mcp-registry refetchedExistingShare ${formatShare(share)} is below ${MCP_FULL_FETCH_SHARE}`;
+  }
+  return undefined;
+}
+
 /**
  * Core-complete means each of mcp-registry, github, and npm finished and is
- * not truncated, and github and npm have `refetchedExistingShare` >= 0.9 with
- * `mismatchChangedNotFresh` not above 0. Does not read `manifest.partial`.
+ * not truncated, mcp-registry refetch share is exactly 1, and github and npm
+ * have `refetchedExistingShare` >= 0.9 with `mismatchChangedNotFresh` not above 0.
+ * Does not read `manifest.partial`.
  */
 export function decideBackupCore(manifest: SnapshotManifest): IfIncompleteDecision {
   const problems: string[] = [];
@@ -60,6 +103,13 @@ export function decideBackupCore(manifest: SnapshotManifest): IfIncompleteDecisi
       problems.push(`${name} is truncated`);
     } else if (source.skipped === true) {
       problems.push(`${name} did not complete`);
+    }
+    if (name === "mcp-registry") {
+      const problem = mcpRefetchShareProblem(source);
+      if (problem) {
+        problems.push(problem);
+      }
+      continue;
     }
     if (!isRefetchSource(name)) {
       continue;
@@ -88,7 +138,15 @@ export function decideBackupCore(manifest: SnapshotManifest): IfIncompleteDecisi
 
   const evidence = BACKUP_CORE_SOURCES.map((name) => {
     const source = sourceByName(manifest, name);
-    if (!source || !isRefetchSource(name)) {
+    if (!source) {
+      return `${name} completed`;
+    }
+    if (name === "mcp-registry") {
+      const share = mcpRefetchShare(source);
+      const shareText = share == null ? "missing" : formatShare(share);
+      return `${name} completed, refetchedExistingShare ${shareText}`;
+    }
+    if (!isRefetchSource(name)) {
       return `${name} completed`;
     }
     const share = source.refetchedExistingShare;
