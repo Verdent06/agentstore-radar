@@ -10,7 +10,9 @@ import {
   runBatchSize,
 } from "../lib/config.ts";
 import { computeCoverage, freshFetchedShare } from "../lib/coverage.ts";
+import { utcDateString } from "../lib/dates.ts";
 import { fetchJsonWithRateLimitWait, HttpError, isHttpRateLimit } from "../lib/http.ts";
+import { previousSnapshotDate, readSourceRows } from "../lib/io.ts";
 import { createNpmScopedPacer, orderNpmScopedNames, scopedRateLimitWaitMs } from "../lib/npm-scoped-pace.ts";
 import { appIdFromIdentity, normalizePackageName } from "../lib/matching.ts";
 import {
@@ -110,6 +112,54 @@ function rememberPoint(
   return true;
 }
 
+/**
+ * Package names this npm job can refresh without a same-process catalog walk.
+ * The early npm job runs before mcp-registry, so the list is the persisted
+ * catalog: last-fetched keys, the entity cache, today's checkpoint, and
+ * npm names already stored on this or the previous snapshot.
+ */
+export function knownNpmPackageNames(dataDir: string, snapshotDate: string): string[] {
+  const names = new Set<string>();
+  for (const key of Object.keys(loadLastFetched(dataDir, "npm"))) {
+    if (key) {
+      names.add(key);
+    }
+  }
+  for (const key of Object.keys(loadEntityCache(dataDir, "npm"))) {
+    if (key) {
+      names.add(key);
+    }
+  }
+  const checkpoint = loadCheckpoint(dataDir, "npm");
+  if (checkpoint?.snapshotDate === snapshotDate) {
+    for (const key of checkpoint.dueKeys) {
+      if (key) {
+        names.add(key);
+      }
+    }
+  }
+  const dates = [snapshotDate, previousSnapshotDate(snapshotDate, dataDir)].filter((date): date is string =>
+    Boolean(date),
+  );
+  for (const date of dates) {
+    let rows: Array<{ source: string; source_id: string; npm_package?: string | null }> = [];
+    try {
+      rows = readSourceRows(date, dataDir);
+    } catch {
+      rows = [];
+    }
+    for (const row of rows) {
+      if (row.source === "npm" && row.source_id) {
+        names.add(row.source_id);
+      }
+      if (row.npm_package) {
+        names.add(row.npm_package);
+      }
+    }
+  }
+  return [...names];
+}
+
 function recordsFromCache(
   snapshotDate: string,
   keys: string[],
@@ -138,7 +188,9 @@ export const npmAdapter: SourceAdapter = {
   name: "npm",
   kind: "enrichment",
   async collect(ctx: CollectContext): Promise<SourceResult> {
-    const allKeys = [...ctx.discovered.npmPackages].sort();
+    const allKeys = [
+      ...new Set([...ctx.discovered.npmPackages, ...knownNpmPackageNames(ctx.dataDir, ctx.snapshotDate)]),
+    ].sort();
     const lastFetched = loadLastFetched(ctx.dataDir, "npm");
     const cache = loadEntityCache(ctx.dataDir, "npm");
     const checkpoint = loadCheckpoint(ctx.dataDir, "npm");
@@ -208,6 +260,7 @@ export const npmAdapter: SourceAdapter = {
       fetchedThisRun: number;
       freezeUnfetched?: boolean;
       stoppedAt?: SourceResult["stoppedAt"];
+      halt?: SourceResult["halt"];
     }): SourceResult => {
       const records = recordsFromCache(
         ctx.snapshotDate,
@@ -250,6 +303,7 @@ export const npmAdapter: SourceAdapter = {
         stoppedAt: input.stoppedAt,
         error: input.stoppedAt?.error,
         lanes: [publishLane(bulkLane), publishLane(scopedLane)],
+        halt: input.halt,
         raw: {
           endpoint: NPM_DOWNLOADS_BASE,
           fetchedAt,
@@ -285,6 +339,8 @@ export const npmAdapter: SourceAdapter = {
     let truncated = false;
     let budgetStopped = false;
     let budgetNoted = false;
+    let midnightStopped = false;
+    let midnightNoted = false;
     let processed = 0;
     let deferred = 0;
     let stoppedAt: SourceResult["stoppedAt"];
@@ -316,9 +372,43 @@ export const npmAdapter: SourceAdapter = {
       });
     };
 
+    const wallNow = ctx.wallNow ?? (() => ctx.now);
+    const pastMidnight = (): boolean => utcDateString(wallNow()) !== ctx.snapshotDate;
+    const noteMidnight = (where: string): void => {
+      truncated = true;
+      midnightStopped = true;
+      if (midnightNoted) {
+        return;
+      }
+      midnightNoted = true;
+      stoppedAt = sourceStoppedAt(
+        "npm",
+        new Error(`npm stopped at UTC midnight; snapshot date ${ctx.snapshotDate} (${where})`),
+      );
+      ctx.log.warn("npm UTC date changed; persisting checkpoint", {
+        where,
+        snapshotDate: ctx.snapshotDate,
+        wallDate: utcDateString(wallNow()),
+        processed,
+        due: walkOrder.length,
+        fetchedThisRun,
+        lanes: [publishLane(bulkLane), publishLane(scopedLane)],
+      });
+    };
+    const stopRequested = (where: string): boolean => {
+      if (pastMidnight()) {
+        noteMidnight(where);
+        return true;
+      }
+      if (budgetStopped || budgetExhausted(budget)) {
+        noteBudget(where);
+        return true;
+      }
+      return false;
+    };
+
     const pacer = createNpmScopedPacer({ sleep: sleepFn, now: nowMs });
-    // Host throttle stays at 0. The pacer is the only start gap; a second
-    // 200ms/400ms reservation would cut the measured rate in half.
+    // Host throttle stays at 0. The pacer is the only start gap.
     const fetchNpm = async (
       url: string,
       lane: LaneCounter,
@@ -374,18 +464,20 @@ export const npmAdapter: SourceAdapter = {
       try {
         const batches = partitionNpmDownloads(unscoped).bulk;
         for (const [index, batch] of batches.entries()) {
-          if (budgetStopped || budgetExhausted(budget)) {
-            noteBudget("before bulk batch");
+          if (stopRequested("before bulk batch")) {
             break;
           }
           await enqueueIo(rememberCheckpoint);
           await pacer.beforeRequest();
-          if (budgetStopped || budgetExhausted(budget)) {
-            noteBudget("before bulk batch");
+          if (stopRequested("before bulk batch")) {
             break;
           }
           try {
             const payload = await fetchNpm(npmBulkUrl(batch), bulkLane);
+            if (pastMidnight()) {
+              noteMidnight("bulk response");
+              break;
+            }
             pacer.onSuccess();
             if (batch.length === 1) {
               countRemembered(bulkLane, batch[0]!, payload);
@@ -398,6 +490,10 @@ export const npmAdapter: SourceAdapter = {
               }
             }
           } catch (error) {
+            if (pastMidnight()) {
+              noteMidnight("bulk response");
+              break;
+            }
             if (error instanceof HttpError && error.status === 404) {
               bulkLane.notFound += batch.length;
             }
@@ -458,29 +554,34 @@ export const npmAdapter: SourceAdapter = {
         const pool = createSharedBackoffPool(concurrency, sleepFn, ctx.monotonicNow ?? Date.now);
         await Promise.all(
           scoped.map(async (name) => {
-            if (budgetStopped || budgetExhausted(budget)) {
-              noteBudget(scopedLane.requests > 0 ? "scoped in flight" : "before scoped package");
+            if (stopRequested(scopedLane.requests > 0 ? "scoped in flight" : "before scoped package")) {
               return;
             }
             await pool.acquire();
             try {
-              if (budgetStopped || budgetExhausted(budget)) {
-                noteBudget(scopedLane.requests > 0 ? "scoped in flight" : "before scoped package");
+              if (stopRequested(scopedLane.requests > 0 ? "scoped in flight" : "before scoped package")) {
                 return;
               }
               await enqueueIo(rememberCheckpoint);
               await pacer.beforeRequest();
-              if (budgetStopped || budgetExhausted(budget)) {
-                noteBudget(scopedLane.requests > 0 ? "scoped in flight" : "before scoped package");
+              if (stopRequested(scopedLane.requests > 0 ? "scoped in flight" : "before scoped package")) {
                 return;
               }
               try {
                 const payload = await fetchNpm(npmScopedUrl(name), scopedLane, (waitMs) => {
                   pool.pauseAll(waitMs);
                 });
+                if (pastMidnight()) {
+                  noteMidnight("scoped response");
+                  return;
+                }
                 pacer.onSuccess();
                 countRemembered(scopedLane, name, payload);
               } catch (error) {
+                if (pastMidnight()) {
+                  noteMidnight("scoped response");
+                  return;
+                }
                 if (error instanceof HttpError && error.status === 404) {
                   scopedLane.notFound += 1;
                   pacer.onSuccess();
@@ -555,14 +656,23 @@ export const npmAdapter: SourceAdapter = {
     }
 
     const lanes = [publishLane(bulkLane), publishLane(scopedLane)];
+    const halt: SourceResult["halt"] = midnightStopped ? "midnight" : budgetStopped ? "budget" : undefined;
     ctx.log.info("npm collected", {
       requested: allKeys.length,
       due: dueKeys.length,
       fetchedThisRun,
       truncated,
       budgetStopped,
+      midnightStopped,
+      halt: halt ?? "finished",
       lanes,
     });
-    return finish({ truncated, fetchedThisRun, freezeUnfetched: budgetStopped, stoppedAt });
+    return finish({
+      truncated,
+      fetchedThisRun,
+      freezeUnfetched: budgetStopped || midnightStopped,
+      stoppedAt,
+      halt,
+    });
   },
 };

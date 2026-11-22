@@ -21,7 +21,7 @@ import {
 } from "../src/lib/io.ts";
 import { createLogger } from "../src/lib/logger.ts";
 import { mergeApps } from "../src/lib/merge.ts";
-import { emptySourceRow, type SnapshotManifest, type SourceName, type SourceRow } from "../src/lib/schema.ts";
+import { SOURCE_NAMES, emptySourceRow, type SnapshotManifest, type SourceName, type SourceRow } from "../src/lib/schema.ts";
 import { fixtureFetch, loadFixture } from "./helpers.ts";
 
 vi.mock("../src/lib/io.ts", async (importOriginal) => {
@@ -148,15 +148,13 @@ describe("collect resilience", () => {
       appCount: 1,
       sourceRowCount: 1,
       partial: false,
-      completedSources: ["gemini-cli"],
-      sources: [
-        {
-          source: "gemini-cli",
-          rowCount: 1,
-          skipped: false,
-          collectedAt: "2026-10-24T11:07:24.740Z",
-        },
-      ],
+      completedSources: [...SOURCE_NAMES],
+      sources: SOURCE_NAMES.map((source) => ({
+        source,
+        rowCount: source === "gemini-cli" ? 1 : 0,
+        skipped: false,
+        collectedAt: "2026-10-24T11:07:24.740Z",
+      })),
     };
     const rows = [
       emptySourceRow({
@@ -828,17 +826,15 @@ describe("collect resilience", () => {
       appCount: 1,
       sourceRowCount: 1,
       partial: false,
-      completedSources: ["gemini-cli"],
-      sources: [
-        {
-          source: "gemini-cli",
-          rowCount: 1,
-          skipped: false,
-          collectedAt,
-          freshTodayCount: 1,
-          fetchedShare: 1,
-        },
-      ],
+      completedSources: [...SOURCE_NAMES],
+      sources: SOURCE_NAMES.map((source) => ({
+        source,
+        rowCount: source === "gemini-cli" ? 1 : 0,
+        skipped: false,
+        collectedAt,
+        freshTodayCount: source === "gemini-cli" ? 1 : 0,
+        fetchedShare: 1,
+      })),
     };
     writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
     const before = readFileSync(join(dataDir, "normalized", date, "manifest.json"), "utf8");

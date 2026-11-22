@@ -27,10 +27,17 @@ import {
 import { createLogger, type Logger } from "../lib/logger.ts";
 import { linkCrossStore, linkSourceRows, ownerDecisionCounts, tieDecidedPackageOwners } from "../lib/matching.ts";
 import { mergeApps } from "../lib/merge.ts";
+import { formatNpmLaneSummary } from "../lib/npm-scoped-pace.ts";
 import { formatRefetchStepSummary, withRefetchStats } from "../lib/refetch-coverage.ts";
 import { retryAsync, type SleepFn } from "../lib/retry.ts";
-import type { SnapshotManifest, SourceManifest, SourceName, SourceRow } from "../lib/schema.ts";
-import { SOURCE_NAMES } from "../lib/schema.ts";
+import {
+  SOURCE_NAMES,
+  sourceIsIncomplete,
+  type SnapshotManifest,
+  type SourceManifest,
+  type SourceName,
+  type SourceRow,
+} from "../lib/schema.ts";
 import { errorMessage, sleep as defaultSleep } from "../lib/util.ts";
 
 export type CollectOptions = {
@@ -48,6 +55,8 @@ export type CollectOptions = {
   sourceAttempts?: number;
   sleep?: SleepFn;
   monotonicNow?: () => number;
+  /** Live UTC clock. Defaults to the real clock, or to `now` when a test froze it. */
+  wallNow?: () => Date;
 };
 
 export type CollectOutcome = {
@@ -90,14 +99,6 @@ function failedResult(source: SourceName, collectedAt: string, error: unknown): 
     freshWithin7dCount: 0,
     fetchedThisRunCount: 0,
   };
-}
-
-function sourceCompleted(result: SourceResult): boolean {
-  return !result.failed && !result.truncated && !result.skipped;
-}
-
-function sourceIncomplete(result: SourceResult): boolean {
-  return Boolean(result.failed || result.truncated);
 }
 
 type FreshChange = { source: string; previousFresh: number; nextFresh: number };
@@ -246,18 +247,26 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
       };
     }
     log.info("core sources are incomplete; collecting", { date: snapshotDate, reason: decision.reason });
-  } else if (!options.force && inspection.usable && !inspection.needsRetry) {
-    log.info("snapshot already complete; refusing to overwrite", { date: snapshotDate });
-    return {
-      ok: true,
-      skipped: true,
-      skipReason: `snapshot ${snapshotDate} already complete; pass --force to overwrite`,
-      wrote: false,
-      manifest: inspection.hasManifest ? readManifest(snapshotDate, dataDir) : undefined,
-      failedSources: [],
-      cleaned,
-      date: snapshotDate,
-    };
+  } else if (!options.force && inspection.usable && inspection.hasManifest) {
+    let existing: SnapshotManifest | undefined;
+    try {
+      existing = readManifest(snapshotDate, dataDir);
+    } catch {
+      existing = undefined;
+    }
+    if (existing && snapshotIsSixSourceComplete(existing)) {
+      log.info("snapshot already complete; refusing to overwrite", { date: snapshotDate });
+      return {
+        ok: true,
+        skipped: true,
+        skipReason: `snapshot ${snapshotDate} already complete; pass --force to overwrite`,
+        wrote: false,
+        manifest: existing,
+        failedSources: [],
+        cleaned,
+        date: snapshotDate,
+      };
+    }
   }
 
   const collectedAt = now.toISOString();
@@ -274,6 +283,7 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     maxPages: options.maxPages,
     sleep,
     monotonicNow: options.monotonicNow,
+    wallNow: options.wallNow ?? (options.now ? () => now : () => new Date()),
     runId,
   };
 
@@ -289,10 +299,42 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
   }
 
   const failedSources = results.filter((result) => result.failed).map((result) => result.source);
-  const incompleteSources = results.filter(sourceIncomplete).map((result) => result.source);
-  const completedSources = results.filter(sourceCompleted).map((result) => result.source);
-  const sourceRows: SourceRow[] = linkSourceRows(results.flatMap((result) => result.records));
-  if (sourceRows.length === 0) {
+  const npmResult = results.find((result) => result.source === "npm");
+  if (npmResult) {
+    const scopedLane = npmResult.lanes?.find((lane) => lane.lane === "scoped");
+    appendJobSummary(
+      options.env ?? process.env,
+      formatNpmLaneSummary({
+        durationMs: scopedLane?.durationMs ?? 0,
+        scopedRequests: scopedLane?.requests ?? 0,
+        rateLimits: scopedLane?.rateLimits ?? 0,
+        halt: npmResult.halt,
+      }),
+    );
+  }
+  let keptRows: SourceRow[] = [];
+  let keptManifests: SourceManifest[] = [];
+  let previousManifest: SnapshotManifest | undefined;
+  if (inspection.hasManifest) {
+    try {
+      previousManifest = readManifest(snapshotDate, dataDir);
+    } catch {
+      previousManifest = undefined;
+    }
+  }
+  if (previousManifest) {
+    let previousRows: SourceRow[] = [];
+    try {
+      previousRows = readSourceRows(snapshotDate, dataDir);
+    } catch {
+      previousRows = [];
+    }
+    keptRows = previousRows.filter((row) => !names.has(row.source));
+    keptManifests = previousManifest.sources.filter((source) => !names.has(source.source));
+  }
+  const newRecords = results.flatMap((result) => result.records);
+  const sourceRows: SourceRow[] = linkSourceRows([...keptRows, ...newRecords]);
+  if (newRecords.length === 0) {
     log.error("all sources failed or produced no rows; not writing an empty snapshot", {
       date: snapshotDate,
       failedSources,
@@ -308,14 +350,6 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     };
   }
   const apps = mergeApps(snapshotDate, sourceRows);
-  let previousManifest: SnapshotManifest | undefined;
-  if (inspection.hasManifest) {
-    try {
-      previousManifest = readManifest(snapshotDate, dataDir);
-    } catch {
-      previousManifest = undefined;
-    }
-  }
   if (!options.force && previousManifest) {
     let previousRows: SourceRow[] = [];
     try {
@@ -406,7 +440,12 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     sourceManifests.push(sourceManifest);
   }
 
-  const partial = incompleteSources.length > 0;
+  const mergedManifests = orderSourceManifests([...keptManifests, ...sourceManifests]);
+  const partial = mergedManifests.some((source) => source.failed === true || source.truncated === true);
+  const completedSources = mergedManifests
+    .filter((source) => source.failed !== true && source.truncated !== true && source.skipped !== true)
+    .map((source) => source.source);
+  const failedSourceCount = mergedManifests.filter((source) => source.failed === true).length;
   const dest = dataPaths(dataDir).normalizedDir(snapshotDate);
   let previousBackupPath: string | undefined;
   let overwrite: SnapshotManifest["overwrite"] = undefined;
@@ -440,17 +479,17 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
   const manifest: SnapshotManifest = {
     snapshotDate,
     collectedAt,
-    sources: sourceManifests,
+    sources: mergedManifests,
     appCount: apps.length,
     sourceRowCount: sourceRows.length,
     partial,
     completedSources,
-    failedSourceCount: failedSources.length,
+    failedSourceCount,
     runId,
     overwrite,
   };
   try {
-    const packageOwners = linkCrossStore(results.flatMap((result) => result.records)).packageOwners;
+    const packageOwners = linkCrossStore([...keptRows, ...newRecords]).packageOwners;
     const counts = ownerDecisionCounts(packageOwners);
     const tieDecided = tieDecidedPackageOwners(packageOwners);
     manifest.owner_decided_by = packageOwners;
@@ -473,10 +512,10 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     apps: apps.length,
     sourceRows: sourceRows.length,
     failedSources,
-    incompleteSources,
     completedSources,
+    partial,
   });
-  appendJobSummary(options.env ?? process.env, formatRefetchStepSummary(snapshotDate, sourceManifests));
+  appendJobSummary(options.env ?? process.env, formatRefetchStepSummary(snapshotDate, mergedManifests));
   return {
     ok: true,
     skipped: false,
@@ -539,6 +578,26 @@ function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifes
     fetch_ended_at: result.fetchEndedAt,
     lanes: result.lanes,
   };
+}
+
+/** A late primary refuses only a day where all six sources are present and none failed or truncated. */
+export function snapshotIsSixSourceComplete(manifest: SnapshotManifest): boolean {
+  if (manifest.partial === true) {
+    return false;
+  }
+  const present = new Set(manifest.sources.map((source) => source.source));
+  if (SOURCE_NAMES.some((name) => !present.has(name))) {
+    return false;
+  }
+  return !manifest.sources.some((source) => sourceIsIncomplete(source));
+}
+
+function orderSourceManifests(sources: readonly SourceManifest[]): SourceManifest[] {
+  const byName = new Map(sources.map((source) => [source.source, source]));
+  return SOURCE_NAMES.flatMap((name) => {
+    const source = byName.get(name);
+    return source ? [source] : [];
+  });
 }
 
 function earlierIso(left?: string, right?: string): string | undefined {
