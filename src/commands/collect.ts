@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { adaptersByKind } from "../adapters/index.ts";
 import { createDiscoveredRefs, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "../adapters/types.ts";
+import { decideIfIncompleteBackup } from "../lib/backup-core.ts";
 import { budgetExhausted, budgetExhaustedError, isBudgetExhaustedError, openSourceBudget } from "../lib/budget.ts";
 import { budgetPartialRows } from "../lib/budget-partial.ts";
 import { SOURCE_COLLECT_ATTEMPTS } from "../lib/config.ts";
@@ -223,7 +224,29 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
   }
 
   const inspection = inspectSnapshot(snapshotDate, dataDir);
-  if (!options.force && inspection.usable && !inspection.needsRetry) {
+  // Backups pass --if-incomplete. That decision reads BACKUP_CORE_SOURCES only.
+  // manifest.partial stays the six-source flag and is not consulted here.
+  // The primary run (no flag) still refuses a six-source-complete snapshot.
+  if (options.ifIncomplete && !options.force) {
+    const decision = decideIfIncompleteBackup(snapshotDate, dataDir);
+    if (!decision.proceed) {
+      log.info("backup skipped; core sources are complete", { date: snapshotDate, reason: decision.reason });
+      if (decision.summary) {
+        appendJobSummary(options.env ?? process.env, decision.summary);
+      }
+      return {
+        ok: true,
+        skipped: true,
+        skipReason: decision.reason,
+        wrote: false,
+        manifest: decision.manifest,
+        failedSources: [],
+        cleaned,
+        date: snapshotDate,
+      };
+    }
+    log.info("core sources are incomplete; collecting", { date: snapshotDate, reason: decision.reason });
+  } else if (!options.force && inspection.usable && !inspection.needsRetry) {
     log.info("snapshot already complete; refusing to overwrite", { date: snapshotDate });
     return {
       ok: true,
@@ -235,12 +258,6 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
       cleaned,
       date: snapshotDate,
     };
-  }
-  if (options.ifIncomplete) {
-    log.info("snapshot missing or incomplete; collecting", {
-      date: snapshotDate,
-      reason: inspection.reason ?? "missing",
-    });
   }
 
   const collectedAt = now.toISOString();
