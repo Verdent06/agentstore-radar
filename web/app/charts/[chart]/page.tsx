@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { Shell } from "@/components/shell";
 import { LeaderTable } from "@/components/table";
 import { CHART_IDS, CHART_META } from "@/lib/types";
-import { PUBLIC_TOP_N, isChartId, sparkValues, topChart } from "@/lib/query";
+import { PUBLIC_TOP_N, isChartId, pausedSourceText, sparkValues, topChart } from "@/lib/query";
 import { loadAggregate } from "@/lib/store";
 
 export function generateStaticParams() {
@@ -25,6 +25,15 @@ export default async function ChartPage({ params }: { params: Promise<{ chart: s
   if (!isChartId(chart)) notFound();
   const agg = loadAggregate();
   const spec = CHART_META[chart];
+  if (chart === "gemini") {
+    return (
+      <Shell>
+        <p className="text-xs uppercase tracking-[0.2em] text-muted">Leaderboard</p>
+        <h1 className="mt-1 text-3xl font-semibold tracking-tight">{spec.title}</h1>
+        <p className="mt-2 max-w-2xl text-sm text-muted">{pausedSourceText("gemini-cli")}</p>
+      </Shell>
+    );
+  }
   const rows = topChart(agg, chart, PUBLIC_TOP_N);
   const sparks = new Map(rows.map((row) => [row.app.id, sparkValues(agg, row.app.id, spec.metric)]));
 

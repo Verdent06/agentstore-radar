@@ -4,7 +4,7 @@ import { LineChart } from "@/components/sparkline";
 import { Shell } from "@/components/shell";
 import { StorePills } from "@/components/table";
 import { formatCount, formatDate, formatPct } from "@/lib/format";
-import { COMPETITORS_CAP, appPageParams, findApp, seriesToPoints } from "@/lib/query";
+import { COMPETITORS_CAP, appPageParams, findApp, pausedSourceText, seriesToPoints } from "@/lib/query";
 import { loadAggregate } from "@/lib/store";
 import { CATEGORY_LABELS } from "@/lib/types";
 
@@ -52,13 +52,24 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
           ["Stars", app.stars],
           ["npm / week", app.npmWeeklyDownloads],
           ["PyPI / week", app.pypiLastWeekDownloads],
-          ["Gemini stars", app.geminiStars],
         ].map(([label, value]) => (
           <div key={String(label)} className="surface rounded-lg px-3 py-2">
             <div className="text-[11px] uppercase text-muted">{label}</div>
             <div className="font-mono text-lg tabular">{formatCount(value as number | null)}</div>
           </div>
         ))}
+        {app.stores.includes("gemini-cli") ? (
+          <div className="surface rounded-lg px-3 py-2">
+            <div className="text-[11px] uppercase text-muted">Gemini CLI</div>
+            <div className="text-sm">{pausedSourceText("gemini-cli")}</div>
+          </div>
+        ) : null}
+        {app.stores.includes("smithery") ? (
+          <div className="surface rounded-lg px-3 py-2">
+            <div className="text-[11px] uppercase text-muted">Smithery</div>
+            <div className="text-sm">{pausedSourceText("smithery")}</div>
+          </div>
+        ) : null}
       </div>
 
       <section className="surface mt-8 rounded-lg p-4">
@@ -68,7 +79,6 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
           series={[
             { name: "stars", color: "var(--up)", values: history.map((point) => point.stars) },
             { name: "npm", color: "var(--warn)", values: history.map((point) => point.npmWeeklyDownloads) },
-            { name: "gemini", color: "var(--accent)", values: history.map((point) => point.geminiStars) },
           ]}
         />
         <table className="mt-4 w-full text-xs">
@@ -77,7 +87,6 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
               <th className="py-1 text-left font-medium">Date</th>
               <th className="py-1 text-right font-medium">Stars</th>
               <th className="py-1 text-right font-medium">npm</th>
-              <th className="py-1 text-right font-medium">Gemini</th>
             </tr>
           </thead>
           <tbody>
@@ -92,7 +101,6 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
                   {formatCount(point.npmWeeklyDownloads)}
                   {point.npmGrowth ? <span className="ml-1 text-muted">{point.npmGrowth}</span> : null}
                 </td>
-                <td className="py-1 text-right font-mono">{formatCount(point.geminiStars)}</td>
               </tr>
             ))}
           </tbody>

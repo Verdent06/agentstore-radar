@@ -3,7 +3,7 @@ import { DemoBanner, KpiGrid, formatKpis } from "@/components/kpis";
 import { Shell } from "@/components/shell";
 import { LeaderTable } from "@/components/table";
 import { formatCount, formatDate } from "@/lib/format";
-import { PUBLIC_TOP_N, homeMoverMetric, homeRows, newArrivals, sparkValues, topChart } from "@/lib/query";
+import { PUBLIC_TOP_N, describeGrowthWindow, homeMoverMetric, homeRows, newArrivals, pausedSourceText, sparkValues, topChart } from "@/lib/query";
 import { loadAggregate } from "@/lib/store";
 import { METRIC_LABELS } from "@/lib/types";
 
@@ -13,6 +13,7 @@ export default function HomePage() {
   const agg = loadAggregate();
   const metric = homeMoverMetric(agg);
   const hasMovers = metric != null;
+  const dayWindow = describeGrowthWindow(agg, "1d");
   const rows = homeRows(agg, PUBLIC_TOP_N);
   const sparkMetric = metric ?? "npm_weekly_downloads";
   const sparks = new Map(rows.map((row) => [row.app.id, sparkValues(agg, row.app.id, sparkMetric)]));
@@ -43,8 +44,14 @@ export default function HomePage() {
         {charts.map((card) => (
           <Link key={card.href} href={card.href} className="surface rounded-lg px-4 py-3 hover:border-accent">
             <div className="text-[11px] uppercase tracking-wide text-muted">{card.label}</div>
-            <div className="mt-1 truncate font-medium">{card.row?.app.displayName ?? "—"}</div>
-            <div className="font-mono text-xs text-muted">{card.row ? `#1 · ${formatCount(card.row.value)}` : "No rows"}</div>
+            {card.href === "/charts/gemini" ? (
+              <div className="mt-1 text-sm">{pausedSourceText("gemini-cli")}</div>
+            ) : (
+              <>
+                <div className="mt-1 truncate font-medium">{card.row?.app.displayName ?? "—"}</div>
+                <div className="font-mono text-xs text-muted">{card.row ? `#1 · ${formatCount(card.row.value)}` : "No rows"}</div>
+              </>
+            )}
           </Link>
         ))}
       </div>
@@ -56,9 +63,11 @@ export default function HomePage() {
               {metric ? `Top movers (${METRIC_LABELS[metric]})` : "Top by npm weekly downloads"}
             </h2>
             <p className="text-sm text-muted">
-              {hasMovers
-                ? `${formatDate(agg.meta.previousCompleteDate ?? agg.meta.previousDate)} → ${formatDate(agg.meta.latestCompleteDate ?? agg.meta.latestDate)}`
-                : "Need two complete snapshot days before movers appear."}
+              {hasMovers && dayWindow?.label
+                ? `${dayWindow.label} · ${formatDate(dayWindow.start)} → ${formatDate(dayWindow.end)}`
+                : dayWindow && !dayWindow.allowed
+                  ? `Movers withheld. ${dayWindow.reasons[0] ?? ""}`
+                  : "Need two core-clean snapshot days on or after the verified floor before movers appear."}
             </p>
           </div>
           <Link href="/movers" className="text-sm text-accent hover:underline">
