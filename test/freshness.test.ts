@@ -408,8 +408,7 @@ describe("metric freshness", () => {
     expect(agg.meta.latestCompleteDate).toBe("2026-10-23");
     expect(agg.meta.previousCompleteDate).toBe("2026-10-21");
     const daily = movers(agg, { window: "1d", metric: "stars" });
-    const weather = daily.find((row) => row.id === "github:example/weather");
-    expect(weather).toMatchObject({ previous: 100, current: 110, delta: 10 });
-    expect(weather?.previous).not.toBe(9_999);
+    expect(daily.find((row) => row.id === "github:example/weather")).toBeUndefined();
+    expect(JSON.stringify(daily)).not.toContain("9999");
   });
 });

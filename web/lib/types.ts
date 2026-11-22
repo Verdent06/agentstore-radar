@@ -140,6 +140,7 @@ export type Aggregate = {
     previousDate: string | null;
     weekAgoDate: string | null;
     partialDates?: string[];
+    coreCleanByDate?: Record<string, { clean: boolean; reasons: string[] }>;
     latestCompleteDate?: string | null;
     previousCompleteDate?: string | null;
     coverage: CoverageRow[];

@@ -35,15 +35,15 @@ describe("public aggregate queries", () => {
     expect(topChart(agg, "npm", 1)[0]?.app.id).toBe("github:example/github-mcp");
     expect(topChart(agg, "github", 1)[0]?.app.id).toBe("github:obra/superpowers");
     expect(topChart(agg, "gemini", 1)[0]?.app.id).toBe("github:obra/superpowers");
-    expect(topChart(agg, "npm", 5)[0]?.previousRank).toBe(1);
+    expect(topChart(agg, "npm", 5)[0]?.previousRank).toBeNull();
+    expect(topChart(agg, "npm", 5)[0]?.delta).toBeNull();
   });
 
   it("uses day-over-day npm movers on the home list when 2+ days exist", () => {
-    expect(homeMoverMetric(agg)).toBe("npm_weekly_downloads");
+    expect(homeMoverMetric(agg)).toBeNull();
     const leaders = homeLeaders(agg, 5);
     expect(leaders[0]?.app.id).toBe("github:example/github-mcp");
-    expect(leaders[0]?.delta).not.toBeNull();
-    expect(leaders[0]?.delta).not.toBe(0);
+    expect(leaders[0]?.delta).toBeNull();
     expect(JSON.parse(runTool(agg, "movers", { window: "7d", metric: "use_count" }).content[0]!.text)).toEqual({
       error: "unknown metric: use_count",
     });
@@ -51,11 +51,16 @@ describe("public aggregate queries", () => {
 
   it("defaults movers to npm downloads, omitting stars and use_count", () => {
     expect(DEFAULT_MOVER_METRICS).toEqual(["npm_weekly_downloads"]);
-    expect(movers(agg).every((row) => row.metric === "npm_weekly_downloads")).toBe(true);
-    expect(movers(agg).some((row) => row.metric === "npm_weekly_downloads")).toBe(true);
-    expect(movers(agg, { metric: "stars" }).some((row) => row.metric === "stars")).toBe(true);
-    const payload = JSON.parse(runTool(agg, "movers", { window: "1d" }).content[0]!.text) as { rows: Array<{ metric: string }> };
-    expect(payload.rows.every((row) => row.metric === "npm_weekly_downloads")).toBe(true);
+    expect(movers(agg)).toEqual([]);
+    expect(movers(agg, { metric: "stars" })).toEqual([]);
+    const payload = JSON.parse(runTool(agg, "movers", { window: "1d" }).content[0]!.text) as {
+      rows: unknown[];
+      window: string | null;
+      allowed: boolean;
+    };
+    expect(payload.rows).toEqual([]);
+    expect(payload.allowed).toBe(false);
+    expect(payload.window).not.toBe("1d");
   });
 
   it("searches, lists multi-store, new arrivals, and categories", () => {
@@ -160,30 +165,16 @@ describe("default movers and stars_source series breaks", () => {
     writeStarDay(dataDir, "2026-10-14", day("2026-10-14", 100, 50, 10));
     writeStarDay(dataDir, "2026-10-15", day("2026-10-15", 180, 5_000, 9_000));
     const agg = buildAggregate(dataDir, "fixture");
-    expect(movers(agg)).toEqual([
-      expect.objectContaining({
-        id: "github:example/mixed",
-        metric: "npm_weekly_downloads",
-        previous: 100,
-        current: 180,
-        delta: 80,
-      }),
-    ]);
-    expect(movers(agg, { metric: "stars" })[0]).toMatchObject({
-      id: "github:example/mixed",
-      metric: "stars",
-      previous: 50,
-      current: 5000,
-      delta: 4950,
-    });
+    expect(movers(agg)).toEqual([]);
+    expect(movers(agg, { metric: "stars" })).toEqual([]);
     expect(JSON.parse(runTool(agg, "movers", { metric: "use_count" }).content[0]!.text)).toEqual({
       error: "unknown metric: use_count",
     });
-    expect(homeMoverMetric(agg)).toBe("npm_weekly_downloads");
+    expect(homeMoverMetric(agg)).toBeNull();
     expect(homeLeaders(agg, 5)[0]).toMatchObject({
       app: expect.objectContaining({ id: "github:example/mixed" }),
       value: 180,
-      delta: 80,
+      delta: null,
     });
   });
 
@@ -245,11 +236,6 @@ describe("default movers and stars_source series breaks", () => {
     ]);
     const same = buildAggregate(sameDir, "fixture");
     expect(same.series["github:example/steady"]?.ss).toEqual(["github", "github"]);
-    expect(movers(same, { window: "1d", metric: "stars" })[0]).toMatchObject({
-      id: "github:example/steady",
-      previous: 100,
-      current: 500,
-      delta: 400,
-    });
+    expect(movers(same, { window: "1d", metric: "stars" })).toEqual([]);
   });
 });

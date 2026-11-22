@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { runTool, type ToolName } from "../../src/aggregate/tools.ts";
+import { pausedSourceText, verified_from } from "../../src/lib/window-guard.ts";
 import { loadAggregate } from "./load.ts";
 
 const VERSION = "0.1.0";
@@ -70,7 +71,7 @@ export function createRadarServer(): McpServer {
   server.registerTool(
     "movers",
     {
-      description: "Largest absolute metric changes over 1 day or ~7 days.",
+      description: `Largest absolute metric changes over a core-clean window on or after ${verified_from}. A 1-day window that skips a day is withheld. ${pausedSourceText("smithery")}. ${pausedSourceText("gemini-cli")}. PyPI growth is disabled.`,
       inputSchema: z.object({
         window: z.enum(["1d", "7d"]).optional(),
         metric: z.enum(["stars", "npm_weekly_downloads", "pypi_last_week_downloads", "gemini_stars"]).optional(),

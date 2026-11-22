@@ -1,7 +1,7 @@
 import { ImageResponse } from "next/og";
 import { OgFrame } from "@/components/og";
 import { formatCompact, formatSigned } from "@/lib/format";
-import { isChartId, topChart } from "@/lib/query";
+import { isChartId, pausedSourceText, topChart } from "@/lib/query";
 import { loadAggregate } from "@/lib/store";
 import { CHART_META } from "@/lib/types";
 
@@ -14,12 +14,15 @@ export default async function Image({ params }: { params: Promise<{ chart: strin
   const chart = isChartId(raw) ? raw : "npm";
   const agg = loadAggregate();
   const spec = CHART_META[chart];
-  const rows = topChart(agg, chart, 6).map((row) => ({
-    rank: row.rank,
-    name: row.app.displayName,
-    value: formatCompact(row.value),
-    delta: formatSigned(row.delta),
-  }));
+  const rows =
+    chart === "gemini"
+      ? [{ name: pausedSourceText("gemini-cli"), value: pausedSourceText("gemini-cli") }]
+      : topChart(agg, chart, 6).map((row) => ({
+          rank: row.rank,
+          name: row.app.displayName,
+          value: formatCompact(row.value),
+          delta: formatSigned(row.delta),
+        }));
   return new ImageResponse(
     <OgFrame eyebrow={spec.unit} title={spec.title} rows={rows} footnote={`${agg.meta.latestDate ?? ""} · AgentStore Radar`} />,
     size,
