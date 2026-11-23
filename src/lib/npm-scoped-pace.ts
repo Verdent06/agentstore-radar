@@ -8,37 +8,36 @@ import { prioritizeStalestFirst, type LastFetchedMap } from "./rolling.ts";
 import type { SleepFn } from "./retry.ts";
 
 /**
- * Scoped npm pacing, from the ubuntu-latest collect logs on 2026-11-21.
+ * Scoped npm pacing, from the 2026-11-22 collect logs on the 400ms pacer.
  *
- * Fresh pass, run 44846503852 job 136667408118: 10,582 scoped packages and
- * 7,160 unscoped (56 bulk requests). The first Cloudflare 429 was request 44
- * at 10.035s (4.38 req/s). Resume pass, run 44910143087 job 136864016399:
- * request 47 at 9.972s (4.71 req/s). Both runs then spent the rest of the
- * 100-minute budget in 15s/30s/60s waits (`15s * 2^attempt`, no Retry-After).
- * Merged wait on the resume was 5,543s of 6,006s (92%). Useful responses
- * landed at 35/min, so the fresh scoped catalog cannot finish at that pace.
+ * Runs 45028304407 and 45044927456 (and the 2026-11-21 runs of the same
+ * pacer) accepted about 0.55 requests/s. After the first Cloudflare 429 the
+ * gap widened once to 600ms and never recovered, then a 429 arrived about
+ * every 44s. Each one waited exactly 30s because the response had no positive
+ * Retry-After. About two thirds of the 100-minute budget was that sleep.
+ * A cold start still accepted ~42 requests; after each 30s quiet only ~24
+ * more were accepted. 1.8s is one request per 1.8s, the smooth rate those
+ * logs actually got accepted (about 33 per minute).
  *
- * 43 requests succeeded inside 10s, so the trip is a short burst limit, not
- * a 50-per-minute cap. 400ms is 25 starts per 10s, under that burst. Bulk and
- * scoped share the pacer because they share the Actions IP. 10,582 + 56
- * starts at 400ms is 70.9 minutes, inside the 100-minute budget.
- *
- * The bulk downloads API still rejects scoped names (HTTP 400, probed
- * 2026-11-21). A package fetched earlier on the snapshot UTC date is already
- * fresh and is not requested again.
+ * On a 429 the interval is multiplied by 1.5 and that value becomes the
+ * floor for the rest of the run. A long clean streak may shorten the gap by
+ * one small step, and it cannot go under the floor set by the last 429.
+ * Bulk downloads share this start gate. They still go out in batches of 128.
  */
 export { NPM_SCOPED_CONCURRENCY, NPM_SCOPED_MIN_INTERVAL_MS };
 
 export const NPM_SCOPED_WINDOW_MS = 10_000;
-/** Shortest Cloudflare pause in the steady state that was followed by successes. 15s was not. */
+/** Shortest Cloudflare pause in the steady state that was followed by successes. */
 export const NPM_SCOPED_CLOUDFLARE_BACKOFF_MS = 30_000;
 export const NPM_SCOPED_CLOUDFLARE_BACKOFF_CAP_MS = 60_000;
-/** One step only. A permanent drop to this gap would land the fresh catalog near 106 minutes. */
-export const NPM_SCOPED_INTERVAL_STEP_MS = 200;
-export const NPM_SCOPED_RECOVERY_STREAK = 50;
-export const NPM_SCOPED_MEASURED_FRESH_PACKAGES = 10_582;
-export const NPM_SCOPED_MEASURED_FRESH_BULK_REQUESTS = 56;
-export const NPM_SCOPED_MEASURED_TRIP_REQUESTS = 44;
+/** Multiplicative slowdown applied on every 429. The result is the new floor. */
+export const NPM_SCOPED_SLOWDOWN = 1.5;
+/** Added back only while the interval is still above the last-429 floor. */
+export const NPM_SCOPED_RECOVERY_STEP_MS = 100;
+/** About three and a half minutes at the 1.8s start, longer once slowed. */
+export const NPM_SCOPED_RECOVERY_STREAK = 120;
+export const NPM_SCOPED_MEASURED_FRESH_PACKAGES = 10_602;
+export const NPM_SCOPED_MEASURED_FRESH_BULK_REQUESTS = 61;
 
 export function npmScopedMaxStartsPerWindow(
   intervalMs = NPM_SCOPED_MIN_INTERVAL_MS,
@@ -47,7 +46,8 @@ export function npmScopedMaxStartsPerWindow(
   if (intervalMs <= 0) {
     return Number.POSITIVE_INFINITY;
   }
-  return Math.max(1, Math.floor(windowMs / intervalMs));
+  // ceil so a 1.8s gap is not stretched by a 10s window that holds one fewer start.
+  return Math.max(1, Math.ceil(windowMs / intervalMs));
 }
 
 /** Wall time from the first start to the last, when every start keeps `intervalMs`. */
@@ -65,7 +65,7 @@ export type ScopedRateLimitInput = {
 };
 
 /**
- * Positive Retry-After is the wait, including a Cloudflare header under 15s.
+ * Positive Retry-After is the wait, including a value under 30s.
  * A missing or zero header on Cloudflare waits 30s, then 60s. Other 429s keep
  * the shared retry schedule.
  */
@@ -98,11 +98,49 @@ export function orderNpmScopedNames(
   return prioritizeStalestFirst(names, lastFetched, scoreOf);
 }
 
+export type NpmHalt = "budget" | "midnight";
+
+export type NpmProducer = "scheduled" | "recovery";
+
+export function formatNpmLaneSummary(input: {
+  durationMs: number;
+  scopedRequests: number;
+  rateLimits: number;
+  halt?: NpmHalt;
+  producer?: NpmProducer;
+}): string {
+  const minutes = input.durationMs / 60_000;
+  const perMinute = minutes > 0 ? input.scopedRequests / minutes : 0;
+  const stop =
+    input.halt === "budget"
+      ? "hit the wall-clock budget"
+      : input.halt === "midnight"
+        ? "hit the UTC midnight stop"
+        : "finished inside the budget and the UTC day";
+  const producer =
+    input.producer === "scheduled"
+      ? "- Producer: 00:20 npm job"
+      : input.producer === "recovery"
+        ? "- Producer: collect recovery"
+        : null;
+  return [
+    "### npm lane",
+    "",
+    ...(producer ? [producer] : []),
+    `- Wall-clock minutes: ${minutes.toFixed(1)}`,
+    `- Scoped requests per minute: ${perMinute.toFixed(2)}`,
+    `- 429 count: ${input.rateLimits}`,
+    `- Stop: ${stop}`,
+    "",
+  ].join("\n");
+}
+
 export type NpmScopedPacer = {
   beforeRequest(): Promise<void>;
   onRateLimit(input: ScopedRateLimitInput): number;
   onSuccess(): void;
   readonly intervalMs: number;
+  readonly floorMs: number;
 };
 
 /**
@@ -117,12 +155,12 @@ export function createNpmScopedPacer(options: {
 }): NpmScopedPacer {
   const now = options.now ?? Date.now;
   const windowMs = options.windowMs ?? NPM_SCOPED_WINDOW_MS;
-  const floorMs = options.intervalMs ?? NPM_SCOPED_MIN_INTERVAL_MS;
-  let intervalMs = floorMs;
+  const startMs = options.intervalMs ?? NPM_SCOPED_MIN_INTERVAL_MS;
+  let intervalMs = startMs;
+  let floorMs = startMs;
   let skew = 0;
   let lastStart = Number.NEGATIVE_INFINITY;
   let holdUntil = 0;
-  let widenedUntil = 0;
   let successStreak = 0;
   const starts: number[] = [];
   let tail: Promise<void> = Promise.resolve();
@@ -179,18 +217,16 @@ export function createNpmScopedPacer(options: {
     const wait = scopedRateLimitWaitMs(input);
     const t = current();
     holdUntil = Math.max(holdUntil, t + wait);
-    if (t >= widenedUntil) {
-      intervalMs = Math.min(floorMs + NPM_SCOPED_INTERVAL_STEP_MS, intervalMs + NPM_SCOPED_INTERVAL_STEP_MS);
-      widenedUntil = t + wait;
-      successStreak = 0;
-    }
+    intervalMs = Math.round(intervalMs * NPM_SCOPED_SLOWDOWN);
+    floorMs = intervalMs;
+    successStreak = 0;
     return wait;
   }
 
   function onSuccess(): void {
     successStreak += 1;
     if (successStreak >= NPM_SCOPED_RECOVERY_STREAK && intervalMs > floorMs) {
-      intervalMs = Math.max(floorMs, intervalMs - NPM_SCOPED_INTERVAL_STEP_MS);
+      intervalMs = Math.max(floorMs, intervalMs - NPM_SCOPED_RECOVERY_STEP_MS);
       successStreak = 0;
     }
   }
@@ -201,6 +237,9 @@ export function createNpmScopedPacer(options: {
     onSuccess,
     get intervalMs() {
       return intervalMs;
+    },
+    get floorMs() {
+      return floorMs;
     },
   };
 }

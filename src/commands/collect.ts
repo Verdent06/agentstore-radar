@@ -1,11 +1,12 @@
 import { appendFileSync, existsSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { adaptersByKind } from "../adapters/index.ts";
+import { npmAdapter } from "../adapters/npm.ts";
 import { createDiscoveredRefs, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "../adapters/types.ts";
 import { decideIfIncompleteBackup } from "../lib/backup-core.ts";
 import { budgetExhausted, budgetExhaustedError, isBudgetExhaustedError, openSourceBudget } from "../lib/budget.ts";
 import { budgetPartialRows } from "../lib/budget-partial.ts";
-import { SOURCE_COLLECT_ATTEMPTS } from "../lib/config.ts";
+import { SOURCE_COLLECT_ATTEMPTS, sourceBudgetMs } from "../lib/config.ts";
 import { computeCoverage, freshFetchedShare, isFreshRow } from "../lib/coverage.ts";
 import { utcDateString } from "../lib/dates.ts";
 import { createHttpClient, type HttpClient } from "../lib/http.ts";
@@ -27,10 +28,18 @@ import {
 import { createLogger, type Logger } from "../lib/logger.ts";
 import { linkCrossStore, linkSourceRows, ownerDecisionCounts, tieDecidedPackageOwners } from "../lib/matching.ts";
 import { mergeApps } from "../lib/merge.ts";
+import { formatNpmLaneSummary, type NpmProducer } from "../lib/npm-scoped-pace.ts";
+import { decideNpmRecovery, NPM_RECOVERY_MARGIN_MS, nextUtcMidnightMs } from "../lib/npm-recovery.ts";
 import { formatRefetchStepSummary, withRefetchStats } from "../lib/refetch-coverage.ts";
 import { retryAsync, type SleepFn } from "../lib/retry.ts";
-import type { SnapshotManifest, SourceManifest, SourceName, SourceRow } from "../lib/schema.ts";
-import { SOURCE_NAMES } from "../lib/schema.ts";
+import {
+  SOURCE_NAMES,
+  sourceIsIncomplete,
+  type SnapshotManifest,
+  type SourceManifest,
+  type SourceName,
+  type SourceRow,
+} from "../lib/schema.ts";
 import { errorMessage, sleep as defaultSleep } from "../lib/util.ts";
 
 export type CollectOptions = {
@@ -48,6 +57,14 @@ export type CollectOptions = {
   sourceAttempts?: number;
   sleep?: SleepFn;
   monotonicNow?: () => number;
+  /** Live UTC clock. Defaults to the real clock, or to `now` when a test froze it. */
+  wallNow?: () => Date;
+  /**
+   * After the selected sources, run npm when today's manifest is missing or
+   * truncated. The 05:41 primary and both backups pass this so a cancelled
+   * 00:20 npm run still leaves npm rows.
+   */
+  recoverNpm?: boolean;
 };
 
 export type CollectOutcome = {
@@ -90,14 +107,6 @@ function failedResult(source: SourceName, collectedAt: string, error: unknown): 
     freshWithin7dCount: 0,
     fetchedThisRunCount: 0,
   };
-}
-
-function sourceCompleted(result: SourceResult): boolean {
-  return !result.failed && !result.truncated && !result.skipped;
-}
-
-function sourceIncomplete(result: SourceResult): boolean {
-  return Boolean(result.failed || result.truncated);
 }
 
 type FreshChange = { source: string; previousFresh: number; nextFresh: number };
@@ -224,7 +233,7 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
   }
 
   const inspection = inspectSnapshot(snapshotDate, dataDir);
-  // Backups pass --if-incomplete. That decision reads BACKUP_CORE_SOURCES only.
+  // Backups pass --if-incomplete. That verdict is window-guard `coreClean`.
   // manifest.partial stays the six-source flag and is not consulted here.
   // The primary run (no flag) still refuses a six-source-complete snapshot.
   if (options.ifIncomplete && !options.force) {
@@ -246,18 +255,26 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
       };
     }
     log.info("core sources are incomplete; collecting", { date: snapshotDate, reason: decision.reason });
-  } else if (!options.force && inspection.usable && !inspection.needsRetry) {
-    log.info("snapshot already complete; refusing to overwrite", { date: snapshotDate });
-    return {
-      ok: true,
-      skipped: true,
-      skipReason: `snapshot ${snapshotDate} already complete; pass --force to overwrite`,
-      wrote: false,
-      manifest: inspection.hasManifest ? readManifest(snapshotDate, dataDir) : undefined,
-      failedSources: [],
-      cleaned,
-      date: snapshotDate,
-    };
+  } else if (!options.force && inspection.usable && inspection.hasManifest) {
+    let existing: SnapshotManifest | undefined;
+    try {
+      existing = readManifest(snapshotDate, dataDir);
+    } catch {
+      existing = undefined;
+    }
+    if (existing && snapshotIsSixSourceComplete(existing)) {
+      log.info("snapshot already complete; refusing to overwrite", { date: snapshotDate });
+      return {
+        ok: true,
+        skipped: true,
+        skipReason: `snapshot ${snapshotDate} already complete; pass --force to overwrite`,
+        wrote: false,
+        manifest: existing,
+        failedSources: [],
+        cleaned,
+        date: snapshotDate,
+      };
+    }
   }
 
   const collectedAt = now.toISOString();
@@ -274,6 +291,7 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     maxPages: options.maxPages,
     sleep,
     monotonicNow: options.monotonicNow,
+    wallNow: options.wallNow ?? (options.now ? () => now : () => new Date()),
     runId,
   };
 
@@ -288,11 +306,85 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     }
   }
 
+  let npmProducer: NpmProducer | undefined = names.has("npm") ? "scheduled" : undefined;
+  if (options.recoverNpm && !names.has("npm")) {
+    let onDisk: SnapshotManifest | undefined;
+    if (inspection.hasManifest) {
+      try {
+        onDisk = readManifest(snapshotDate, dataDir);
+      } catch {
+        onDisk = undefined;
+      }
+    }
+    const wallMs = ctx.wallNow?.().getTime() ?? now.getTime();
+    const deadlineRaw = ctx.env.RADAR_COLLECT_STEP_DEADLINE_MS?.trim();
+    const deadlineParsed = deadlineRaw ? Number(deadlineRaw) : undefined;
+    const decision = decideNpmRecovery({
+      manifest: onDisk,
+      nowMs: wallMs,
+      configuredBudgetMs: sourceBudgetMs(ctx.env, "npm"),
+      marginMs: NPM_RECOVERY_MARGIN_MS,
+      midnightMs: nextUtcMidnightMs(wallMs),
+      jobDeadlineMs: deadlineParsed != null && Number.isFinite(deadlineParsed) ? deadlineParsed : undefined,
+    });
+    if (decision.run) {
+      log.info("npm recovery", { budgetMs: decision.budgetMs, reason: decision.reason });
+      const npmEnv = { ...ctx.env, RADAR_NPM_BUDGET_MS: String(decision.budgetMs) };
+      results.push(
+        await collectAdapter(npmAdapter, { ...ctx, env: npmEnv }, sourceAttempts, sleep),
+      );
+      npmProducer = "recovery";
+    } else {
+      log.info("npm recovery skipped", { reason: decision.reason });
+      appendJobSummary(
+        options.env ?? process.env,
+        ["### npm lane", "", `- Producer: collect recovery`, `- Skipped: ${decision.reason}`, ""].join("\n"),
+      );
+    }
+  }
+
   const failedSources = results.filter((result) => result.failed).map((result) => result.source);
-  const incompleteSources = results.filter(sourceIncomplete).map((result) => result.source);
-  const completedSources = results.filter(sourceCompleted).map((result) => result.source);
-  const sourceRows: SourceRow[] = linkSourceRows(results.flatMap((result) => result.records));
-  if (sourceRows.length === 0) {
+  const npmResult = results.find((result) => result.source === "npm");
+  if (npmResult) {
+    const scopedLane = npmResult.lanes?.find((lane) => lane.lane === "scoped");
+    appendJobSummary(
+      options.env ?? process.env,
+      formatNpmLaneSummary({
+        durationMs: scopedLane?.durationMs ?? 0,
+        scopedRequests: scopedLane?.requests ?? 0,
+        rateLimits: scopedLane?.rateLimits ?? 0,
+        halt: npmResult.halt,
+        producer: npmProducer,
+      }),
+    );
+  }
+  let keptRows: SourceRow[] = [];
+  let keptManifests: SourceManifest[] = [];
+  let previousManifest: SnapshotManifest | undefined;
+  if (inspection.hasManifest) {
+    try {
+      previousManifest = readManifest(snapshotDate, dataDir);
+    } catch {
+      previousManifest = undefined;
+    }
+  }
+  if (previousManifest) {
+    let previousRows: SourceRow[] = [];
+    try {
+      previousRows = readSourceRows(snapshotDate, dataDir);
+    } catch {
+      previousRows = [];
+    }
+    const replaced = new Set(names);
+    if (npmProducer === "recovery") {
+      replaced.add("npm");
+    }
+    keptRows = previousRows.filter((row) => !replaced.has(row.source));
+    keptManifests = previousManifest.sources.filter((source) => !replaced.has(source.source));
+  }
+  const newRecords = results.flatMap((result) => result.records);
+  const sourceRows: SourceRow[] = linkSourceRows([...keptRows, ...newRecords]);
+  if (newRecords.length === 0) {
     log.error("all sources failed or produced no rows; not writing an empty snapshot", {
       date: snapshotDate,
       failedSources,
@@ -308,14 +400,6 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     };
   }
   const apps = mergeApps(snapshotDate, sourceRows);
-  let previousManifest: SnapshotManifest | undefined;
-  if (inspection.hasManifest) {
-    try {
-      previousManifest = readManifest(snapshotDate, dataDir);
-    } catch {
-      previousManifest = undefined;
-    }
-  }
   if (!options.force && previousManifest) {
     let previousRows: SourceRow[] = [];
     try {
@@ -406,7 +490,12 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     sourceManifests.push(sourceManifest);
   }
 
-  const partial = incompleteSources.length > 0;
+  const mergedManifests = orderSourceManifests([...keptManifests, ...sourceManifests]);
+  const partial = mergedManifests.some((source) => source.failed === true || source.truncated === true);
+  const completedSources = mergedManifests
+    .filter((source) => source.failed !== true && source.truncated !== true && source.skipped !== true)
+    .map((source) => source.source);
+  const failedSourceCount = mergedManifests.filter((source) => source.failed === true).length;
   const dest = dataPaths(dataDir).normalizedDir(snapshotDate);
   let previousBackupPath: string | undefined;
   let overwrite: SnapshotManifest["overwrite"] = undefined;
@@ -440,17 +529,17 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
   const manifest: SnapshotManifest = {
     snapshotDate,
     collectedAt,
-    sources: sourceManifests,
+    sources: mergedManifests,
     appCount: apps.length,
     sourceRowCount: sourceRows.length,
     partial,
     completedSources,
-    failedSourceCount: failedSources.length,
+    failedSourceCount,
     runId,
     overwrite,
   };
   try {
-    const packageOwners = linkCrossStore(results.flatMap((result) => result.records)).packageOwners;
+    const packageOwners = linkCrossStore([...keptRows, ...newRecords]).packageOwners;
     const counts = ownerDecisionCounts(packageOwners);
     const tieDecided = tieDecidedPackageOwners(packageOwners);
     manifest.owner_decided_by = packageOwners;
@@ -473,10 +562,10 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     apps: apps.length,
     sourceRows: sourceRows.length,
     failedSources,
-    incompleteSources,
     completedSources,
+    partial,
   });
-  appendJobSummary(options.env ?? process.env, formatRefetchStepSummary(snapshotDate, sourceManifests));
+  appendJobSummary(options.env ?? process.env, formatRefetchStepSummary(snapshotDate, mergedManifests));
   return {
     ok: true,
     skipped: false,
@@ -539,6 +628,26 @@ function toSourceManifest(result: SourceResult, rawFile?: string): SourceManifes
     fetch_ended_at: result.fetchEndedAt,
     lanes: result.lanes,
   };
+}
+
+/** A late primary refuses only a day where all six sources are present and none failed or truncated. */
+export function snapshotIsSixSourceComplete(manifest: SnapshotManifest): boolean {
+  if (manifest.partial === true) {
+    return false;
+  }
+  const present = new Set(manifest.sources.map((source) => source.source));
+  if (SOURCE_NAMES.some((name) => !present.has(name))) {
+    return false;
+  }
+  return !manifest.sources.some((source) => sourceIsIncomplete(source));
+}
+
+function orderSourceManifests(sources: readonly SourceManifest[]): SourceManifest[] {
+  const byName = new Map(sources.map((source) => [source.source, source]));
+  return SOURCE_NAMES.flatMap((name) => {
+    const source = byName.get(name);
+    return source ? [source] : [];
+  });
 }
 
 function earlierIso(left?: string, right?: string): string | undefined {

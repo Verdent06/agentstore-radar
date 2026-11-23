@@ -34,6 +34,11 @@ export type CollectContext = {
   /** Test clock for per-source wall-clock budgets. Defaults to Date.now. */
   monotonicNow?: () => number;
   /**
+   * Wall clock for the UTC midnight stop. Production uses the real clock.
+   * A test that passes `now` and omits this stays on that frozen instant.
+   */
+  wallNow?: () => Date;
+  /**
    * Budget opened once per source per collect() call. Retries must reuse it.
    * Direct adapter calls may omit it; the adapter then opens its own.
    */
@@ -69,6 +74,8 @@ export type SourceResult = {
   weeklyGtMonthlyCount?: number;
   /** npm bulk vs scoped: path, calls, and 429s. Other sources omit this. */
   lanes?: SourceLane[];
+  /** Set when npm stops for the wall-clock budget or the UTC date change. */
+  halt?: "budget" | "midnight";
 };
 
 export class CollectSourceError extends Error {

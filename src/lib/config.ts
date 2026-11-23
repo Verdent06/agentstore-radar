@@ -48,11 +48,12 @@ export const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 
 export const NPM_BULK_LIMIT = 128;
 /**
- * Shared npm downloads start gap (bulk and scoped). Actions runs 44846503852
- * and 44910143087 tripped Cloudflare at 44 and 47 requests inside 10s.
- * 400ms is 25 starts per 10s. The pacer in `npm-scoped-pace.ts` applies it.
+ * Shared npm downloads start gap (bulk and scoped). The 2026-11-22 Actions
+ * runs accepted about 0.55 requests/s once Cloudflare 429s were in the loop.
+ * 1800ms is that sustained rate. The pacer in `npm-scoped-pace.ts` applies it
+ * and only moves slower after a 429.
  */
-export const NPM_SCOPED_MIN_INTERVAL_MS = 400;
+export const NPM_SCOPED_MIN_INTERVAL_MS = 1_800;
 /** Previous bulk host gap. The shared downloads pacer is the only start gap now. */
 export const NPM_BULK_MIN_INTERVAL_MS = 200;
 /**
@@ -75,24 +76,22 @@ export const PYPI_CONCURRENCY = 4;
  * and frozen not true), so a source-frozen catalog scores ~0.
  */
 /**
- * Per-source wall-clock budgets. Sum is 245 minutes, under the 300-minute
- * target and inside the 330-minute collect step. One in-flight HTTP call can
- * still finish after the check (30s timeout), so the worst case is 248 minutes.
- * The checkpoint/partial path remains if a source still overruns.
- * Override with RADAR_<SOURCE>_BUDGET_MS.
+ * Per-source wall-clock budgets. npm has its own job (timeout 355 minutes)
+ * because a cold scoped catalog at 1.8s is about 318 minutes. The other
+ * sources stay in the main collect job: 15+20+5+50+55 = 145 minutes, inside
+ * that job's 330-minute step. One in-flight HTTP call can still finish after
+ * the check (30s timeout). Override with RADAR_<SOURCE>_BUDGET_MS.
  *
- * npm and PyPI are sized from a live sample on 2026-11-03 (see docs/SOURCES.md):
- * full npm pass ~34 min once scoped 429s hit the shared pool, full PyPI pass
- * ~33 min, plus margin. The 2026-11-04 run spent the whole npm budget inside
- * scoped packages because the HTTP client retried 429s itself at a 15s floor.
- * The other sources keep headroom over the 2026-11-03 run (mcp ~2m, smithery
- * ~6m, gemini <1m, github ~24m).
+ * PyPI is sized from a live sample on 2026-11-03 (full pass ~33 min). The
+ * other non-npm sources keep headroom over the 2026-11-03 run (mcp ~2m,
+ * smithery ~6m, gemini <1m, github ~24m).
  */
 export const MCP_COLLECT_BUDGET_MS = 15 * 60 * 1000;
 export const SMITHERY_COLLECT_BUDGET_MS = 20 * 60 * 1000;
 export const GEMINI_COLLECT_BUDGET_MS = 5 * 60 * 1000;
 export const GITHUB_COLLECT_BUDGET_MS = 50 * 60 * 1000;
-export const NPM_COLLECT_BUDGET_MS = 100 * 60 * 1000;
+/** Fits a cold ~10.6k scoped catalog at 1.8s (~318 min) with about 12 minutes of slack. */
+export const NPM_COLLECT_BUDGET_MS = 330 * 60 * 1000;
 export const PYPI_COLLECT_BUDGET_MS = 55 * 60 * 1000;
 /**
  * Above the ~33k catalog, so a normal day fetches every due repo.
