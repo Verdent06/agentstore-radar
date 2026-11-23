@@ -13,7 +13,9 @@ import {
   NPM_RECOVERY_MARGIN_MS,
   decideNpmRecovery,
   npmRecoveryBudgetMs,
+  npmSourceNeedsRecovery,
 } from "../src/lib/npm-recovery.ts";
+import { coreClean } from "../src/lib/window-guard.ts";
 import { loadCheckpoint, persistCheckpoint, persistEntityCache, persistLastFetched } from "../src/lib/rolling.ts";
 import { emptySourceRow, type SnapshotManifest } from "../src/lib/schema.ts";
 
@@ -51,6 +53,73 @@ describe("npm recovery budget", () => {
         configuredBudgetMs: 330 * 60 * 1000,
       }).run,
     ).toBe(false);
+  });
+
+  it("recovers npm only when coreClean reports an npm reason", () => {
+    const base = {
+      snapshotDate: "2026-11-23",
+      collectedAt: "2026-11-23T05:41:00.000Z",
+      appCount: 1,
+      sourceRowCount: 1,
+      partial: false,
+      sources: [
+        {
+          source: "mcp-registry" as const,
+          rowCount: 1,
+          skipped: false,
+          failed: false,
+          truncated: false,
+          collectedAt: "2026-11-23T05:41:00.000Z",
+          existingRows: 10,
+          refetchedExisting: 10,
+          refetchedExistingShare: 1,
+        },
+        {
+          source: "github" as const,
+          rowCount: 1,
+          skipped: false,
+          failed: false,
+          truncated: false,
+          collectedAt: "2026-11-23T05:41:00.000Z",
+          existingRows: 100,
+          refetchedExisting: 98,
+          refetchedExistingShare: 0.98,
+          mismatchChangedNotFresh: 0,
+        },
+        {
+          source: "npm" as const,
+          rowCount: 1,
+          skipped: false,
+          failed: false,
+          truncated: false,
+          collectedAt: "2026-11-23T05:41:00.000Z",
+          existingRows: 100,
+          refetchedExisting: 98,
+          refetchedExistingShare: 0.98,
+          mismatchChangedNotFresh: 0,
+        },
+      ],
+    };
+    expect(coreClean(base).reasons.filter((reason) => reason.startsWith("npm:"))).toEqual([]);
+    expect(npmSourceNeedsRecovery(base)).toBe(false);
+    const githubLow = {
+      ...base,
+      sources: base.sources.map((source) =>
+        source.source === "github" ? { ...source, refetchedExisting: 80, refetchedExistingShare: 0.8 } : source,
+      ),
+    };
+    expect(coreClean(githubLow).clean).toBe(false);
+    expect(npmSourceNeedsRecovery(githubLow)).toBe(false);
+    const npmLow = {
+      ...base,
+      sources: base.sources.map((source) =>
+        source.source === "npm" ? { ...source, refetchedExisting: 80, refetchedExistingShare: 0.8 } : source,
+      ),
+    };
+    expect(npmSourceNeedsRecovery(npmLow)).toBe(true);
+    expect(decideNpmRecovery({ manifest: npmLow, nowMs: Date.parse("2026-11-23T12:00:00.000Z") }).reason).toMatch(
+      /^npm:/,
+    );
   });
 });
 
@@ -186,6 +255,11 @@ describe("backup npm recovery", () => {
           truncated: false,
           failed: false,
           collectedAt,
+          existingRows: 1,
+          refetchedExisting: 1,
+          refetchedExistingShare: 1,
+          mismatchChangedNotFresh: 0,
+          mismatchFreshUnchanged: 0,
         },
       ],
     };
@@ -213,7 +287,7 @@ describe("backup npm recovery", () => {
     expect(npmCalls).toBe(0);
     expect(outcome.wrote).toBe(false);
     expect(readManifest(date, dataDir).sources.find((source) => source.source === "npm")?.truncated).toBe(false);
-    expect(readFileSync(summaryPath, "utf8")).toMatch(/already complete and untruncated/);
+    expect(readFileSync(summaryPath, "utf8")).toMatch(/already core-clean/);
   });
 
   it("stops a backup npm lane at UTC midnight and does not write post-midnight rows onto the earlier day", async () => {

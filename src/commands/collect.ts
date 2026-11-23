@@ -233,7 +233,7 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
   }
 
   const inspection = inspectSnapshot(snapshotDate, dataDir);
-  // Backups pass --if-incomplete. That decision reads BACKUP_CORE_SOURCES only.
+  // Backups pass --if-incomplete. That verdict is window-guard `coreClean`.
   // manifest.partial stays the six-source flag and is not consulted here.
   // The primary run (no flag) still refuses a six-source-complete snapshot.
   if (options.ifIncomplete && !options.force) {

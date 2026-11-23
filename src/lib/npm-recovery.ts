@@ -1,5 +1,6 @@
 import { NPM_COLLECT_BUDGET_MS } from "./config.ts";
-import type { SnapshotManifest, SourceManifest } from "./schema.ts";
+import type { SnapshotManifest } from "./schema.ts";
+import { coreClean } from "./window-guard.ts";
 
 /**
  * Reserved after the npm lane stops so the process can write the snapshot
@@ -41,20 +42,24 @@ export function npmRecoveryBudgetMs(input: {
   return Math.max(0, Math.floor(Math.min(...caps)));
 }
 
-/** Missing, failed, skipped, or truncated npm needs another lane. A finished npm source does not. */
-export function npmSourceNeedsRecovery(manifest: SnapshotManifest | null | undefined): boolean {
-  if (!manifest) {
-    return true;
+/**
+ * npm-lane reasons from the shared `coreClean` rule. GitHub or mcp-registry
+ * failures do not count. A missing manifest does.
+ */
+export function npmCoreCleanReasons(manifest: SnapshotManifest | null | undefined): string[] {
+  if (!manifest || !Array.isArray(manifest.sources)) {
+    return ["npm: missing source"];
   }
-  const npm = manifest.sources.find((source) => source.source === "npm");
-  if (!npm) {
-    return true;
+  const reasons = coreClean(manifest).reasons;
+  if (reasons.some((reason) => reason === "missing field sources")) {
+    return ["npm: missing source"];
   }
-  return npmNeedsRecovery(npm);
+  return reasons.filter((reason) => reason.startsWith("npm:"));
 }
 
-function npmNeedsRecovery(source: SourceManifest): boolean {
-  return source.truncated === true || source.failed === true || source.skipped === true;
+/** True when `coreClean` has an npm reason. A core-clean npm source is left alone. */
+export function npmSourceNeedsRecovery(manifest: SnapshotManifest | null | undefined): boolean {
+  return npmCoreCleanReasons(manifest).length > 0;
 }
 
 export type NpmRecoveryDecision = {
@@ -71,11 +76,12 @@ export function decideNpmRecovery(input: {
   midnightMs?: number;
   jobDeadlineMs?: number;
 }): NpmRecoveryDecision {
-  if (!npmSourceNeedsRecovery(input.manifest)) {
+  const npmReasons = npmCoreCleanReasons(input.manifest);
+  if (npmReasons.length === 0) {
     return {
       run: false,
       budgetMs: 0,
-      reason: "npm is already complete and untruncated",
+      reason: "npm is already core-clean",
     };
   }
   const budgetMs = npmRecoveryBudgetMs(input);
@@ -86,8 +92,5 @@ export function decideNpmRecovery(input: {
       reason: "not enough time before 00:00 UTC and the job timeout to keep the safety margin",
     };
   }
-  const why = input.manifest?.sources.some((source) => source.source === "npm")
-    ? "npm is truncated or failed"
-    : "npm is missing";
-  return { run: true, budgetMs, reason: why };
+  return { run: true, budgetMs, reason: npmReasons.join("; ") };
 }
