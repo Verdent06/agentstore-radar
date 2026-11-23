@@ -100,11 +100,14 @@ export function orderNpmScopedNames(
 
 export type NpmHalt = "budget" | "midnight";
 
+export type NpmProducer = "scheduled" | "recovery";
+
 export function formatNpmLaneSummary(input: {
   durationMs: number;
   scopedRequests: number;
   rateLimits: number;
   halt?: NpmHalt;
+  producer?: NpmProducer;
 }): string {
   const minutes = input.durationMs / 60_000;
   const perMinute = minutes > 0 ? input.scopedRequests / minutes : 0;
@@ -114,9 +117,16 @@ export function formatNpmLaneSummary(input: {
       : input.halt === "midnight"
         ? "hit the UTC midnight stop"
         : "finished inside the budget and the UTC day";
+  const producer =
+    input.producer === "scheduled"
+      ? "- Producer: 00:20 npm job"
+      : input.producer === "recovery"
+        ? "- Producer: collect recovery"
+        : null;
   return [
     "### npm lane",
     "",
+    ...(producer ? [producer] : []),
     `- Wall-clock minutes: ${minutes.toFixed(1)}`,
     `- Scoped requests per minute: ${perMinute.toFixed(2)}`,
     `- 429 count: ${input.rateLimits}`,

@@ -27,7 +27,7 @@ function usage(): string {
   return `agentstore-radar
 
 Usage:
-  npm run collect -- [--date YYYY-MM-DD] [--data DIR] [--sources a,b] [--max-pages N] [--if-incomplete] [--force]
+  npm run collect -- [--date YYYY-MM-DD] [--data DIR] [--sources a,b] [--max-pages N] [--if-incomplete] [--force] [--recover-npm]
   npm run report -- [--date YYYY-MM-DD] [--data DIR] [--limit N]
   npm run health -- [--date YYYY-MM-DD] [--data DIR]
   npm run alert-missed -- [--date YYYY-MM-DD] [--data DIR] [--collect-failed] [--backstop]
@@ -62,6 +62,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       maxPages: maxPagesRaw ? Number(maxPagesRaw) : undefined,
       ifIncomplete: flag(args, "--if-incomplete"),
       force: flag(args, "--force"),
+      recoverNpm: flag(args, "--recover-npm"),
     });
     console.log(JSON.stringify(outcome, null, 2));
     return outcome.ok ? 0 : 1;

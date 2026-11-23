@@ -1,11 +1,12 @@
 import { appendFileSync, existsSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { adaptersByKind } from "../adapters/index.ts";
+import { npmAdapter } from "../adapters/npm.ts";
 import { createDiscoveredRefs, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "../adapters/types.ts";
 import { decideIfIncompleteBackup } from "../lib/backup-core.ts";
 import { budgetExhausted, budgetExhaustedError, isBudgetExhaustedError, openSourceBudget } from "../lib/budget.ts";
 import { budgetPartialRows } from "../lib/budget-partial.ts";
-import { SOURCE_COLLECT_ATTEMPTS } from "../lib/config.ts";
+import { SOURCE_COLLECT_ATTEMPTS, sourceBudgetMs } from "../lib/config.ts";
 import { computeCoverage, freshFetchedShare, isFreshRow } from "../lib/coverage.ts";
 import { utcDateString } from "../lib/dates.ts";
 import { createHttpClient, type HttpClient } from "../lib/http.ts";
@@ -27,7 +28,8 @@ import {
 import { createLogger, type Logger } from "../lib/logger.ts";
 import { linkCrossStore, linkSourceRows, ownerDecisionCounts, tieDecidedPackageOwners } from "../lib/matching.ts";
 import { mergeApps } from "../lib/merge.ts";
-import { formatNpmLaneSummary } from "../lib/npm-scoped-pace.ts";
+import { formatNpmLaneSummary, type NpmProducer } from "../lib/npm-scoped-pace.ts";
+import { decideNpmRecovery, NPM_RECOVERY_MARGIN_MS, nextUtcMidnightMs } from "../lib/npm-recovery.ts";
 import { formatRefetchStepSummary, withRefetchStats } from "../lib/refetch-coverage.ts";
 import { retryAsync, type SleepFn } from "../lib/retry.ts";
 import {
@@ -57,6 +59,12 @@ export type CollectOptions = {
   monotonicNow?: () => number;
   /** Live UTC clock. Defaults to the real clock, or to `now` when a test froze it. */
   wallNow?: () => Date;
+  /**
+   * After the selected sources, run npm when today's manifest is missing or
+   * truncated. The 05:41 primary and both backups pass this so a cancelled
+   * 00:20 npm run still leaves npm rows.
+   */
+  recoverNpm?: boolean;
 };
 
 export type CollectOutcome = {
@@ -298,6 +306,43 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     }
   }
 
+  let npmProducer: NpmProducer | undefined = names.has("npm") ? "scheduled" : undefined;
+  if (options.recoverNpm && !names.has("npm")) {
+    let onDisk: SnapshotManifest | undefined;
+    if (inspection.hasManifest) {
+      try {
+        onDisk = readManifest(snapshotDate, dataDir);
+      } catch {
+        onDisk = undefined;
+      }
+    }
+    const wallMs = ctx.wallNow?.().getTime() ?? now.getTime();
+    const deadlineRaw = ctx.env.RADAR_COLLECT_STEP_DEADLINE_MS?.trim();
+    const deadlineParsed = deadlineRaw ? Number(deadlineRaw) : undefined;
+    const decision = decideNpmRecovery({
+      manifest: onDisk,
+      nowMs: wallMs,
+      configuredBudgetMs: sourceBudgetMs(ctx.env, "npm"),
+      marginMs: NPM_RECOVERY_MARGIN_MS,
+      midnightMs: nextUtcMidnightMs(wallMs),
+      jobDeadlineMs: deadlineParsed != null && Number.isFinite(deadlineParsed) ? deadlineParsed : undefined,
+    });
+    if (decision.run) {
+      log.info("npm recovery", { budgetMs: decision.budgetMs, reason: decision.reason });
+      const npmEnv = { ...ctx.env, RADAR_NPM_BUDGET_MS: String(decision.budgetMs) };
+      results.push(
+        await collectAdapter(npmAdapter, { ...ctx, env: npmEnv }, sourceAttempts, sleep),
+      );
+      npmProducer = "recovery";
+    } else {
+      log.info("npm recovery skipped", { reason: decision.reason });
+      appendJobSummary(
+        options.env ?? process.env,
+        ["### npm lane", "", `- Producer: collect recovery`, `- Skipped: ${decision.reason}`, ""].join("\n"),
+      );
+    }
+  }
+
   const failedSources = results.filter((result) => result.failed).map((result) => result.source);
   const npmResult = results.find((result) => result.source === "npm");
   if (npmResult) {
@@ -309,6 +354,7 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
         scopedRequests: scopedLane?.requests ?? 0,
         rateLimits: scopedLane?.rateLimits ?? 0,
         halt: npmResult.halt,
+        producer: npmProducer,
       }),
     );
   }
@@ -329,8 +375,12 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     } catch {
       previousRows = [];
     }
-    keptRows = previousRows.filter((row) => !names.has(row.source));
-    keptManifests = previousManifest.sources.filter((source) => !names.has(source.source));
+    const replaced = new Set(names);
+    if (npmProducer === "recovery") {
+      replaced.add("npm");
+    }
+    keptRows = previousRows.filter((row) => !replaced.has(row.source));
+    keptManifests = previousManifest.sources.filter((source) => !replaced.has(source.source));
   }
   const newRecords = results.flatMap((result) => result.records);
   const sourceRows: SourceRow[] = linkSourceRows([...keptRows, ...newRecords]);

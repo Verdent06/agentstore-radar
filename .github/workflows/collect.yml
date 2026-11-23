@@ -14,10 +14,11 @@ on:
     - cron: "41 5 * * *"
     # Morning backup, off the hour. --if-incomplete collects only when the core
     # sources (mcp-registry, github, npm) are incomplete. Smithery, gemini-cli,
-    # and pypi do not trigger this rerun. This job does not run the npm lane.
+    # and pypi do not trigger this rerun. If today's npm manifest is missing
+    # or truncated, this run recovers the npm lane after the other sources.
     - cron: "47 8 * * *"
-    # Same-day backstop. Same --if-incomplete core check as the morning backup.
-    # Does not run the npm lane.
+    # Same-day backstop. Same --if-incomplete core check and the same npm
+    # recovery as the morning backup.
     - cron: "23 19 * * *"
   workflow_dispatch:
     inputs:
@@ -42,6 +43,12 @@ on:
         type: string
         default: ""
 
+# One group so two writers never run together. cancel-in-progress is false,
+# and GitHub keeps only one pending run: a 19:23 backstop still going at
+# 00:20 leaves the npm run pending, then the 05:41 primary replaces that
+# pending run. The primary (and both backups) recover npm when the day's
+# manifest is missing or truncated, so the cancelled 00:20 run is not the
+# only chance to write npm rows.
 concurrency:
   group: collect-snapshots
   cancel-in-progress: false
@@ -57,7 +64,8 @@ env:
   DATA_DIR: ${{ github.workspace }}/.radar-data/data
   COLLECTOR_ISSUE_REPO: Verdent06/agentstore-radar
   IS_BACKSTOP: ${{ github.event.schedule == '23 19 * * *' || github.event.schedule == '47 8 * * *' }}
-  # Every source except npm. The npm lane is only the npm job, on one runner.
+  # The dedicated npm lane is the 00:20 job. These sources run in collect.
+  # --recover-npm adds npm afterwards when today's npm manifest needs it.
   NON_NPM_SOURCES: mcp-registry,smithery,gemini-cli,github,pypi
 
 jobs:
@@ -68,7 +76,9 @@ jobs:
           github.event.schedule == '47 8 * * *' ||
           github.event.schedule == '23 19 * * *' }}
     runs-on: ubuntu-latest
-    # GitHub-hosted max is 6h. npm is not in this job.
+    # GitHub-hosted max is 6h. The collect step is 340 minutes. The other 20
+    # cover checkout and the push. npm recovery stops 15 minutes before the
+    # step deadline and before 00:00 UTC, so that margin fits in this job.
     timeout-minutes: 360
     steps:
       - name: Checkout public collector
@@ -109,7 +119,7 @@ jobs:
       - name: Collect sanctioned public snapshots
         id: collect
         if: ${{ inputs.seed_only != true && steps.gate.outcome == 'success' && steps.gate.outputs.skip != 'true' }}
-        timeout-minutes: 330
+        timeout-minutes: 340
         env:
           DATA_DIR: ${{ env.DATA_DIR }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -134,10 +144,14 @@ jobs:
             exit 0
           fi
           if [[ "$FILTERED" == *"npm"* ]]; then
-            echo "npm lane must not run in the main collect job" >&2
+            echo "npm lane must not run in the main collect source list" >&2
             exit 1
           fi
-          ARGS=(--data "$DATA_DIR" --sources "$FILTERED")
+          # Step kill time. Recovery subtracts NPM_RECOVERY_MARGIN_MS (15m)
+          # so the snapshot is written before Actions kills the step.
+          STEP_TIMEOUT_MIN=340
+          export RADAR_COLLECT_STEP_DEADLINE_MS="$(( $(date +%s) * 1000 + STEP_TIMEOUT_MIN * 60 * 1000 ))"
+          ARGS=(--data "$DATA_DIR" --sources "$FILTERED" --recover-npm)
           if [[ "${{ inputs.force }}" == "true" ]]; then
             ARGS+=(--force)
           elif [[ "${IS_BACKSTOP}" == "true" || "${{ inputs.if_incomplete }}" == "true" ]]; then

@@ -34,7 +34,10 @@ describe("collect workflow", () => {
     const npm = jobBlock("npm");
     expect(collect).toContain("NON_NPM_SOURCES");
     expect(collect).toContain('"$part" != "npm"');
-    expect(collect).toContain("npm lane must not run in the main collect job");
+    expect(collect).toContain("npm lane must not run in the main collect source list");
+    expect(collect).toContain("--recover-npm");
+    expect(collect).toContain("RADAR_COLLECT_STEP_DEADLINE_MS");
+    expect(collect).toContain("timeout-minutes: 340");
     expect(collect).not.toContain("--sources npm");
     expect(npm).toContain("needs: [collect]");
     expect(npm).toContain("timeout-minutes: 355");
