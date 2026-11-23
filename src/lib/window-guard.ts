@@ -1,6 +1,7 @@
 /**
  * Shared popularity-window guard. /web and /mcp both import this module.
- * Core-clean is decided from one day's snapshot manifest. There is no list of clean dates.
+ * `coreClean` is the one core-clean rule; the backup gate calls it too.
+ * There is no list of clean dates.
  */
 
 /** Single global floor. Windows that start before this day are refused. */
@@ -185,6 +186,8 @@ function checkSource(
  * mcp-registry has no popularity metric, so A/B are not required. It must still be
  * complete, not truncated, and fully fetched (share 1).
  * `mismatchFreshUnchanged` (B) is returned and never rejects a day.
+ * A recorded `refetchedExistingShare` that disagrees with the count ratio fails closed.
+ * A missing or unreadable field fails closed.
  * `rowCount` and `eligibleCount` are not the existing-row count.
  */
 export function coreClean(manifest: unknown): CoreCleanResult {
