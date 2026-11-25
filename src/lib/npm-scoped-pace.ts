@@ -119,7 +119,7 @@ export function formatNpmLaneSummary(input: {
         : "finished inside the budget and the UTC day";
   const producer =
     input.producer === "scheduled"
-      ? "- Producer: 00:20 npm job"
+      ? "- Producer: npm collect"
       : input.producer === "recovery"
         ? "- Producer: collect recovery"
         : null;

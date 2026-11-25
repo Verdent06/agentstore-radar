@@ -1,7 +1,7 @@
 /**
- * Backup gate for the 08:47 and 19:23 collects.
+ * Same decision as collect `--if-incomplete`.
  * Writes skip=true to GITHUB_OUTPUT when the core sources are already complete.
- * `--if-incomplete` uses the same decision (`BACKUP_CORE_SOURCES`).
+ * The collect workflow now makes that decision inside `collect` itself.
  */
 import { isValidDateString } from "../src/lib/dates.ts";
 import { publishIfIncompleteGate } from "../src/lib/backup-core.ts";

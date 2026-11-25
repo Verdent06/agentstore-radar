@@ -113,10 +113,11 @@ function rememberPoint(
 }
 
 /**
- * Package names this npm job can refresh without a same-process catalog walk.
- * The early npm job runs before mcp-registry, so the list is the persisted
- * catalog: last-fetched keys, the entity cache, today's checkpoint, and
- * npm names already stored on this or the previous snapshot.
+ * Package names this npm pass can refresh from the persisted catalog when
+ * the same run has not already discovered them. The list is last-fetched
+ * keys, the entity cache, today's checkpoint, and npm names already stored
+ * on this or the previous snapshot. Names discovered earlier in this process
+ * are added by the caller.
  */
 export function knownNpmPackageNames(dataDir: string, snapshotDate: string): string[] {
   const names = new Set<string>();

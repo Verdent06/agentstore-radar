@@ -76,11 +76,16 @@ export const PYPI_CONCURRENCY = 4;
  * and frozen not true), so a source-frozen catalog scores ~0.
  */
 /**
- * Per-source wall-clock budgets. npm has its own job (timeout 355 minutes)
- * because a cold scoped catalog at 1.8s is about 318 minutes. The other
- * sources stay in the main collect job: 15+20+5+50+55 = 145 minutes, inside
- * that job's 330-minute step. One in-flight HTTP call can still finish after
- * the check (30s timeout). Override with RADAR_<SOURCE>_BUDGET_MS.
+ * Per-source wall-clock budgets. Every trigger runs these sources in one
+ * job, then resumes npm. A cold scoped catalog at 1.8s is about 318 minutes,
+ * so npm keeps a 330-minute budget and the recovery formula also stops
+ * 15 minutes before midnight and before the 340-minute step deadline.
+ * The other budgets sum to 15+20+5+50+55 = 145 minutes. On a cold 00:20 run
+ * their wall time comes out of the npm budget because npm starts after them.
+ * Measured non-npm core time is about 26 minutes (mcp-registry ~2m on
+ * 2026-11-03, github 24m03s in Actions job 126290599753). One in-flight HTTP
+ * call can still finish after the check (30s timeout). Override with
+ * RADAR_<SOURCE>_BUDGET_MS.
  *
  * PyPI is sized from a live sample on 2026-11-03 (full pass ~33 min). The
  * other non-npm sources keep headroom over the 2026-11-03 run (mcp ~2m,

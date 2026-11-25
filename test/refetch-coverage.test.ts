@@ -567,7 +567,8 @@ describe("collect refetch manifest", () => {
     const manifest = readManifest(day, dataDir);
     const github = manifest.sources.find((source) => source.source === "github");
     const npm = manifest.sources.find((source) => source.source === "npm");
-    expect(github?.fetchedThisRunCount).toBe(0);
+    expect(githubCalls).toBe(0);
+    expect(github?.fetchedThisRunCount).toBe(2);
     expect(github?.refetchedExisting).toBe(2);
     expect(github?.refetchedExistingShare).toBe(1);
     expect(github?.existingRows).toBe(2);
