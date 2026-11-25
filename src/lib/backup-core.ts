@@ -11,6 +11,35 @@ export const BACKUP_CORE_SOURCES = CORE_SOURCES satisfies readonly SourceName[];
 
 export type BackupCoreSource = (typeof BACKUP_CORE_SOURCES)[number];
 
+const CORE_SOURCE_SET = new Set<string>(CORE_SOURCES);
+
+/**
+ * True when an `--if-incomplete` run still has to collect `source` for this
+ * UTC date. Core sources follow `coreClean` reasons. Any other source is due
+ * when it is missing, failed, truncated, or skipped. A core-clean source is
+ * left alone. This does not change the `coreClean` rule.
+ */
+export function sourceDueOnIncompleteRun(
+  manifest: SnapshotManifest | null | undefined,
+  source: SourceName,
+): boolean {
+  if (!manifest || !Array.isArray(manifest.sources)) {
+    return true;
+  }
+  if (CORE_SOURCE_SET.has(source)) {
+    const reasons = coreClean(manifest).reasons;
+    if (reasons.some((reason) => reason === "missing field sources")) {
+      return true;
+    }
+    return reasons.some((reason) => reason.startsWith(`${source}:`));
+  }
+  const entry = manifest.sources.find((item) => item.source === source);
+  if (!entry) {
+    return true;
+  }
+  return entry.failed === true || entry.truncated === true || entry.skipped === true;
+}
+
 export type IfIncompleteDecision = {
   /** True when the backup should collect. */
   proceed: boolean;

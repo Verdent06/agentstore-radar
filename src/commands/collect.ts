@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { adaptersByKind } from "../adapters/index.ts";
 import { npmAdapter } from "../adapters/npm.ts";
 import { createDiscoveredRefs, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "../adapters/types.ts";
-import { decideIfIncompleteBackup } from "../lib/backup-core.ts";
+import { decideIfIncompleteBackup, sourceDueOnIncompleteRun } from "../lib/backup-core.ts";
 import { budgetExhausted, budgetExhaustedError, isBudgetExhaustedError, openSourceBudget } from "../lib/budget.ts";
 import { budgetPartialRows } from "../lib/budget-partial.ts";
 import { SOURCE_COLLECT_ATTEMPTS, sourceBudgetMs } from "../lib/config.ts";
@@ -30,6 +30,14 @@ import { linkCrossStore, linkSourceRows, ownerDecisionCounts, tieDecidedPackageO
 import { mergeApps } from "../lib/merge.ts";
 import { formatNpmLaneSummary, type NpmProducer } from "../lib/npm-scoped-pace.ts";
 import { decideNpmRecovery, NPM_RECOVERY_MARGIN_MS, nextUtcMidnightMs } from "../lib/npm-recovery.ts";
+import {
+  decideNpmChain,
+  formatNpmChainSummary,
+  readCollectChain,
+  writeCollectOutputs,
+  type NpmChainDecision,
+  type NpmChainRequest,
+} from "../lib/npm-chain.ts";
 import { formatRefetchStepSummary, withRefetchStats } from "../lib/refetch-coverage.ts";
 import { retryAsync, type SleepFn } from "../lib/retry.ts";
 import {
@@ -60,11 +68,16 @@ export type CollectOptions = {
   /** Live UTC clock. Defaults to the real clock, or to `now` when a test froze it. */
   wallNow?: () => Date;
   /**
-   * After the selected sources, run npm when today's manifest is missing or
-   * truncated. The 05:41 primary and both backups pass this so a cancelled
-   * 00:20 npm run still leaves npm rows.
+   * After the selected sources, run npm when today's manifest still has an
+   * `npm:` coreClean reason. Every schedule passes this with `--if-incomplete`.
    */
   recoverNpm?: boolean;
+  /**
+   * Called when npm stops for its wall-clock budget and another full
+   * `--if-incomplete --recover-npm` collect should be dispatched.
+   * The workflow performs the GitHub dispatch from the step outputs.
+   */
+  dispatchCollect?: (request: NpmChainRequest) => Promise<void> | void;
 };
 
 export type CollectOutcome = {
@@ -227,22 +240,47 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
   const sourceAttempts = options.sourceAttempts ?? SOURCE_COLLECT_ATTEMPTS;
   const names = new Set(selectedNames(options.sources));
   const cleaned = cleanupBrokenNormalizedEntries(dataDir);
+  const runtimeEnv = options.env ?? process.env;
+  const chainCount = readCollectChain(runtimeEnv);
+  const wallClock = (): Date => options.wallNow?.() ?? options.now ?? now;
+
+  const recordChain = async (decision: NpmChainDecision, wrote: boolean): Promise<void> => {
+    log.info(decision.dispatch ? "npm chain dispatch" : "npm chain stop", {
+      reason: decision.reason,
+      chain: decision.request?.chain ?? chainCount,
+    });
+    appendJobSummary(runtimeEnv, formatNpmChainSummary(decision));
+    writeCollectOutputs(runtimeEnv, { wrote, decision });
+    if (decision.dispatch && decision.request && options.dispatchCollect) {
+      await options.dispatchCollect(decision.request);
+    }
+  };
+
+  const dayCompleteDecision = (): NpmChainDecision =>
+    decideNpmChain({
+      nowMs: wallClock().getTime(),
+      chain: chainCount,
+      npmFetchedThisRun: 0,
+      npmRan: false,
+      dayComplete: true,
+    });
 
   if (cleaned.length > 0) {
     log.warn("removed broken snapshot entries", { entries: cleaned });
   }
 
   const inspection = inspectSnapshot(snapshotDate, dataDir);
-  // Backups pass --if-incomplete. That verdict is window-guard `coreClean`.
-  // manifest.partial stays the six-source flag and is not consulted here.
-  // The primary run (no flag) still refuses a six-source-complete snapshot.
+  // `--if-incomplete` uses window-guard `coreClean`. manifest.partial stays
+  // the six-source flag and is not consulted here. Sources that are already
+  // complete for this UTC date are not collected again.
   if (options.ifIncomplete && !options.force) {
     const decision = decideIfIncompleteBackup(snapshotDate, dataDir);
     if (!decision.proceed) {
       log.info("backup skipped; core sources are complete", { date: snapshotDate, reason: decision.reason });
       if (decision.summary) {
-        appendJobSummary(options.env ?? process.env, decision.summary);
+        appendJobSummary(runtimeEnv, decision.summary);
       }
+      await recordChain(dayCompleteDecision(), false);
       return {
         ok: true,
         skipped: true,
@@ -255,6 +293,35 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
       };
     }
     log.info("core sources are incomplete; collecting", { date: snapshotDate, reason: decision.reason });
+    if (inspection.hasManifest) {
+      let onDisk: SnapshotManifest | undefined;
+      try {
+        onDisk = readManifest(snapshotDate, dataDir);
+      } catch {
+        onDisk = undefined;
+      }
+      if (onDisk) {
+        const skipped: string[] = [];
+        for (const name of [...names]) {
+          if (!sourceDueOnIncompleteRun(onDisk, name)) {
+            names.delete(name);
+            skipped.push(name);
+          }
+        }
+        if (skipped.length > 0) {
+          log.info("skipping sources already complete for this UTC date", {
+            date: snapshotDate,
+            sources: skipped,
+          });
+        }
+        const npmStillDue = sourceDueOnIncompleteRun(onDisk, "npm");
+        if (names.size === 0 && !(options.recoverNpm && npmStillDue)) {
+          for (const name of selectedNames(options.sources)) {
+            names.add(name);
+          }
+        }
+      }
+    }
   } else if (!options.force && inspection.usable && inspection.hasManifest) {
     let existing: SnapshotManifest | undefined;
     try {
@@ -264,6 +331,7 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     }
     if (existing && snapshotIsSixSourceComplete(existing)) {
       log.info("snapshot already complete; refusing to overwrite", { date: snapshotDate });
+      await recordChain(dayCompleteDecision(), false);
       return {
         ok: true,
         skipped: true,
@@ -389,6 +457,17 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
       date: snapshotDate,
       failedSources,
     });
+    await recordChain(
+      decideNpmChain({
+        nowMs: ctx.wallNow?.().getTime() ?? now.getTime(),
+        chain: chainCount,
+        halt: npmResult?.halt,
+        npmFetchedThisRun: npmResult?.fetchedThisRunCount ?? 0,
+        npmRan: Boolean(npmResult),
+        dayComplete: false,
+      }),
+      false,
+    );
     return {
       ok: false,
       skipped: false,
@@ -449,6 +528,7 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
           "",
         ].join("\n"),
       );
+      await recordChain({ dispatch: false, reason: "collect did not keep the snapshot" }, false);
       return {
         ok: true,
         skipped: false,
@@ -565,7 +645,18 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
     completedSources,
     partial,
   });
-  appendJobSummary(options.env ?? process.env, formatRefetchStepSummary(snapshotDate, mergedManifests));
+  appendJobSummary(runtimeEnv, formatRefetchStepSummary(snapshotDate, mergedManifests));
+  await recordChain(
+    decideNpmChain({
+      nowMs: ctx.wallNow?.().getTime() ?? now.getTime(),
+      chain: chainCount,
+      halt: npmResult?.halt,
+      npmFetchedThisRun: npmResult?.fetchedThisRunCount ?? 0,
+      npmRan: Boolean(npmResult),
+      dayComplete: false,
+    }),
+    true,
+  );
   return {
     ok: true,
     skipped: false,

@@ -124,16 +124,16 @@ describe("npm recovery budget", () => {
 });
 
 describe("collect concurrency", () => {
-  it("cancels a pending npm run when the next collect queues, and that collect recovers npm", async () => {
+  it("replaces a pending run when a newer collect queues, and that collect recovers npm", async () => {
     let state: CollectQueueState = { active: null, pending: null };
-    state = enqueueCollectRun(state, "collect").state;
-    const waiting = enqueueCollectRun(state, "npm");
+    state = enqueueCollectRun(state, "05:41").state;
+    const waiting = enqueueCollectRun(state, "00:20");
     expect(waiting.cancelled).toBeNull();
-    expect(waiting.state.pending).toBe("npm");
-    const replaced = enqueueCollectRun(waiting.state, "collect");
-    expect(replaced.cancelled).toBe("npm");
-    expect(replaced.state.active).toBe("collect");
-    expect(replaced.state.pending).toBe("collect");
+    expect(waiting.state.pending).toBe("00:20");
+    const replaced = enqueueCollectRun(waiting.state, "08:47");
+    expect(replaced.cancelled).toBe("00:20");
+    expect(replaced.state.active).toBe("05:41");
+    expect(replaced.state.pending).toBe("08:47");
 
     const dataDir = mkdtempSync(join(tmpdir(), "radar-npm-cancelled-"));
     const date = "2026-11-23";
