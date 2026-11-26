@@ -3,11 +3,11 @@ import { existsSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { adapters } from "../src/adapters/index.ts";
 import { npmAdapter } from "../src/adapters/npm.ts";
 import { smitheryAdapter } from "../src/adapters/smithery.ts";
-import type { SourceResult } from "../src/adapters/types.ts";
+import type { SourceAdapter, SourceResult } from "../src/adapters/types.ts";
 import { collect, collectAdapter } from "../src/commands/collect.ts";
-import type { SourceAdapter } from "../src/adapters/types.ts";
 import type { SourceBudget } from "../src/lib/budget.ts";
 import { freshRowCount } from "../src/lib/coverage.ts";
 import { createHttpClient } from "../src/lib/http.ts";
@@ -21,7 +21,15 @@ import {
 } from "../src/lib/io.ts";
 import { createLogger } from "../src/lib/logger.ts";
 import { mergeApps } from "../src/lib/merge.ts";
-import { SOURCE_NAMES, emptySourceRow, type SnapshotManifest, type SourceName, type SourceRow } from "../src/lib/schema.ts";
+import type { NpmChainRequest } from "../src/lib/npm-chain.ts";
+import {
+  SOURCE_NAMES,
+  emptySourceRow,
+  type SnapshotManifest,
+  type SourceManifest,
+  type SourceName,
+  type SourceRow,
+} from "../src/lib/schema.ts";
 import { fixtureFetch, loadFixture } from "./helpers.ts";
 
 vi.mock("../src/lib/io.ts", async (importOriginal) => {
@@ -1105,6 +1113,505 @@ describe("collect resilience", () => {
     } finally {
       npmAdapter.collect = originalNpm;
       smitheryAdapter.collect = originalSmithery;
+    }
+  });
+
+  function freshRows(source: SourceName, count: number, date: string, at: string, carriedForward = false): SourceRow[] {
+    const rows: SourceRow[] = [];
+    for (let index = 0; index < count; index += 1) {
+      rows.push(
+        emptySourceRow({
+          snapshot_date: date,
+          app_id: `${source}:row-${index}`,
+          source,
+          source_id: `row-${index}`,
+          name: `row-${index}`,
+          fetched_at: at,
+          carried_forward: carriedForward,
+          frozen: carriedForward,
+        }),
+      );
+    }
+    return rows;
+  }
+
+  function stubResult(
+    source: SourceName,
+    records: SourceRow[],
+    at: string,
+    extra: Partial<SourceResult> = {},
+  ): SourceResult {
+    return {
+      source,
+      collectedAt: at,
+      rowCount: records.length,
+      skipped: false,
+      raw: { rows: records.length },
+      records,
+      freshTodayCount: freshRowCount(records),
+      eligibleCount: Math.max(records.length, 1),
+      ...extra,
+    };
+  }
+
+  function installCollectStubs(produce: (name: SourceName) => SourceResult): { calls: SourceName[]; restore: () => void } {
+    const calls: SourceName[] = [];
+    const originals = new Map<SourceName, SourceAdapter["collect"]>();
+    for (const adapter of adapters) {
+      originals.set(adapter.name, adapter.collect);
+      adapter.collect = async () => {
+        calls.push(adapter.name);
+        return produce(adapter.name);
+      };
+    }
+    return {
+      calls,
+      restore() {
+        for (const adapter of adapters) {
+          const original = originals.get(adapter.name);
+          if (original) {
+            adapter.collect = original;
+          }
+        }
+      },
+    };
+  }
+
+  function completeCore(name: "mcp-registry" | "github", at: string): SourceManifest {
+    return {
+      source: name,
+      rowCount: 1,
+      skipped: false,
+      failed: false,
+      truncated: false,
+      collectedAt: at,
+      existingRows: 10,
+      refetchedExisting: 10,
+      refetchedExistingShare: 1,
+      ...(name === "github" ? { mismatchChangedNotFresh: 0 } : {}),
+    };
+  }
+
+  it("keeps saved pypi rows on a later --if-incomplete run instead of re-collecting pypi", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-keep-pypi-"));
+    const date = "2026-11-25";
+    const at = "2026-11-25T08:00:00.000Z";
+    const later = "2026-11-25T12:00:00.000Z";
+    const pypiFresh = 8;
+    const rows = [
+      ...freshRows("pypi", pypiFresh, date, at),
+      ...freshRows("npm", 2, date, at),
+      ...freshRows("smithery", 1, date, at, true),
+      ...freshRows("gemini-cli", 1, date, at),
+      ...freshRows("mcp-registry", 1, date, at),
+      ...freshRows("github", 1, date, at),
+    ];
+    const manifest: SnapshotManifest = {
+      snapshotDate: date,
+      collectedAt: at,
+      appCount: rows.length,
+      sourceRowCount: rows.length,
+      partial: true,
+      sources: [
+        completeCore("mcp-registry", at),
+        {
+          source: "smithery",
+          rowCount: 1,
+          skipped: false,
+          failed: true,
+          truncated: false,
+          collectedAt: at,
+          freshTodayCount: 0,
+          fetchedThisRunCount: 0,
+          error: "circuit_breaker_5xx",
+        },
+        {
+          source: "gemini-cli",
+          rowCount: 1,
+          skipped: false,
+          failed: false,
+          truncated: false,
+          collectedAt: at,
+          freshTodayCount: 1,
+        },
+        completeCore("github", at),
+        {
+          source: "npm",
+          rowCount: 2,
+          skipped: false,
+          failed: false,
+          truncated: true,
+          collectedAt: at,
+          existingRows: 10,
+          refetchedExisting: 10,
+          refetchedExistingShare: 1,
+          mismatchChangedNotFresh: 0,
+          freshTodayCount: 2,
+          fetchedThisRunCount: 2,
+        },
+        {
+          source: "pypi",
+          rowCount: pypiFresh,
+          skipped: false,
+          failed: false,
+          truncated: true,
+          collectedAt: at,
+          freshTodayCount: pypiFresh,
+          fetchedThisRunCount: pypiFresh,
+          error: "pypi wall-clock budget of 55m exhausted (before package)",
+        },
+      ],
+    };
+    writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
+    const notes: string[] = [];
+    const stubs = installCollectStubs((name) => {
+      if (name === "npm") {
+        return stubResult("npm", freshRows("npm", 3, date, later), later, { fetchedThisRunCount: 1 });
+      }
+      return stubResult(name, [], later);
+    });
+    try {
+      const outcome = await collect({
+        date,
+        dataDir,
+        now: new Date(later),
+        ifIncomplete: true,
+        recoverNpm: true,
+        sources: ["mcp-registry", "smithery", "gemini-cli", "github", "pypi"],
+        env: {},
+        http: createHttpClient({
+          fetchImpl: async () => {
+            throw new Error("stubbed collect must not fetch");
+          },
+          maxRetries: 0,
+        }),
+        log: {
+          info(message, extra) {
+            notes.push(`${message} ${JSON.stringify(extra ?? {})}`);
+          },
+          warn(message) {
+            notes.push(message);
+          },
+          error(message) {
+            notes.push(message);
+          },
+        },
+        sourceAttempts: 1,
+        sleep: async () => {},
+      });
+      expect(outcome.wrote).toBe(true);
+      expect(stubs.calls.filter((name) => name === "pypi")).toEqual([]);
+      expect(stubs.calls.filter((name) => name === "smithery" || name === "gemini-cli")).toEqual([]);
+      expect(freshRowCount(readSourceRows(date, dataDir).filter((row) => row.source === "pypi"))).toBe(pypiFresh);
+      expect(readManifest(date, dataDir).sources.find((source) => source.source === "pypi")).toMatchObject({
+        truncated: true,
+        fetchedThisRunCount: pypiFresh,
+        rowCount: pypiFresh,
+      });
+      expect(notes.join("\n")).toMatch(/keeping saved rows for paused sources/);
+      expect(notes.join("\n")).toMatch(/"pypi"/);
+    } finally {
+      stubs.restore();
+    }
+  });
+
+  it("writes a snapshot when a non-core source drops fresh rows and a core source improves", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-noncore-drop-"));
+    const date = "2026-11-05";
+    const at = "2026-11-05T08:47:00.000Z";
+    const later = "2026-11-05T13:30:00.000Z";
+    const rows = [...freshRows("pypi", 4, date, at), ...freshRows("npm", 2, date, at)];
+    const manifest: SnapshotManifest = {
+      snapshotDate: date,
+      collectedAt: at,
+      appCount: rows.length,
+      sourceRowCount: rows.length,
+      partial: true,
+      sources: [
+        { source: "pypi", rowCount: 4, skipped: false, truncated: true, collectedAt: at, freshTodayCount: 4 },
+        { source: "npm", rowCount: 2, skipped: false, truncated: true, collectedAt: at, freshTodayCount: 2 },
+      ],
+    };
+    writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
+    const summaryPath = join(dataDir, "step-summary.md");
+    writeFileSync(summaryPath, "");
+    const warnings: string[] = [];
+    const originalNpm = npmAdapter.collect;
+    const originalPypi = adapters.find((adapter) => adapter.name === "pypi")!.collect;
+    npmAdapter.collect = async () => stubResult("npm", freshRows("npm", 5, date, later), later);
+    adapters.find((adapter) => adapter.name === "pypi")!.collect = async () =>
+      stubResult("pypi", freshRows("pypi", 1, date, later), later);
+    try {
+      const outcome = await collect({
+        date,
+        dataDir,
+        now: new Date(later),
+        force: false,
+        sources: ["pypi", "npm"],
+        env: { GITHUB_STEP_SUMMARY: summaryPath },
+        http: createHttpClient({
+          fetchImpl: async () => {
+            throw new Error("stubbed sources must not fetch");
+          },
+          maxRetries: 0,
+        }),
+        log: {
+          info() {},
+          warn(message) {
+            warnings.push(message);
+          },
+          error() {},
+        },
+        sourceAttempts: 1,
+        sleep: async () => {},
+      });
+      expect(outcome.wrote).toBe(true);
+      expect(warnings.join("\n")).toMatch(/non-core fresh drop on 2026-11-05: pypi fresh 4 -> 1; core improved npm fresh 2 -> 5/);
+      const summary = readFileSync(summaryPath, "utf8");
+      expect(summary).toMatch(/Non-core fresh drop 2026-11-05/);
+      expect(summary).toMatch(/pypi: 4 -> 1/);
+      expect(summary).toMatch(/npm: 2 -> 5/);
+      expect(freshRowCount(readSourceRows(date, dataDir).filter((row) => row.source === "pypi"))).toBe(1);
+      expect(freshRowCount(readSourceRows(date, dataDir).filter((row) => row.source === "npm"))).toBe(5);
+    } finally {
+      npmAdapter.collect = originalNpm;
+      adapters.find((adapter) => adapter.name === "pypi")!.collect = originalPypi;
+    }
+  });
+
+  it("still refuses to replace a snapshot when a core source loses fresh rows", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-core-drop-"));
+    const date = "2026-11-05";
+    const at = "2026-11-05T08:47:00.000Z";
+    const later = "2026-11-05T13:30:00.000Z";
+    const rows = [
+      ...freshRows("npm", 2, date, at),
+      ...freshRows("github", 1, date, at),
+      ...freshRows("pypi", 4, date, at),
+    ];
+    const manifest: SnapshotManifest = {
+      snapshotDate: date,
+      collectedAt: at,
+      appCount: rows.length,
+      sourceRowCount: rows.length,
+      partial: true,
+      sources: [
+        { source: "npm", rowCount: 2, skipped: false, truncated: true, collectedAt: at, freshTodayCount: 2 },
+        { source: "github", rowCount: 1, skipped: false, truncated: true, collectedAt: at, freshTodayCount: 1 },
+        { source: "pypi", rowCount: 4, skipped: false, truncated: true, collectedAt: at, freshTodayCount: 4 },
+      ],
+    };
+    writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
+    const before = readFileSync(join(dataDir, "normalized", date, "manifest.json"), "utf8");
+    const warnings: string[] = [];
+    const originals = new Map(adapters.map((adapter) => [adapter.name, adapter.collect]));
+    const nextCounts: Partial<Record<SourceName, number>> = { npm: 0, github: 3, pypi: 1 };
+    for (const adapter of adapters) {
+      const count = nextCounts[adapter.name];
+      if (count == null) {
+        continue;
+      }
+      adapter.collect = async () => stubResult(adapter.name, freshRows(adapter.name, count, date, later), later);
+    }
+    try {
+      const outcome = await collect({
+        date,
+        dataDir,
+        now: new Date(later),
+        force: false,
+        sources: ["npm", "github", "pypi"],
+        env: {},
+        http: createHttpClient({
+          fetchImpl: async () => {
+            throw new Error("stubbed sources must not fetch");
+          },
+          maxRetries: 0,
+        }),
+        log: {
+          info() {},
+          warn(message) {
+            warnings.push(message);
+          },
+          error() {},
+        },
+        sourceAttempts: 1,
+        sleep: async () => {},
+      });
+      expect(outcome.wrote).toBe(false);
+      expect(warnings.join("\n")).toMatch(/refusing to replace 2026-11-05: blocked by npm fresh 2 -> 0/);
+      expect(readFileSync(join(dataDir, "normalized", date, "manifest.json"), "utf8")).toBe(before);
+      expect(freshRowCount(readSourceRows(date, dataDir).filter((row) => row.source === "npm"))).toBe(2);
+      expect(freshRowCount(readSourceRows(date, dataDir).filter((row) => row.source === "pypi"))).toBe(4);
+    } finally {
+      for (const adapter of adapters) {
+        const original = originals.get(adapter.name);
+        if (original) {
+          adapter.collect = original;
+        }
+      }
+    }
+  });
+
+  it("writes the Nov 26 snapshot when saved pypi fresh rows would drop and npm improves, so the chain can dispatch", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-nov26-pypi-"));
+    const date = "2026-11-26";
+    const at = "2026-11-26T07:00:00.000Z";
+    const later = "2026-11-26T10:08:36.000Z";
+    const pypiFresh = 5352;
+    const rows = [
+      ...freshRows("pypi", pypiFresh, date, at),
+      ...freshRows("npm", 2, date, at),
+      ...freshRows("smithery", 1, date, at, true),
+      ...freshRows("gemini-cli", 1, date, at),
+      ...freshRows("mcp-registry", 1, date, at),
+      ...freshRows("github", 1, date, at),
+    ];
+    const manifest: SnapshotManifest = {
+      snapshotDate: date,
+      collectedAt: at,
+      appCount: rows.length,
+      sourceRowCount: rows.length,
+      partial: true,
+      failedSourceCount: 1,
+      sources: [
+        completeCore("mcp-registry", at),
+        {
+          source: "smithery",
+          rowCount: 1,
+          skipped: false,
+          failed: true,
+          truncated: false,
+          collectedAt: at,
+          freshTodayCount: 0,
+          fetchedThisRunCount: 0,
+          error: "circuit_breaker_5xx",
+        },
+        {
+          source: "gemini-cli",
+          rowCount: 1,
+          skipped: false,
+          failed: false,
+          truncated: false,
+          collectedAt: at,
+          freshTodayCount: 1,
+        },
+        completeCore("github", at),
+        {
+          source: "npm",
+          rowCount: 2,
+          skipped: false,
+          failed: false,
+          truncated: true,
+          collectedAt: at,
+          existingRows: 10,
+          refetchedExisting: 8,
+          refetchedExistingShare: 0.8,
+          mismatchChangedNotFresh: 0,
+          freshTodayCount: 2,
+          fetchedThisRunCount: 14933,
+          error: "npm wall-clock budget of 240m exhausted (scoped in flight)",
+        },
+        {
+          source: "pypi",
+          rowCount: pypiFresh,
+          skipped: false,
+          failed: false,
+          truncated: true,
+          collectedAt: at,
+          freshTodayCount: pypiFresh,
+          fetchedThisRunCount: pypiFresh,
+          error: "pypi wall-clock budget of 55m exhausted (before package)",
+        },
+      ],
+    };
+    writeNormalized(date, rows, mergeApps(date, rows), manifest, dataDir);
+    const summaryPath = join(dataDir, "step-summary.md");
+    const outputPath = join(dataDir, "github-output.txt");
+    writeFileSync(summaryPath, "");
+    const dispatched: NpmChainRequest[] = [];
+    const stubs = installCollectStubs((name) => {
+      if (name === "npm") {
+        return stubResult("npm", freshRows("npm", 3, date, later), later, {
+          halt: "budget",
+          fetchedThisRunCount: 4139,
+          truncated: true,
+        });
+      }
+      return stubResult(name, [], later);
+    });
+    try {
+      const outcome = await collect({
+        date,
+        dataDir,
+        now: new Date(later),
+        ifIncomplete: true,
+        recoverNpm: true,
+        sources: ["mcp-registry", "smithery", "gemini-cli", "github", "pypi"],
+        env: {
+          GITHUB_STEP_SUMMARY: summaryPath,
+          GITHUB_OUTPUT: outputPath,
+          RADAR_COLLECT_CHAIN: "1",
+        },
+        http: createHttpClient({
+          fetchImpl: async () => {
+            throw new Error("stubbed collect must not fetch");
+          },
+          maxRetries: 0,
+        }),
+        log: silent,
+        sourceAttempts: 1,
+        sleep: async () => {},
+        dispatchCollect(request) {
+          dispatched.push(request);
+        },
+      });
+      expect(outcome.wrote).toBe(true);
+      expect(stubs.calls.filter((name) => name === "pypi")).toEqual([]);
+      expect(freshRowCount(readSourceRows(date, dataDir).filter((row) => row.source === "pypi"))).toBe(pypiFresh);
+      expect(freshRowCount(readSourceRows(date, dataDir).filter((row) => row.source === "npm"))).toBe(3);
+      expect(dispatched).toEqual([
+        expect.objectContaining({
+          ifIncomplete: true,
+          recoverNpm: true,
+          chain: 2,
+        }),
+      ]);
+      const output = readFileSync(outputPath, "utf8");
+      expect(output).toContain("wrote=true");
+      expect(output).toContain("chain_dispatch=true");
+      expect(output).not.toContain("collect did not keep the snapshot");
+      expect(readFileSync(summaryPath, "utf8")).toMatch(/Decision: dispatch/);
+    } finally {
+      stubs.restore();
+    }
+  });
+
+  it("collects every source on the first run of a day when no manifest exists yet", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "radar-first-run-"));
+    const date = "2026-11-26";
+    const at = "2026-11-26T00:20:00.000Z";
+    const stubs = installCollectStubs((name) => stubResult(name, freshRows(name, 1, date, at), at));
+    try {
+      const outcome = await collect({
+        date,
+        dataDir,
+        now: new Date(at),
+        ifIncomplete: true,
+        env: {},
+        http: createHttpClient({
+          fetchImpl: async () => {
+            throw new Error("first run stubs must not fetch");
+          },
+          maxRetries: 0,
+        }),
+        log: silent,
+        sourceAttempts: 1,
+        sleep: async () => {},
+      });
+      expect(outcome.wrote).toBe(true);
+      expect(stubs.calls).toEqual([...SOURCE_NAMES]);
+    } finally {
+      stubs.restore();
     }
   });
 });

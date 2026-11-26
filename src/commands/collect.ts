@@ -3,7 +3,12 @@ import { dirname } from "node:path";
 import { adaptersByKind } from "../adapters/index.ts";
 import { npmAdapter } from "../adapters/npm.ts";
 import { createDiscoveredRefs, sourceStoppedAt, type CollectContext, type SourceAdapter, type SourceResult } from "../adapters/types.ts";
-import { decideIfIncompleteBackup, sourceDueOnIncompleteRun } from "../lib/backup-core.ts";
+import {
+  BACKUP_CORE_SOURCES,
+  decideIfIncompleteBackup,
+  pausedSourceHasSavedRows,
+  sourceDueOnIncompleteRun,
+} from "../lib/backup-core.ts";
 import { budgetExhausted, budgetExhaustedError, isBudgetExhaustedError, openSourceBudget } from "../lib/budget.ts";
 import { budgetPartialRows } from "../lib/budget-partial.ts";
 import { SOURCE_COLLECT_ATTEMPTS, sourceBudgetMs } from "../lib/config.ts";
@@ -124,6 +129,9 @@ function failedResult(source: SourceName, collectedAt: string, error: unknown): 
 
 type FreshChange = { source: string; previousFresh: number; nextFresh: number };
 
+/** Core sources for the late-replace guard. Same list `coreClean` reads. */
+const CORE_REPLACE_SOURCES = new Set<string>(BACKUP_CORE_SOURCES);
+
 function freshCountsBySource(rows: readonly SourceRow[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const row of rows) {
@@ -135,6 +143,23 @@ function freshCountsBySource(rows: readonly SourceRow[]): Map<string, number> {
 
 function formatFreshChange(change: FreshChange): string {
   return `${change.source} fresh ${change.previousFresh} -> ${change.nextFresh}`;
+}
+
+function formatNonCoreDropSummary(date: string, dropped: readonly FreshChange[], improved: readonly FreshChange[]): string {
+  return [
+    `### Non-core fresh drop ${date}`,
+    "",
+    "A paused source lost fresh rows. No core source dropped, and a core source improved, so this snapshot was written.",
+    "",
+    "Non-core drop:",
+    "",
+    ...dropped.map((change) => `- ${change.source}: ${change.previousFresh} -> ${change.nextFresh}`),
+    "",
+    "Core improved:",
+    "",
+    ...improved.map((change) => `- ${change.source}: ${change.previousFresh} -> ${change.nextFresh}`),
+    "",
+  ].join("\n");
 }
 
 /** Visible in the Actions run summary. A missing env var means this is not a job step. */
@@ -272,7 +297,8 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
   const inspection = inspectSnapshot(snapshotDate, dataDir);
   // `--if-incomplete` uses window-guard `coreClean`. manifest.partial stays
   // the six-source flag and is not consulted here. Sources that are already
-  // complete for this UTC date are not collected again.
+  // complete for this UTC date are not collected again. A paused source
+  // (smithery, gemini-cli, pypi) that already has rows is kept.
   if (options.ifIncomplete && !options.force) {
     const decision = decideIfIncompleteBackup(snapshotDate, dataDir);
     if (!decision.proceed) {
@@ -302,11 +328,23 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
       }
       if (onDisk) {
         const skipped: string[] = [];
+        const keptPaused: string[] = [];
         for (const name of [...names]) {
+          if (pausedSourceHasSavedRows(onDisk, name)) {
+            names.delete(name);
+            keptPaused.push(name);
+            continue;
+          }
           if (!sourceDueOnIncompleteRun(onDisk, name)) {
             names.delete(name);
             skipped.push(name);
           }
+        }
+        if (keptPaused.length > 0) {
+          log.info("keeping saved rows for paused sources", {
+            date: snapshotDate,
+            sources: keptPaused,
+          });
         }
         if (skipped.length > 0) {
           log.info("skipping sources already complete for this UTC date", {
@@ -317,6 +355,9 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
         const npmStillDue = sourceDueOnIncompleteRun(onDisk, "npm");
         if (names.size === 0 && !(options.recoverNpm && npmStillDue)) {
           for (const name of selectedNames(options.sources)) {
+            if (pausedSourceHasSavedRows(onDisk, name)) {
+              continue;
+            }
             names.add(name);
           }
         }
@@ -500,7 +541,19 @@ export async function collect(options: CollectOptions = {}): Promise<CollectOutc
         improved.push({ source, previousFresh, nextFresh });
       }
     }
-    if (blocked.length > 0) {
+    const coreBlocked = blocked.filter((change) => CORE_REPLACE_SOURCES.has(change.source));
+    const nonCoreBlocked = blocked.filter((change) => !CORE_REPLACE_SOURCES.has(change.source));
+    const coreImproved = improved.filter((change) => CORE_REPLACE_SOURCES.has(change.source));
+    if (nonCoreBlocked.length > 0 && coreBlocked.length === 0 && coreImproved.length > 0) {
+      const droppedText = nonCoreBlocked.map(formatFreshChange).join(", ");
+      const improvedText = coreImproved.map(formatFreshChange).join(", ");
+      const message = `non-core fresh drop on ${snapshotDate}: ${droppedText}; core improved ${improvedText}`;
+      log.warn(message, { date: snapshotDate, nonCoreBlocked, coreImproved });
+      appendJobSummary(
+        options.env ?? process.env,
+        formatNonCoreDropSummary(snapshotDate, nonCoreBlocked, coreImproved),
+      );
+    } else if (blocked.length > 0) {
       const blockedText = blocked.map(formatFreshChange).join(", ");
       const improvedText = improved.length > 0 ? improved.map(formatFreshChange).join(", ") : "none";
       const message = `refusing to replace ${snapshotDate}: blocked by ${blockedText}; would have improved ${improvedText}`;

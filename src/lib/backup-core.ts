@@ -1,5 +1,5 @@
 import { appendFileSync } from "node:fs";
-import { CORE_SOURCES, coreClean } from "./window-guard.ts";
+import { CORE_SOURCES, FROZEN_SOURCES, coreClean } from "./window-guard.ts";
 import { inspectSnapshot, readManifest } from "./io.ts";
 import type { SnapshotManifest, SourceManifest, SourceName } from "./schema.ts";
 
@@ -14,10 +14,32 @@ export type BackupCoreSource = (typeof BACKUP_CORE_SOURCES)[number];
 const CORE_SOURCE_SET = new Set<string>(CORE_SOURCES);
 
 /**
+ * Paused catalogs. Same list as `FROZEN_SOURCES`: smithery, gemini-cli, and pypi.
+ * mcp-registry, github, and npm stay core via `CORE_SOURCES`.
+ */
+const PAUSED_SOURCE_SET = new Set<string>(FROZEN_SOURCES);
+
+/**
+ * True when this UTC date already stored rows for a paused source.
+ * A later run keeps those rows instead of collecting the source again.
+ */
+export function pausedSourceHasSavedRows(
+  manifest: SnapshotManifest | null | undefined,
+  source: SourceName,
+): boolean {
+  if (!manifest || !PAUSED_SOURCE_SET.has(source)) {
+    return false;
+  }
+  const entry = manifest.sources.find((item) => item.source === source);
+  return (entry?.rowCount ?? 0) > 0;
+}
+
+/**
  * True when an `--if-incomplete` run still has to collect `source` for this
- * UTC date. Core sources follow `coreClean` reasons. Any other source is due
- * when it is missing, failed, truncated, or skipped. A core-clean source is
- * left alone. This does not change the `coreClean` rule.
+ * UTC date. Core sources follow `coreClean` reasons. A paused source that
+ * already has rows is not due. Any other non-core source is due when it is
+ * missing, failed, truncated, or skipped. A core-clean source is left alone.
+ * This does not change the `coreClean` rule.
  */
 export function sourceDueOnIncompleteRun(
   manifest: SnapshotManifest | null | undefined,
@@ -32,6 +54,9 @@ export function sourceDueOnIncompleteRun(
       return true;
     }
     return reasons.some((reason) => reason.startsWith(`${source}:`));
+  }
+  if (pausedSourceHasSavedRows(manifest, source)) {
+    return false;
   }
   const entry = manifest.sources.find((item) => item.source === source);
   if (!entry) {
